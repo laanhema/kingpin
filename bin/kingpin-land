@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Land a ready task: fix findings if needed, serialize landing per project,
+# and send /issue-flow-done to the worker.
+#
+# Usage: kingpin-land <task-id>
+set -euo pipefail
+
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+KP_BIN=$(cd "$(dirname "$0")" && pwd)
+
+[ $# -ge 1 ] || { echo "usage: kingpin-land <task-id>" >&2; exit 1; }
+id=$1
+
+task_dir="$KP_HOME/tasks/$id"
+[ -d "$task_dir" ] || { echo "kingpin-land: task $id not found: $task_dir" >&2; exit 1; }
+
+env_file="$task_dir/task.env"
+[ -f "$env_file" ] || { echo "kingpin-land: task.env missing in $task_dir" >&2; exit 1; }
+
+project=$(sed -n 's/^PROJECT=//p' "$env_file" 2>/dev/null || true)
+issue=$(sed -n 's/^ISSUE=//p' "$env_file" 2>/dev/null || true)
+[ -n "$project" ] || project="default"
+
+status_file="$task_dir/status"
+last_status=$(tail -n 1 "$status_file" 2>/dev/null || true)
+
+# Extract report and review verdict if present
+verdict=""
+report=""
+if [[ $last_status =~ review=([^ ]+) ]]; then
+  verdict="${BASH_REMATCH[1]}"
+fi
+if [[ $last_status =~ report=([^ ]+) ]]; then
+  report="${BASH_REMATCH[1]}"
+fi
+
+# If verdict is NEEDS CHANGES or has findings, run /fix-findings first
+if [ "$verdict" = "NEEDS_CHANGES" ] || [ "$verdict" = "NEEDS-CHANGES" ]; then
+  echo "kingpin-land: task $id review verdict is $verdict; sending /fix-findings"
+  if [ -n "$report" ] && [ -f "$report" ]; then
+    "$KP_BIN/kingpin-send" "$id" "/fix-findings $report"
+  else
+    "$KP_BIN/kingpin-send" "$id" "/fix-findings"
+  fi
+  exit 0
+fi
+
+# Project-level serialization lock
+lock_dir="$KP_HOME/projects"
+mkdir -p "$lock_dir"
+project_landing_lock="$lock_dir/$project.landing"
+queue_file="$lock_dir/$project.landing_queue"
+
+if [ -f "$project_landing_lock" ]; then
+  holder=$(cat "$project_landing_lock" 2>/dev/null || true)
+  if [ "$holder" != "$id" ] && [ -d "$KP_HOME/tasks/$holder" ]; then
+    echo "kingpin-land: project $project is already landing $holder; queuing $id"
+    grep -qx "$id" "$queue_file" 2>/dev/null || echo "$id" >> "$queue_file"
+    exit 0
+  fi
+fi
+
+# Acquire landing lock for this project
+echo "$id" > "$project_landing_lock"
+
+if [ -z "$issue" ]; then
+  # Parse issue number from status if not in task.env
+  if grep -E -q '^issue: #[0-9]+' "$status_file"; then
+    issue=$(grep -E '^issue: #[0-9]+' "$status_file" | head -n 1 | sed -E 's/^issue: #([0-9]+).*/\1/')
+  fi
+fi
+
+if [ -n "$issue" ]; then
+  echo "kingpin-land: sending /issue-flow-done $issue to $id"
+  "$KP_BIN/kingpin-send" "$id" "/issue-flow-done $issue"
+else
+  echo "kingpin-land: no issue number found for $id; sending /create-pr-merge"
+  "$KP_BIN/kingpin-send" "$id" "/create-pr-merge"
+fi

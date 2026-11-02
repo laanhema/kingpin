@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Complete and clean up a merged task.
+#
+# Usage: kingpin-done <task-id> [--force]
+set -euo pipefail
+
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+KP_BIN=$(cd "$(dirname "$0")" && pwd)
+FORCE=0
+
+[ $# -ge 1 ] || { echo "usage: kingpin-done <task-id> [--force]" >&2; exit 1; }
+id=$1
+[ "${2:-}" = "--force" ] && FORCE=1
+
+task_dir="$KP_HOME/tasks/$id"
+[ -d "$task_dir" ] || { echo "kingpin-done: task $id not found: $task_dir" >&2; exit 1; }
+
+env_file="$task_dir/task.env"
+[ -f "$env_file" ] || { echo "kingpin-done: task.env missing in $task_dir" >&2; exit 1; }
+
+# shellcheck source=/dev/null
+. "$env_file"
+
+[ -n "${PROJECT_PATH:-}" ] || { echo "kingpin-done: PROJECT_PATH missing in $env_file" >&2; exit 1; }
+[ -n "${WORKTREE:-}" ] || { echo "kingpin-done: WORKTREE missing in $env_file" >&2; exit 1; }
+
+# Check uncommitted changes
+if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ]; then
+  changes=$(git -C "$WORKTREE" status --porcelain 2>/dev/null || true)
+  if [ -n "$changes" ]; then
+    echo "kingpin-done: worktree $WORKTREE has uncommitted changes; refusing to clean up without --force" >&2
+    exit 1
+  fi
+fi
+
+# Confirm commit is on origin default branch
+if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ]; then
+  head_sha=$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || true)
+  if [ -n "$head_sha" ]; then
+    git -C "$PROJECT_PATH" fetch origin >/dev/null 2>&1 || true
+    default_ref=$(git -C "$PROJECT_PATH" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo "refs/remotes/origin/main")
+    if ! git -C "$PROJECT_PATH" merge-base --is-ancestor "$head_sha" "$default_ref" 2>/dev/null; then
+      echo "kingpin-done: HEAD $head_sha is not yet merged into $default_ref; refusing to tear down without --force" >&2
+      exit 1
+    fi
+  fi
+fi
+
+# 1. Close tmux window
+tmux_target=${TMUX_TARGET:-kingpin:$id}
+tmux kill-window -t "$tmux_target" 2>/dev/null || true
+
+# 2. Return treehouse slot
+if [ -d "$WORKTREE" ]; then
+  (cd "$PROJECT_PATH" && treehouse return "$WORKTREE" >/dev/null 2>&1) || true
+fi
+
+# 3. Delete local branch
+if [ -n "${BRANCH:-}" ]; then
+  git -C "$PROJECT_PATH" branch -D "$BRANCH" >/dev/null 2>&1 || true
+fi
+
+# 4. Release project landing lock and pop next task in queue
+project=${PROJECT:-default}
+lock_dir="$KP_HOME/projects"
+landing_lock="$lock_dir/$project.landing"
+queue_file="$lock_dir/$project.landing_queue"
+
+if [ -f "$landing_lock" ]; then
+  holder=$(cat "$landing_lock" 2>/dev/null || true)
+  if [ "$holder" = "$id" ]; then
+    rm -f "$landing_lock"
+  fi
+fi
+
+next_task=""
+if [ -f "$queue_file" ] && [ -s "$queue_file" ]; then
+  next_task=$(head -n 1 "$queue_file")
+  sed -i '1d' "$queue_file"
+fi
+
+echo "OK: cleaned up task $id"
+
+if [ -n "$next_task" ]; then
+  echo "kingpin-done: triggering queued task $next_task for project $project"
+  "$KP_BIN/kingpin-land" "$next_task" || true
+fi

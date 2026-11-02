@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Collect saved skill critique lines from task directories and run one curator worker in ~/.claude/skills.
+#
+# Usage: kingpin-curate [--dry-run]
+set -euo pipefail
+
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+SKILLS_DIR="$HOME/.claude/skills"
+DRY_RUN=0
+[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+
+[ -d "$SKILLS_DIR" ] || { echo "kingpin-curate: skills directory $SKILLS_DIR not found" >&2; exit 1; }
+
+input_file="$KP_HOME/curator-input.txt"
+mkdir -p "$KP_HOME"
+: > "$input_file"
+
+count=0
+for task_dir in "$KP_HOME/tasks"/*; do
+  [ -d "$task_dir" ] || continue
+  crit_file="$task_dir/critique"
+  if [ -f "$crit_file" ] && [ -s "$crit_file" ]; then
+    task_id=$(basename "$task_dir")
+    echo "--- Task $task_id ---" >> "$input_file"
+    cat "$crit_file" >> "$input_file"
+    echo "" >> "$input_file"
+    count=$((count + 1))
+  fi
+done
+
+if [ "$count" -eq 0 ]; then
+  echo "kingpin-curate: no pending skill critiques"
+  exit 0
+fi
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "kingpin-curate: dry-run, $count task(s) have pending critiques:"
+  cat "$input_file"
+  exit 0
+fi
+
+# Ensure no curator is already active
+if tmux list-panes -t kingpin:curator >/dev/null 2>&1; then
+  echo "kingpin-curate: curator window kingpin:curator is already active" >&2
+  exit 1
+fi
+
+prompt="Apply the following skill critique(s) per the Skill Optimization Protocol in your rules:
+
+$(cat "$input_file")"
+
+tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
+tmux new-window -d -t kingpin: -n curator -c "$SKILLS_DIR" "claude '$prompt'"
+
+# Archive processed critiques
+for task_dir in "$KP_HOME/tasks"/*; do
+  [ -d "$task_dir" ] || continue
+  crit_file="$task_dir/critique"
+  if [ -f "$crit_file" ] && [ -s "$crit_file" ]; then
+    mv -f "$crit_file" "$crit_file.applied.$(date +%s)"
+  fi
+done
+
+echo "OK: spawned curator in tmux kingpin:curator for $count task critique(s)"

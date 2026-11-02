@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Send text or keys into a kingpin task's tmux window.
+#
+# Usage: kingpin-send <task-id> "<command-or-keys>"
+set -euo pipefail
+
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+
+[ $# -ge 2 ] || { echo "usage: kingpin-send <task-id> <keys>" >&2; exit 1; }
+id=$1
+shift
+keys="$*"
+
+task_dir="$KP_HOME/tasks/$id"
+[ -d "$task_dir" ] || { echo "kingpin-send: task $id not found: $task_dir" >&2; exit 1; }
+
+env_file="$task_dir/task.env"
+tmux_target="kingpin:$id"
+if [ -f "$env_file" ]; then
+  tmux_target=$(sed -n 's/^TMUX_TARGET=//p' "$env_file" 2>/dev/null || true)
+  [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
+fi
+
+if ! tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
+  echo "kingpin-send: tmux window $tmux_target is not alive" >&2
+  exit 1
+fi
+
+tmux send-keys -t "$tmux_target" "$keys" Enter
+echo "OK: sent to $tmux_target"
