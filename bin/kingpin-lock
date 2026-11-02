@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Acquire or inspect the kingpin orchestrator session lock.
+# Usage: kingpin-lock [status|check|acquire]
+set -euo pipefail
+
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+LOCK_FILE="$KP_HOME/orchestrator.lock"
+mkdir -p "$KP_HOME"
+
+cmd=${1:-acquire}
+
+case "$cmd" in
+  status)
+    if [ ! -f "$LOCK_FILE" ]; then
+      echo "lock: free"
+      exit 0
+    fi
+    pid=$(head -n 1 "$LOCK_FILE" 2>/dev/null || true)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      echo "lock: held by pid $pid"
+    else
+      echo "lock: stale"
+    fi
+    exit 0
+    ;;
+  check)
+    if [ -f "$LOCK_FILE" ]; then
+      pid=$(head -n 1 "$LOCK_FILE" 2>/dev/null || true)
+      if [ -n "$pid" ] && [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then
+        echo "error: another live kingpin orchestrator session holds the lock (pid $pid)" >&2
+        exit 1
+      fi
+    fi
+    echo "lock: verified"
+    exit 0
+    ;;
+  acquire)
+    if [ -f "$LOCK_FILE" ]; then
+      pid=$(head -n 1 "$LOCK_FILE" 2>/dev/null || true)
+      if [ -n "$pid" ] && [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then
+        echo "error: another live kingpin orchestrator session holds the lock (pid $pid)" >&2
+        exit 1
+      fi
+    fi
+    echo "$$" > "$LOCK_FILE"
+    echo "lock: acquired (pid $$)"
+    ;;
+  release)
+    rm -f "$LOCK_FILE"
+    echo "lock: released"
+    ;;
+  *)
+    echo "kingpin-lock: unknown command $cmd" >&2
+    exit 2
+    ;;
+esac
