@@ -10,6 +10,8 @@
 #   kingpin land <task-id>
 #   kingpin done <task-id> [--force]
 #   kingpin send <task-id> "<keys>"
+#   kingpin wait [--timeout <seconds>] [--once]
+#   kingpin ack <task-id>... | --all
 #   kingpin list
 #   kingpin lock [check|acquire|release]
 #   kingpin curate
@@ -33,6 +35,8 @@ Commands:
   land      Initiate serialized project landing for a ready worker
   done      Verify merge, release worktree lease, and advance queue
   send      Send input or approval keys to a worker
+  wait      Wait for fleet task events (blocking or --once)
+  ack       Acknowledge task events to advance seen counters
   list      Display active tasks and fleet state in the terminal
   lock      Check, acquire, or release the orchestrator session lock
   curate    Aggregate critique logs from finished workers
@@ -52,6 +56,12 @@ case "$cmd" in
     ;;
   spawn)
     exec "$KP_BIN/kingpin-spawn" "$@"
+    ;;
+  ack)
+    exec "$KP_BIN/kingpin-ack" "$@"
+    ;;
+  wait)
+    exec "$KP_BIN/kingpin-wait" "$@"
     ;;
   watch)
     exec "$KP_BIN/kingpin-watch" "$@"

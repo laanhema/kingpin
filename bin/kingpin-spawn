@@ -128,6 +128,20 @@ exclude_path() {
   grep -qxF "$rel" "$excl" 2>/dev/null || echo "$rel" >> "$excl"
 }
 
+migrate_legacy_excludes() {
+  local excl
+  excl=$(git -C "$worktree" rev-parse --git-path info/exclude 2>/dev/null || true)
+  [ -n "$excl" ] || return 0
+  case "$excl" in
+    /*) ;;
+    *) excl="$worktree/$excl" ;;
+  esac
+  if [ -f "$excl" ]; then
+    sed -i -E '/^\/?\.agents\/?$/d; /^\/?\.opencode\/?$/d' "$excl"
+  fi
+}
+migrate_legacy_excludes
+
 if [ -n "$SETUP_CMD" ]; then
   (cd "$worktree" && bash -c "$SETUP_CMD") > "$task_dir/setup.log" 2>&1 \
     || die "setup failed in $worktree; see $task_dir/setup.log"
@@ -194,7 +208,8 @@ EOF
   }
 }
 EOF_HOOKS
-    exclude_path '.agents'
+    exclude_path '.agents/rules/kingpin.md'
+    exclude_path '.agents/hooks.json'
     cat > "$task_dir/launch.sh" <<EOF
 #!/usr/bin/env bash
 export KINGPIN_TASK_DIR='$task_dir'
@@ -269,7 +284,9 @@ export default {
   },
 };
 EOF_OC_PLUG
-    exclude_path '.opencode'
+    exclude_path '.opencode/config.json'
+    exclude_path '.opencode/plugins/package.json'
+    exclude_path '.opencode/plugins/kingpin-stop.js'
     cat > "$task_dir/launch.sh" <<EOF
 #!/usr/bin/env bash
 export KINGPIN_TASK_DIR='$task_dir'

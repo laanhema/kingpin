@@ -72,6 +72,12 @@ process.exit(1);
 
 # Test 2: AGY spawn
 echo "=== Test 2: AGY Spawn ==="
+# Seed legacy broad exclusions in repo info/exclude to verify migration
+proj_excl=$(git -C "$T/proj" rev-parse --git-path info/exclude)
+case "$proj_excl" in /*) ;; *) proj_excl="$T/proj/$proj_excl" ;; esac
+mkdir -p "$(dirname "$proj_excl")"
+printf '.agents\n.opencode\n' >> "$proj_excl"
+
 "$KP_BIN/kingpin-spawn" demo --issue 102 --id task-agy --harness agy >/dev/null
 [ -f "$KINGPIN_HOME/tasks/task-agy/task.env" ] && pass "task-agy task.env created" || fail "missing task.env"
 grep -q "^HARNESS=agy$" "$KINGPIN_HOME/tasks/task-agy/task.env" && pass "task-agy recorded HARNESS=agy" || fail "wrong harness in task.env"
@@ -94,12 +100,21 @@ process.exit(1);
 [ -f "$wt_agy/.agents/rules/kingpin.md" ] && pass "agy rules/kingpin.md written in worktree" || fail "missing agy rules"
 [ -f "$wt_agy/.agents/hooks.json" ] && pass "agy hooks.json written in worktree" || fail "missing agy hooks"
 grep -q "KINGPIN_TASK_DIR/stopped" "$wt_agy/.agents/hooks.json" && pass "agy hook command writes to stopped file" || fail "wrong agy hook"
-# Verify .agents excluded from git
+# Verify specific agy files excluded from git, broad .agents migrated
 git_excl=$(git -C "$wt_agy" rev-parse --git-path info/exclude)
 case "$git_excl" in /*) ;; *) git_excl="$wt_agy/$git_excl" ;; esac
-grep -q "^\.agents$" "$git_excl" && pass ".agents added to git info/exclude" || fail ".agents not excluded"
+grep -q "^\.agents/rules/kingpin\.md$" "$git_excl" && pass "rules/kingpin.md added to git info/exclude" || fail "rules/kingpin.md not excluded"
+grep -q "^\.agents/hooks\.json$" "$git_excl" && pass "hooks.json added to git info/exclude" || fail "hooks.json not excluded"
+! grep -qE '^/?\.agents/?$' "$git_excl" && pass "broad .agents not in git info/exclude" || fail "broad .agents still in info/exclude"
 status_out=$(git -C "$wt_agy" status --porcelain)
 [ -z "$status_out" ] && pass "git status in agy worktree is clean" || fail "git status dirty: $status_out"
+
+# Verify new files in .agents/ show up in git status
+mkdir -p "$wt_agy/.agents/reviews"
+touch "$wt_agy/.agents/reviews/x.md"
+status_out=$(git -C "$wt_agy" status --porcelain -u)
+echo "$status_out" | grep -q "\.agents/reviews/x\.md" && pass "new .agents/reviews/x.md shows in git status" || fail "new .agents file hidden from git status"
+rm -f "$wt_agy/.agents/reviews/x.md"
 
 # Test 3: OpenCode spawn
 echo "=== Test 3: OpenCode Spawn ==="
@@ -116,12 +131,21 @@ wt_oc=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/task-opencode/task.env")
 grep -q "preamble.md" "$wt_oc/.opencode/config.json" && pass "opencode config references preamble.md in instructions" || fail "missing instructions"
 [ -f "$wt_oc/.opencode/plugins/kingpin-stop.js" ] && pass "opencode kingpin-stop.js plugin written" || fail "missing plugin"
 [ -f "$wt_oc/.opencode/plugins/package.json" ] && pass "opencode plugin package.json written" || fail "missing plugin package.json"
-# Verify .opencode excluded from git
+# Verify .opencode specific files excluded from git, broad .opencode migrated
 git_excl=$(git -C "$wt_oc" rev-parse --git-path info/exclude)
 case "$git_excl" in /*) ;; *) git_excl="$wt_oc/$git_excl" ;; esac
-grep -q "^\.opencode$" "$git_excl" && pass ".opencode added to git info/exclude" || fail ".opencode not excluded"
+grep -q "^\.opencode/config\.json$" "$git_excl" && pass "opencode config.json added to git info/exclude" || fail "config.json not excluded"
+grep -q "^\.opencode/plugins/package\.json$" "$git_excl" && pass "opencode plugin package.json added to git info/exclude" || fail "plugin package.json not excluded"
+grep -q "^\.opencode/plugins/kingpin-stop\.js$" "$git_excl" && pass "opencode kingpin-stop.js added to git info/exclude" || fail "plugin kingpin-stop.js not excluded"
+! grep -qE '^/?\.opencode/?$' "$git_excl" && pass "broad .opencode not in git info/exclude" || fail "broad .opencode still in info/exclude"
 status_out=$(git -C "$wt_oc" status --porcelain)
 [ -z "$status_out" ] && pass "git status in opencode worktree is clean" || fail "git status dirty: $status_out"
+
+# Verify new files in .opencode/ show up in git status
+touch "$wt_oc/.opencode/notes.txt"
+status_out=$(git -C "$wt_oc" status --porcelain -u)
+echo "$status_out" | grep -q "\.opencode/notes\.txt" && pass "new .opencode/notes.txt shows in git status" || fail "new .opencode file hidden from git status"
+rm -f "$wt_oc/.opencode/notes.txt"
 
 # Test 4: Project-default harness configuration
 echo "=== Test 4: Project Default Harness ==="
