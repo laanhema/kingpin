@@ -2,7 +2,7 @@
 # Verification test for Kingpin multi-harness support (claude, agy, opencode).
 set -euo pipefail
 
-unset TMUX
+unset TMUX CLAUDECODE OPENCODE KINGPIN_HARNESS
 
 T=$(mktemp -d)
 export KINGPIN_HOME=$T/kp
@@ -180,6 +180,34 @@ echo "=== Test 4: Project Default Harness ==="
 printf 'PROJECT_PATH=%q\nHARNESS=opencode\n' "$T/proj" > "$KINGPIN_HOME/projects/demo-oc.env"
 "$KP_BIN/kingpin-spawn" demo-oc --issue 104 --id task-default-oc >/dev/null
 grep -q "^HARNESS=opencode$" "$KINGPIN_HOME/tasks/task-default-oc/task.env" && pass "task-default-oc picked up HARNESS=opencode from project env" || fail "failed project default harness"
+
+# Test 4b: Default harness follows the orchestrator lock holder
+echo "=== Test 4b: Lock Holder Harness Precedence ==="
+# The test script itself is the live lock holder.
+harness_of() { sed -n 's/^HARNESS=//p' "$KINGPIN_HOME/tasks/$1/task.env"; }
+KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin-lock" acquire --harness agy >/dev/null
+
+"$KP_BIN/kingpin-spawn" demo --issue 111 --id task-lock-default >/dev/null
+[ "$(harness_of task-lock-default)" = "agy" ] && pass "lock holder harness is the default" || fail "lock default: $(harness_of task-lock-default)"
+
+"$KP_BIN/kingpin-spawn" demo --issue 112 --id task-lock-flag --harness opencode >/dev/null
+[ "$(harness_of task-lock-flag)" = "opencode" ] && pass "--harness beats the lock holder" || fail "flag vs lock: $(harness_of task-lock-flag)"
+
+printf 'PROJECT_PATH=%q\nHARNESS=claude\n' "$T/proj" > "$KINGPIN_HOME/projects/demo-claude.env"
+"$KP_BIN/kingpin-spawn" demo-claude --issue 113 --id task-lock-project >/dev/null
+[ "$(harness_of task-lock-project)" = "claude" ] && pass "explicit project HARNESS beats the lock holder" || fail "project vs lock: $(harness_of task-lock-project)"
+
+printf 'DEFAULT_HARNESS=opencode\n' > "$KINGPIN_HOME/config.env"
+"$KP_BIN/kingpin-spawn" demo --issue 114 --id task-lock-global >/dev/null
+[ "$(harness_of task-lock-global)" = "agy" ] && pass "lock holder beats DEFAULT_HARNESS" || fail "lock vs global: $(harness_of task-lock-global)"
+
+"$KP_BIN/kingpin-lock" release >/dev/null
+"$KP_BIN/kingpin-spawn" demo --issue 115 --id task-global-default >/dev/null
+[ "$(harness_of task-global-default)" = "opencode" ] && pass "DEFAULT_HARNESS applies once the lock is released" || fail "global default: $(harness_of task-global-default)"
+
+rm -f "$KINGPIN_HOME/config.env"
+"$KP_BIN/kingpin-spawn" demo --issue 116 --id task-fallback-claude >/dev/null
+[ "$(harness_of task-fallback-claude)" = "claude" ] && pass "falls back to claude with no lock and no config" || fail "fallback: $(harness_of task-fallback-claude)"
 
 # Test 5: Qualified quiet state in kingpin-wait
 echo "=== Test 5: Qualified Quiet State ==="
