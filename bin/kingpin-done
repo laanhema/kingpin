@@ -24,12 +24,50 @@ env_file="$task_dir/task.env"
 [ -n "${PROJECT_PATH:-}" ] || { echo "kingpin-done: PROJECT_PATH missing in $env_file" >&2; exit 1; }
 [ -n "${WORKTREE:-}" ] || { echo "kingpin-done: WORKTREE missing in $env_file" >&2; exit 1; }
 
+release_landing_lock_and_advance_queue() {
+  local project=${PROJECT:-default}
+  local lock_dir="$KP_HOME/projects"
+  local landing_lock="$lock_dir/$project.landing"
+  local queue_file="$lock_dir/$project.landing_queue"
+
+  # Only the task that holds the landing lock releases it and advances the
+  # queue; any other caller (e.g. a repeated refused cleanup) must leave the
+  # queue order alone.
+  local holder=""
+  [ -f "$landing_lock" ] && holder=$(cat "$landing_lock" 2>/dev/null || true)
+  [ "$holder" = "$id" ] || return 0
+  rm -f "$landing_lock"
+
+  local next_task=""
+  if [ -f "$queue_file" ] && [ -s "$queue_file" ]; then
+    next_task=$(head -n 1 "$queue_file")
+    sed -i '1d' "$queue_file"
+  fi
+
+  if [ -n "$next_task" ]; then
+    echo "kingpin-done: triggering queued task $next_task for project $project"
+    "$KP_BIN/kingpin-land" "$next_task" || true
+  fi
+}
+
+refuse_cleanup() {
+  local reason=$1
+  local line="cleanup-refused: $reason"
+  local last=""
+  [ -f "$task_dir/status" ] && last=$(tail -n 1 "$task_dir/status" 2>/dev/null || true)
+  echo "kingpin-done: $reason" >&2
+  # An identical consecutive event is not appended again: every new status line
+  # wakes the orchestrator, and kingpin-watch retries the cleanup repeatedly.
+  [ "$last" = "$line" ] || echo "$line" >> "$task_dir/status"
+  release_landing_lock_and_advance_queue
+  exit 1
+}
+
 # Check uncommitted changes
 if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ]; then
   changes=$(git -C "$WORKTREE" status --porcelain 2>/dev/null || true)
   if [ -n "$changes" ]; then
-    echo "kingpin-done: worktree $WORKTREE has uncommitted changes; refusing to clean up without --force" >&2
-    exit 1
+    refuse_cleanup "worktree $WORKTREE has uncommitted changes; refusing to clean up without --force"
   fi
 fi
 
@@ -40,8 +78,7 @@ if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ]; then
     git -C "$PROJECT_PATH" fetch origin >/dev/null 2>&1 || true
     default_ref=$(git -C "$PROJECT_PATH" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo "refs/remotes/origin/main")
     if ! git -C "$PROJECT_PATH" merge-base --is-ancestor "$head_sha" "$default_ref" 2>/dev/null; then
-      echo "kingpin-done: HEAD $head_sha is not yet merged into $default_ref; refusing to tear down without --force" >&2
-      exit 1
+      refuse_cleanup "HEAD $head_sha is not yet merged into $default_ref; refusing to tear down without --force"
     fi
   fi
 fi
@@ -64,27 +101,7 @@ if [ -n "${BRANCH:-}" ]; then
 fi
 
 # 4. Release project landing lock and pop next task in queue
-project=${PROJECT:-default}
-lock_dir="$KP_HOME/projects"
-landing_lock="$lock_dir/$project.landing"
-queue_file="$lock_dir/$project.landing_queue"
+release_landing_lock_and_advance_queue
 
-if [ -f "$landing_lock" ]; then
-  holder=$(cat "$landing_lock" 2>/dev/null || true)
-  if [ "$holder" = "$id" ]; then
-    rm -f "$landing_lock"
-  fi
-fi
-
-next_task=""
-if [ -f "$queue_file" ] && [ -s "$queue_file" ]; then
-  next_task=$(head -n 1 "$queue_file")
-  sed -i '1d' "$queue_file"
-fi
-
+touch "$task_dir/done_cleaned"
 echo "OK: cleaned up task $id"
-
-if [ -n "$next_task" ]; then
-  echo "kingpin-done: triggering queued task $next_task for project $project"
-  "$KP_BIN/kingpin-land" "$next_task" || true
-fi
