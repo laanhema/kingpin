@@ -93,15 +93,30 @@ if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ]; then
   fi
 fi
 
+# The branch the worker actually used. task.env records kingpin/<id>, but a
+# worker can move to another branch, so the worktree's current branch wins. It
+# is read now, before the worktree is returned. A detached HEAD or a missing
+# worktree falls back to the recorded BRANCH.
+task_branch=${BRANCH:-}
+if [ -d "$WORKTREE" ]; then
+  current_branch=$(git -C "$WORKTREE" symbolic-ref --short -q HEAD 2>/dev/null || true)
+  [ -z "$current_branch" ] || task_branch=$current_branch
+fi
+
+# Set when the merge check below ran and passed: only then is the remote branch deleted.
+merge_verified=0
+default_ref=$(git -C "$PROJECT_PATH" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo "refs/remotes/origin/main")
+default_branch=${default_ref#refs/remotes/origin/}
+
 # Confirm commit is on origin default branch
 if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ]; then
   head_sha=$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || true)
   if [ -n "$head_sha" ]; then
     git -C "$PROJECT_PATH" fetch origin >/dev/null 2>&1 || true
-    default_ref=$(git -C "$PROJECT_PATH" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo "refs/remotes/origin/main")
     if ! git -C "$PROJECT_PATH" merge-base --is-ancestor "$head_sha" "$default_ref" 2>/dev/null; then
       refuse_cleanup "HEAD $head_sha is not yet merged into $default_ref; refusing to tear down without --force"
     fi
+    merge_verified=1
   fi
 fi
 
@@ -140,9 +155,20 @@ if [ -d "$WORKTREE" ]; then
   (cd "$PROJECT_PATH" && treehouse return "${ret_args[@]}" "$WORKTREE" >/dev/null 2>&1) || true
 fi
 
-# 3. Delete local branch
-if [ -n "${BRANCH:-}" ]; then
-  git -C "$PROJECT_PATH" branch -D "$BRANCH" >/dev/null 2>&1 || true
+# 3. Delete the local branches: the one the worker used, and the recorded one.
+# The default branch is never deleted.
+for b in "$task_branch" "${BRANCH:-}"; do
+  [ -n "$b" ] && [ "$b" != "$default_branch" ] || continue
+  git -C "$PROJECT_PATH" branch -D "$b" >/dev/null 2>&1 || true
+done
+
+# 3b. Delete the remote branch, only after the merge check passed. A branch that
+# is already gone from the remote, or a failed push, is not an error.
+if [ "$merge_verified" -eq 1 ] && [ -n "$task_branch" ] && [ "$task_branch" != "$default_branch" ]; then
+  if git -C "$PROJECT_PATH" ls-remote --exit-code --heads origin "$task_branch" >/dev/null 2>&1; then
+    git -C "$PROJECT_PATH" push origin --delete "$task_branch" >/dev/null 2>&1 \
+      || echo "kingpin-done: could not delete remote branch $task_branch" >&2
+  fi
 fi
 
 # 4. Release project landing lock and pop next task in queue
