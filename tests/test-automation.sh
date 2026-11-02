@@ -1279,6 +1279,85 @@ KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin-send" t15-legacy "legacy-ok" >/dev/null 
 ! tmux list-windows -a -F '#{window_id}' | grep -qx "$t15l_wid" && pass "t15: kingpin-done closed the legacy window" || fail "t15: kingpin-done left the legacy window alive"
 rm -rf "$KINGPIN_HOME/tasks/t15-move" "$KINGPIN_HOME/tasks/t15-gone" "$KINGPIN_HOME/tasks/t15-legacy"
 
+# Test 16: cleanup removes the branch the worker actually used, locally and on the remote
+echo "=== Test 16: branch cleanup (switched branch, remote deletion) ==="
+t16_remote="$T/t16-remote.git"
+t16_repo="$T/t16-repo"
+t16_stub="$T/t16-stub"
+mkdir -p "$t16_stub"
+git init --bare -q -b main "$t16_remote"
+git init -q -b main "$t16_repo"
+git -C "$t16_repo" config user.name Tester
+git -C "$t16_repo" config user.email test@example.com
+echo init > "$t16_repo/init.txt"
+git -C "$t16_repo" add init.txt
+git -C "$t16_repo" commit -qm init
+git -C "$t16_repo" remote add origin "$t16_remote"
+git -C "$t16_repo" push -q origin main
+git -C "$t16_repo" remote set-head origin main >/dev/null 2>&1
+# Stand-in for `treehouse return`: frees the slot by removing the worktree.
+cat > "$t16_stub/treehouse" << 'EOF16'
+#!/usr/bin/env bash
+wt=${!#}
+git worktree remove --force "$wt"
+EOF16
+chmod +x "$t16_stub/treehouse"
+
+t16_make_task() {
+  local id=$1 recorded=$2 actual=$3 merged=$4
+  local wt="$T/t16-wt-$id"
+  git -C "$t16_repo" fetch -q origin
+  git -C "$t16_repo" merge -q --ff-only origin/main
+  git -C "$t16_repo" branch "$recorded" main
+  git -C "$t16_repo" worktree add -q "$wt" "$recorded"
+  git -C "$wt" config user.name Tester
+  git -C "$wt" config user.email test@example.com
+  if [ "$actual" != "$recorded" ]; then git -C "$wt" checkout -qb "$actual"; fi
+  echo "$id" > "$wt/$id.txt"
+  git -C "$wt" add "$id.txt"
+  git -C "$wt" commit -qm "work $id"
+  git -C "$wt" push -q origin "$actual"
+  if [ "$merged" = yes ]; then
+    git -C "$t16_repo" fetch -q origin
+    git -C "$t16_repo" push -q origin "refs/remotes/origin/$actual:refs/heads/main"
+  fi
+  mkdir -p "$KINGPIN_HOME/tasks/$id"
+  cat > "$KINGPIN_HOME/tasks/$id/task.env" << EOF16T
+TASK_ID=$id
+PROJECT=demo-t16
+PROJECT_PATH=$t16_repo
+WORKTREE=$wt
+BRANCH=$recorded
+TMUX_TARGET=kingpin:$id
+EOF16T
+  echo "merged: pr=x" > "$KINGPIN_HOME/tasks/$id/status"
+}
+t16_local() { git -C "$t16_repo" show-ref --verify --quiet "refs/heads/$1"; }
+t16_remote_has() { git -C "$t16_repo" ls-remote --exit-code --heads origin "$1" >/dev/null 2>&1; }
+
+# The worker moved off kingpin/<id> to another branch, and its work is merged
+t16_make_task t16-switch kingpin/t16-switch feature/t16-switch yes
+PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t16-switch >/dev/null 2>&1 && pass "t16: cleanup of a task on a switched branch succeeds" || fail "t16: cleanup of a switched branch failed"
+! t16_local feature/t16-switch && pass "t16: local branch the worker used is deleted" || fail "t16: switched local branch survived cleanup"
+! t16_local kingpin/t16-switch && pass "t16: recorded local branch is deleted" || fail "t16: recorded local branch survived cleanup"
+! t16_remote_has feature/t16-switch && pass "t16: remote branch is deleted after the merge check passes" || fail "t16: remote branch survived cleanup"
+t16_local main && t16_remote_has main && pass "t16: default branch is untouched" || fail "t16: default branch was removed"
+
+# A branch that is already gone from the remote is not an error
+t16_make_task t16-gone kingpin/t16-gone kingpin/t16-gone yes
+git -C "$t16_repo" push -q origin --delete kingpin/t16-gone
+PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t16-gone >/dev/null 2>&1 && pass "t16: missing remote branch is not an error" || fail "t16: cleanup failed on a missing remote branch"
+[ -f "$KINGPIN_HOME/archive/t16-gone/done_cleaned" ] && pass "t16: task archived despite the missing remote branch" || fail "t16: task not archived"
+
+# Unmerged work: cleanup is refused and nothing is deleted
+t16_make_task t16-unmerged kingpin/t16-unmerged feature/t16-unmerged no
+PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t16-unmerged >/dev/null 2>&1 && fail "t16: unmerged cleanup was not refused" || pass "t16: unmerged cleanup is refused"
+t16_local feature/t16-unmerged && t16_remote_has feature/t16-unmerged && pass "t16: nothing deleted when the merge check fails" || fail "t16: branch deleted despite the refused cleanup"
+
+# --force skips the merge check, so the remote branch stays
+PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t16-unmerged --force >/dev/null 2>&1 || true
+t16_remote_has feature/t16-unmerged && pass "t16: --force leaves the unverified remote branch alone" || fail "t16: --force deleted the remote branch"
+
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"
 else
