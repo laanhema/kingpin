@@ -85,10 +85,10 @@ kingpin watch
 | `kingpin watch` | `kingpin watch [--once] [--interval <sec>]` | Continuous supervision and auto-landing loop. |
 | `kingpin spawn` | `kingpin spawn <proj> (--issue <n> \| --text <req>) [--harness <name>]` | Starts a worker on a background tmux window. |
 | `kingpin board` | `kingpin board [--out <path>]` | Renders the live fleet status HTML board. |
-| `kingpin list` | `kingpin list` | Displays active fleet tasks and states in the terminal. |
+| `kingpin list` | `kingpin list [--all]` | Displays active fleet tasks and states in the terminal; `--all` also shows finished (archived) tasks. |
 | `kingpin send` | `kingpin send <task-id> "<keys>"` | Sends input or answers to a worker window. |
 | `kingpin land` | `kingpin land <task-id>` | Serializes project landing and triggers merge. |
-| `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, and advances queue. |
+| `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, advances the queue, and archives the task record to `~/.kingpin/archive/<task-id>`. Refuses, even with `--force`, when another unfinished task records the same worktree. |
 | `kingpin lock` | `kingpin lock check` | Enforces single active orchestrator session. |
 | `kingpin curate` | `kingpin curate` | Aggregates critique files from finished worker tasks. |
 
@@ -107,6 +107,8 @@ kingpin list
 ```
 
 When a task finishes in `review` mode, `kingpin list` displays its review dossier link directly below the task row.
+
+Finished tasks are archived by `kingpin done` and hidden from `kingpin list`; run `kingpin list --all` to include them. `kingpin curate` still collects skill critiques from archived tasks.
 
 ### 2. Task Review Dossiers (`lavish-axi`)
 

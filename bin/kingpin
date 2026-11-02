@@ -13,7 +13,7 @@
 #   kingpin listen <task-id> [--once] [--background]
 #   kingpin wait [--timeout <seconds>] [--once]
 #   kingpin ack <task-id>... | --all
-#   kingpin list
+#   kingpin list [--all]
 #   kingpin lock [check|acquire|release]
 #   kingpin curate
 set -euo pipefail
@@ -39,7 +39,7 @@ Commands:
   listen    Maintain background Lavish listener and handle review actions
   wait      Wait for fleet task events (blocking or --once)
   ack       Acknowledge task events to advance seen counters
-  list      Display active tasks and fleet state in the terminal
+  list      Display active tasks in the terminal (--all adds finished ones)
   lock      Check, acquire, or release the orchestrator session lock
   curate    Aggregate critique logs from finished workers
 
@@ -90,15 +90,22 @@ case "$cmd" in
     exec "$KP_BIN/kingpin-listen" "$@"
     ;;
   list|status)
-    tasks_dir="$KP_HOME/tasks"
-    if [ ! -d "$tasks_dir" ] || [ -z "$(ls -A "$tasks_dir" 2>/dev/null)" ]; then
-      echo "No tasks in fleet."
-      exit 0
-    fi
-    printf "%-22s %-10s %-8s %-12s %s\n" "TASK ID" "PROJECT" "HARNESS" "MODE" "LAST STATUS"
-    printf "%-22s %-10s %-8s %-12s %s\n" "-------" "-------" "-------" "----" "-----------"
-    for d in "$tasks_dir"/*; do
-      [ -d "$d" ] || continue
+    show_all=0
+    for arg in "$@"; do
+      case "$arg" in
+        --all|-a) show_all=1 ;;
+        -h|--help)
+          echo "usage: kingpin list [--all]"
+          echo "  Lists live fleet tasks; --all also shows finished (archived) tasks."
+          exit 0
+          ;;
+        *) echo "kingpin list: unknown argument '$arg'" >&2; exit 2 ;;
+      esac
+    done
+
+    print_task_row() {
+      local d=$1 suffix=${2:-}
+      local tid env_file proj harness mode status_file st listen_info lpid
       tid=$(basename "$d")
       env_file="$d/task.env"
       proj="-" harness="claude" mode="review"
@@ -115,8 +122,8 @@ case "$cmd" in
       if [ -f "$status_file" ] && [ -s "$status_file" ]; then
         st=$(tail -n 1 "$status_file")
       fi
-      printf "%-22s %-10s %-8s %-12s %s\n" "$tid" "$proj" "$harness" "$mode" "$st"
-      if [ -f "$d/report.html" ]; then
+      printf "%-22s %-10s %-8s %-12s %s%s\n" "$tid" "$proj" "$harness" "$mode" "$st" "$suffix"
+      if [ -z "$suffix" ] && [ -f "$d/report.html" ]; then
         listen_info=""
         if [ -f "$d/listener.pid" ]; then
           lpid=$(cat "$d/listener.pid" 2>/dev/null || true)
@@ -126,6 +133,36 @@ case "$cmd" in
         fi
         printf "  %-20s %s%s\n" "↳ Review:" "lavish-axi $d/report.html" "$listen_info"
       fi
+    }
+
+    # Live tasks: finished ones (cleanup done) are hidden unless --all.
+    live_dirs=()
+    for d in "$KP_HOME/tasks"/*; do
+      [ -d "$d" ] || continue
+      if [ "$show_all" -eq 0 ] && [ -f "$d/done_cleaned" ]; then continue; fi
+      live_dirs+=("$d")
+    done
+    archived_dirs=()
+    if [ "$show_all" -eq 1 ]; then
+      for d in "$KP_HOME/archive"/*; do
+        [ -d "$d" ] || continue
+        archived_dirs+=("$d")
+      done
+    fi
+
+    if [ ${#live_dirs[@]} -eq 0 ] && [ ${#archived_dirs[@]} -eq 0 ]; then
+      echo "No tasks in fleet."
+      exit 0
+    fi
+    printf "%-22s %-10s %-8s %-12s %s\n" "TASK ID" "PROJECT" "HARNESS" "MODE" "LAST STATUS"
+    printf "%-22s %-10s %-8s %-12s %s\n" "-------" "-------" "-------" "----" "-----------"
+    for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
+      suffix=""
+      [ -f "$d/done_cleaned" ] && suffix=" (finished)"
+      print_task_row "$d" "$suffix"
+    done
+    for d in ${archived_dirs[@]+"${archived_dirs[@]}"}; do
+      print_task_row "$d" " (archived)"
     done
     ;;
   run)
@@ -145,6 +182,14 @@ case "$cmd" in
       # Step supervision loop
       "$KP_BIN/kingpin-watch" --once >/dev/null 2>&1 || true
 
+      # kingpin-watch may already have cleaned up and archived the task. The
+      # directory is the signal: an archive of an earlier task with the same id
+      # must not count.
+      if [ ! -d "$task_dir" ]; then
+        echo "OK: $task_id merged and cleaned up successfully."
+        exit 0
+      fi
+
       status_file="$task_dir/status"
       last_st=""
       [ -f "$status_file" ] && last_st=$(tail -n 1 "$status_file" 2>/dev/null || true)
@@ -152,8 +197,12 @@ case "$cmd" in
       case "$last_st" in
         merged:*)
           # Ensure cleanup ran
-          [ -f "$task_dir/done_cleaned" ] || "$KP_BIN/kingpin-done" "$task_id" >/dev/null 2>&1 || true
-          if [ -f "$task_dir/done_cleaned" ]; then
+          # kingpin-done archives the task dir: a cleaned-up task is one whose
+          # dir is gone from tasks/ (or still carries the marker).
+          if [ -d "$task_dir" ] && [ ! -f "$task_dir/done_cleaned" ]; then
+            "$KP_BIN/kingpin-done" "$task_id" >/dev/null 2>&1 || true
+          fi
+          if [ ! -d "$task_dir" ] || [ -f "$task_dir/done_cleaned" ]; then
             echo "OK: $task_id merged and cleaned up successfully."
             exit 0
           fi

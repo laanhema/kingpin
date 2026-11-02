@@ -120,7 +120,7 @@ wt_path=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/task-auto-1/task.env")
 # Run one step of kingpin-watch (should detect merged status, trigger kingpin-done)
 echo "merged: pr=https://github.com/laanhema/demo/pull/201" >> "$KINGPIN_HOME/tasks/task-auto-1/status"
 "$KP_BIN/kingpin" watch --once >/dev/null
-[ -f "$KINGPIN_HOME/tasks/task-auto-1/done_cleaned" ] && pass "kingpin-watch completed auto-cleanup" || fail "auto-cleanup not triggered"
+[ -f "$KINGPIN_HOME/archive/task-auto-1/done_cleaned" ] && [ ! -d "$KINGPIN_HOME/tasks/task-auto-1" ] && pass "kingpin-watch completed auto-cleanup and archived the task" || fail "auto-cleanup not triggered"
 
 # Test 4: kingpin run one-command lifecycle
 echo "=== Test 4: kingpin run one-command lifecycle ==="
@@ -615,7 +615,7 @@ rm -f "$KINGPIN_HOME/projects/demo-t10.landing_queue"
 # Assert automatic retry: once the cause clears, kingpin-watch completes the cleanup
 rm -f "$t10_wt1/uncommitted.txt"
 "$KP_BIN/kingpin" watch --once >/dev/null 2>&1 || true
-[ -f "$t10_dir1/done_cleaned" ] && pass "kingpin-watch retried the refused cleanup and wrote done_cleaned" || fail "refused cleanup was not retried by kingpin-watch"
+[ -f "$KINGPIN_HOME/archive/t10-dirty/done_cleaned" ] && pass "kingpin-watch retried the refused cleanup and archived the task with done_cleaned" || fail "refused cleanup was not retried by kingpin-watch"
 [ "$(cat "$KINGPIN_HOME/projects/demo-t10.landing")" = "t10-queued" ] && pass "retried cleanup left the new lock holder alone" || fail "retried cleanup disturbed the landing lock"
 
 # Assert kingpin-land treats a lock holder in a terminal status as free
@@ -649,20 +649,24 @@ rm -rf "$t10_dir3" "$t10_hold"
 # 5. Force cleanup of a dirty worktree succeeds and touches done_cleaned
 t10_dir4="$KINGPIN_HOME/tasks/t10-force"
 mkdir -p "$t10_dir4"
+# Its own worktree: t10-queued still holds wt2 and the slot guard protects it
+t10_wt3="$T/wt-t10-3"
+mkdir -p "$t10_wt3"
+git -C "$t10_wt3" init -q
 cat > "$t10_dir4/task.env" << EOF2
 TASK_ID=t10-force
 PROJECT=demo-t10
 PROJECT_PATH=$t10_wt1
-WORKTREE=$t10_wt2
+WORKTREE=$t10_wt3
 TMUX_TARGET=kingpin:t10-force
 EOF2
 echo "merged: pr=x" > "$t10_dir4/status"
-echo "dirty" > "$t10_wt2/uncommitted.txt"
+echo "dirty" > "$t10_wt3/uncommitted.txt"
 "$KP_BIN/kingpin-done" t10-force >/dev/null 2>&1 && fail "dirty cleanup was not refused" || pass "dirty cleanup refused without --force"
 [ ! -f "$t10_dir4/done_cleaned" ] && pass "no done_cleaned after refusal without --force" || fail "done_cleaned written despite refusal"
 "$KP_BIN/kingpin" done t10-force --force >/dev/null
-[ -f "$t10_dir4/done_cleaned" ] && pass "kingpin-done --force created done_cleaned" || fail "done_cleaned missing after force cleanup"
-rm -rf "$t10_dir4"
+[ -f "$KINGPIN_HOME/archive/t10-force/done_cleaned" ] && pass "kingpin-done --force created done_cleaned and archived the task" || fail "done_cleaned missing in archive after force cleanup"
+rm -rf "$t10_dir4" "$KINGPIN_HOME/archive/t10-force" "$KINGPIN_HOME/archive/t10-dirty" "$t10_wt3"
 
 tmux kill-window -t kingpin:t10-dirty 2>/dev/null || true
 tmux kill-window -t kingpin:t10-queued 2>/dev/null || true
@@ -707,7 +711,7 @@ TASK_ID=task-lavish-1
 PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
-WORKTREE=$T/proj
+WORKTREE=$T/wt-lavish-1
 ISSUE=401
 TMUX_TARGET=kingpin:task-lavish-1
 EOF
@@ -916,7 +920,7 @@ echo "$watch_fb" | grep -q "received review feedback" && pass "kingpin-watch rep
 [ -f "$t11_task/listener.pid" ] && pass "task-lavish-1 listener.pid present before done" || fail "listener.pid missing before done"
 "$KP_BIN/kingpin" done task-lavish-1 --force >/dev/null
 
-[ ! -f "$t11_task/listener.pid" ] && pass "listener.pid removed by kingpin-done" || fail "listener.pid still present after done"
+[ ! -f "$t11_task/listener.pid" ] && [ ! -f "$KINGPIN_HOME/archive/task-lavish-1/listener.pid" ] && pass "listener.pid removed by kingpin-done" || fail "listener.pid still present after done"
 kill -0 "$lpid" 2>/dev/null && fail "listener was not killed" || pass "listener process killed by kingpin-done"
 grep -q "end $t11_task/report.html" "$T/mock-lavish.log" && pass "mock-lavish end invoked by kingpin-done" || fail "mock-lavish end missing"
 
@@ -927,6 +931,72 @@ rm -rf "$t11_task" "$t11_task2"
 rm -f "$KINGPIN_HOME/projects/demo-auto.landing" "$KINGPIN_HOME/projects/demo-auto.landing_queue"
 unset KINGPIN_LAVISH
 
+# Test 12: archive finished tasks, hide them from list, and guard shared worktree slots
+echo "=== Test 12: archive finished tasks and slot guard ==="
+t12_repo="$T/t12-repo"
+mkdir -p "$t12_repo"
+git -C "$t12_repo" init -q
+t12_slot_a="$T/t12-slot-a"
+t12_slot_b="$T/t12-slot-b"
+mkdir -p "$t12_slot_a" "$t12_slot_b"
+git -C "$t12_slot_a" init -q
+git -C "$t12_slot_b" init -q
+
+t12_make_task() {
+  local id=$1 worktree=$2 last_status=$3
+  mkdir -p "$KINGPIN_HOME/tasks/$id"
+  cat > "$KINGPIN_HOME/tasks/$id/task.env" << EOF12
+TASK_ID=$id
+PROJECT=demo-t12
+PROJECT_PATH=$t12_repo
+WORKTREE=$worktree
+TMUX_TARGET=kingpin:$id
+EOF12
+  echo "$last_status" > "$KINGPIN_HOME/tasks/$id/status"
+}
+
+# 12.1 A successful cleanup moves the task dir from tasks/ to archive/
+t12_make_task t12-merged "$t12_slot_a" "merged: pr=x"
+echo "critique from archived task" > "$KINGPIN_HOME/tasks/t12-merged/critique"
+"$KP_BIN/kingpin-done" t12-merged --force >/dev/null
+[ ! -d "$KINGPIN_HOME/tasks/t12-merged" ] && [ -f "$KINGPIN_HOME/archive/t12-merged/task.env" ] && [ -f "$KINGPIN_HOME/archive/t12-merged/done_cleaned" ] && pass "kingpin-done moved the task dir into the archive" || fail "task dir not archived"
+
+# 12.2 list hides finished tasks by default; --all shows them
+t12_make_task t12-live "$t12_slot_b" "ready: branch=b review=APPROVE report=none"
+list_out=$("$KP_BIN/kingpin" list)
+echo "$list_out" | grep -q "t12-live" && ! echo "$list_out" | grep -q "t12-merged" && pass "list shows the live task and hides the merged one" || fail "list output wrong: $list_out"
+list_all=$("$KP_BIN/kingpin" list --all)
+echo "$list_all" | grep -q "t12-live" && echo "$list_all" | grep -q "t12-merged.*(archived)" && pass "list --all shows live and archived tasks" || fail "list --all output wrong: $list_all"
+"$KP_BIN/kingpin" list --bogus >/dev/null 2>&1 && fail "list accepted an unknown flag" || pass "list rejects an unknown flag"
+
+# 12.3 Archived critiques are still collected by curate
+export KINGPIN_SKILLS_DIR=$T/skills
+mkdir -p "$T/skills"
+t12_curate=$("$KP_BIN/kingpin" curate --dry-run)
+echo "$t12_curate" | grep -q "critique from archived task" && pass "curate collects the critique of an archived task" || fail "curate missed the archived critique: $t12_curate"
+
+# 12.4 Cleanup is idempotent for an archived task
+"$KP_BIN/kingpin-done" t12-merged >/dev/null 2>&1 && pass "kingpin-done on an archived task is a no-op" || fail "kingpin-done failed on an archived task"
+
+# 12.5 Slot guard: refuse, even with --force, while another unfinished task holds the worktree
+t12_make_task t12-old "$t12_slot_b" "merged: pr=y"
+"$KP_BIN/kingpin-done" t12-old --force >/dev/null 2>&1 && fail "cleanup released a slot held by an unfinished task" || pass "kingpin-done --force refused a slot held by an unfinished task"
+[ -d "$KINGPIN_HOME/tasks/t12-old" ] && [ ! -d "$KINGPIN_HOME/archive/t12-old" ] && pass "refused cleanup left the record in place" || fail "refused cleanup moved the record"
+grep -q "^cleanup-refused: .*t12-live" "$KINGPIN_HOME/tasks/t12-old/status" && pass "refusal names the holding task" || fail "refusal reason missing"
+[ -d "$t12_slot_b" ] && pass "held worktree still exists" || fail "held worktree was removed"
+# Once the holder is finished the slot is no longer guarded
+echo "merged: pr=z" >> "$KINGPIN_HOME/tasks/t12-live/status"
+"$KP_BIN/kingpin-done" t12-old --force >/dev/null 2>&1 && [ -d "$KINGPIN_HOME/archive/t12-old" ] && pass "cleanup proceeds once the other task is finished" || fail "cleanup still refused after the holder finished"
+
+# 12.6 A reused task id is archived beside the earlier record instead of overwriting it
+mkdir -p "$KINGPIN_HOME/archive/t12-reuse"
+echo "earlier" > "$KINGPIN_HOME/archive/t12-reuse/marker"
+t12_make_task t12-reuse "$t12_slot_a" "merged: pr=r"
+"$KP_BIN/kingpin-done" t12-reuse --force >/dev/null 2>&1
+[ ! -d "$KINGPIN_HOME/tasks/t12-reuse" ] && [ -f "$KINGPIN_HOME/archive/t12-reuse/marker" ] && [ -f "$KINGPIN_HOME/archive/t12-reuse.2/done_cleaned" ] && pass "reused task id archived beside the earlier record" || fail "reused task id was not archived safely"
+
+rm -rf "$KINGPIN_HOME/archive/t12-reuse" "$KINGPIN_HOME/archive/t12-reuse.2" "$KINGPIN_HOME/tasks/t12-live" "$KINGPIN_HOME/archive/t12-merged" "$KINGPIN_HOME/archive/t12-old" "$t12_repo" "$t12_slot_a" "$t12_slot_b"
+unset KINGPIN_SKILLS_DIR
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"
