@@ -141,8 +141,14 @@ case "$cmd" in
         merged:*)
           # Ensure cleanup ran
           [ -f "$task_dir/done_cleaned" ] || "$KP_BIN/kingpin-done" "$task_id" >/dev/null 2>&1 || true
-          echo "OK: $task_id merged and cleaned up successfully."
-          exit 0
+          if [ -f "$task_dir/done_cleaned" ]; then
+            echo "OK: $task_id merged and cleaned up successfully."
+            exit 0
+          fi
+          ;;
+        cleanup-refused:*)
+          echo "kingpin run: $task_id cleanup was refused: ${last_st#cleanup-refused: }" >&2
+          exit 1
           ;;
         ready:*)
           if [ "$mode" = "auto" ]; then
