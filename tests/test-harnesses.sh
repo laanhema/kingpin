@@ -2,6 +2,8 @@
 # Verification test for Kingpin multi-harness support (claude, agy, opencode).
 set -euo pipefail
 
+unset TMUX
+
 T=$(mktemp -d)
 export KINGPIN_HOME=$T/kp
 export TREEHOUSE_ROOT=$T/pool
@@ -16,7 +18,7 @@ pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAILED=1; }
 FAILED=0
 
-KP_ROOT="/home/lauri/github/kingpin"
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_BIN="$KP_ROOT/bin"
 
 # Ensure kingpin tmux session exists and has only home window
