@@ -59,6 +59,9 @@ echo "=== Test 1: Claude Spawn ==="
 [ -f "$KINGPIN_HOME/tasks/task-claude/task.env" ] && pass "task-claude task.env created" || fail "missing task.env"
 grep -q "^HARNESS=claude$" "$KINGPIN_HOME/tasks/task-claude/task.env" && pass "task-claude recorded HARNESS=claude" || fail "wrong harness in task.env"
 grep -q -- "--append-system-prompt-file" "$KINGPIN_HOME/tasks/task-claude/launch.sh" && pass "task-claude launch script has append-system-prompt-file" || fail "wrong launch script"
+grep -q "background code worker" "$KINGPIN_HOME/tasks/task-claude/preamble.md" && pass "claude preamble instructs background worker role" || fail "missing worker role in claude preamble"
+grep -q "AGENTS.md" "$KINGPIN_HOME/tasks/task-claude/preamble.md" && pass "claude preamble instructs to ignore AGENTS.md" || fail "missing AGENTS.md instruction in claude preamble"
+! grep -q "{{WORKTREE}}" "$KINGPIN_HOME/tasks/task-claude/preamble.md" && pass "claude preamble substituted WORKTREE" || fail "unsubstituted WORKTREE in claude preamble"
 
 wt_claude=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/task-claude/task.env")
 wt_claude_real=$(realpath "$wt_claude")
@@ -72,6 +75,12 @@ process.exit(1);
 
 # Test 2: AGY spawn
 echo "=== Test 2: AGY Spawn ==="
+# Seed legacy broad exclusions in repo info/exclude to verify migration
+proj_excl=$(git -C "$T/proj" rev-parse --git-path info/exclude)
+case "$proj_excl" in /*) ;; *) proj_excl="$T/proj/$proj_excl" ;; esac
+mkdir -p "$(dirname "$proj_excl")"
+printf '.agents\n.opencode\n' >> "$proj_excl"
+
 "$KP_BIN/kingpin-spawn" demo --issue 102 --id task-agy --harness agy >/dev/null
 [ -f "$KINGPIN_HOME/tasks/task-agy/task.env" ] && pass "task-agy task.env created" || fail "missing task.env"
 grep -q "^HARNESS=agy$" "$KINGPIN_HOME/tasks/task-agy/task.env" && pass "task-agy recorded HARNESS=agy" || fail "wrong harness in task.env"
@@ -92,14 +101,26 @@ process.exit(1);
 
 # Verify AGY rules & hooks in worktree
 [ -f "$wt_agy/.agents/rules/kingpin.md" ] && pass "agy rules/kingpin.md written in worktree" || fail "missing agy rules"
+grep -q "background code worker" "$wt_agy/.agents/rules/kingpin.md" && pass "agy rules instruct background worker role" || fail "missing worker role in agy rules"
+grep -q "AGENTS.md" "$wt_agy/.agents/rules/kingpin.md" && pass "agy rules instruct to ignore AGENTS.md" || fail "missing AGENTS.md instruction in agy rules"
+! grep -q "{{WORKTREE}}" "$wt_agy/.agents/rules/kingpin.md" && pass "agy rules substituted WORKTREE" || fail "unsubstituted WORKTREE in agy rules"
 [ -f "$wt_agy/.agents/hooks.json" ] && pass "agy hooks.json written in worktree" || fail "missing agy hooks"
 grep -q "KINGPIN_TASK_DIR/stopped" "$wt_agy/.agents/hooks.json" && pass "agy hook command writes to stopped file" || fail "wrong agy hook"
-# Verify .agents excluded from git
+# Verify specific agy files excluded from git, broad .agents migrated
 git_excl=$(git -C "$wt_agy" rev-parse --git-path info/exclude)
 case "$git_excl" in /*) ;; *) git_excl="$wt_agy/$git_excl" ;; esac
-grep -q "^\.agents$" "$git_excl" && pass ".agents added to git info/exclude" || fail ".agents not excluded"
+grep -q "^\.agents/rules/kingpin\.md$" "$git_excl" && pass "rules/kingpin.md added to git info/exclude" || fail "rules/kingpin.md not excluded"
+grep -q "^\.agents/hooks\.json$" "$git_excl" && pass "hooks.json added to git info/exclude" || fail "hooks.json not excluded"
+! grep -qE '^/?\.agents/?$' "$git_excl" && pass "broad .agents not in git info/exclude" || fail "broad .agents still in info/exclude"
 status_out=$(git -C "$wt_agy" status --porcelain)
 [ -z "$status_out" ] && pass "git status in agy worktree is clean" || fail "git status dirty: $status_out"
+
+# Verify new files in .agents/ show up in git status
+mkdir -p "$wt_agy/.agents/reviews"
+touch "$wt_agy/.agents/reviews/x.md"
+status_out=$(git -C "$wt_agy" status --porcelain -u)
+echo "$status_out" | grep -q "\.agents/reviews/x\.md" && pass "new .agents/reviews/x.md shows in git status" || fail "new .agents file hidden from git status"
+rm -f "$wt_agy/.agents/reviews/x.md"
 
 # Test 3: OpenCode spawn
 echo "=== Test 3: OpenCode Spawn ==="
@@ -114,14 +135,26 @@ wt_oc=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/task-opencode/task.env")
 # Verify OpenCode config & plugins in worktree
 [ -f "$wt_oc/.opencode/config.json" ] && pass "opencode config.json written" || fail "missing config.json"
 grep -q "preamble.md" "$wt_oc/.opencode/config.json" && pass "opencode config references preamble.md in instructions" || fail "missing instructions"
+grep -q "background code worker" "$KINGPIN_HOME/tasks/task-opencode/preamble.md" && pass "opencode preamble instructs background worker role" || fail "missing worker role in opencode preamble"
+grep -q "AGENTS.md" "$KINGPIN_HOME/tasks/task-opencode/preamble.md" && pass "opencode preamble instructs to ignore AGENTS.md" || fail "missing AGENTS.md instruction in opencode preamble"
+! grep -q "{{WORKTREE}}" "$KINGPIN_HOME/tasks/task-opencode/preamble.md" && pass "opencode preamble substituted WORKTREE" || fail "unsubstituted WORKTREE in opencode preamble"
 [ -f "$wt_oc/.opencode/plugins/kingpin-stop.js" ] && pass "opencode kingpin-stop.js plugin written" || fail "missing plugin"
 [ -f "$wt_oc/.opencode/plugins/package.json" ] && pass "opencode plugin package.json written" || fail "missing plugin package.json"
-# Verify .opencode excluded from git
+# Verify .opencode specific files excluded from git, broad .opencode migrated
 git_excl=$(git -C "$wt_oc" rev-parse --git-path info/exclude)
 case "$git_excl" in /*) ;; *) git_excl="$wt_oc/$git_excl" ;; esac
-grep -q "^\.opencode$" "$git_excl" && pass ".opencode added to git info/exclude" || fail ".opencode not excluded"
+grep -q "^\.opencode/config\.json$" "$git_excl" && pass "opencode config.json added to git info/exclude" || fail "config.json not excluded"
+grep -q "^\.opencode/plugins/package\.json$" "$git_excl" && pass "opencode plugin package.json added to git info/exclude" || fail "plugin package.json not excluded"
+grep -q "^\.opencode/plugins/kingpin-stop\.js$" "$git_excl" && pass "opencode kingpin-stop.js added to git info/exclude" || fail "plugin kingpin-stop.js not excluded"
+! grep -qE '^/?\.opencode/?$' "$git_excl" && pass "broad .opencode not in git info/exclude" || fail "broad .opencode still in info/exclude"
 status_out=$(git -C "$wt_oc" status --porcelain)
 [ -z "$status_out" ] && pass "git status in opencode worktree is clean" || fail "git status dirty: $status_out"
+
+# Verify new files in .opencode/ show up in git status
+touch "$wt_oc/.opencode/notes.txt"
+status_out=$(git -C "$wt_oc" status --porcelain -u)
+echo "$status_out" | grep -q "\.opencode/notes\.txt" && pass "new .opencode/notes.txt shows in git status" || fail "new .opencode file hidden from git status"
+rm -f "$wt_oc/.opencode/notes.txt"
 
 # Test 4: Project-default harness configuration
 echo "=== Test 4: Project Default Harness ==="
@@ -156,6 +189,13 @@ echo "=== Test 6: Board Harness Badges ==="
 grep -q '<span class="badge badge-sm badge-outline">claude</span>' "$T/board.html" && pass "board renders claude badge" || fail "claude badge missing"
 grep -q '<span class="badge badge-sm badge-outline">agy</span>' "$T/board.html" && pass "board renders agy badge" || fail "agy badge missing"
 grep -q '<span class="badge badge-sm badge-outline">opencode</span>' "$T/board.html" && pass "board renders opencode badge" || fail "opencode badge missing"
+
+# Test 7: Scope guard in AGENTS.md and role separation
+echo "=== Test 7: AGENTS.md Scope Guard & Role Separation ==="
+grep -qi "scope guard" "$KP_ROOT/AGENTS.md" && pass "AGENTS.md contains scope guard" || fail "missing scope guard in AGENTS.md"
+grep -qi "leased worktree" "$KP_ROOT/AGENTS.md" && pass "AGENTS.md scope guard exempts leased worktrees" || fail "missing leased worktree exemption in AGENTS.md"
+grep -qi "background code worker" "$KP_ROOT/worker/preamble.md" && pass "worker preamble declares background code worker role" || fail "missing background code worker in preamble"
+grep -qi "AGENTS.md" "$KP_ROOT/worker/preamble.md" && pass "worker preamble overrides AGENTS.md" || fail "preamble does not override AGENTS.md"
 
 for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
   tmux kill-window -t "$w" 2>/dev/null || true
