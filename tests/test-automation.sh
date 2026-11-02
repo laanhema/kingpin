@@ -251,6 +251,143 @@ seen_val_all=$(cat "$task_w_dir/seen" 2>/dev/null | tr -d ' ' || echo 0)
 
 rm -rf "$task_w_dir"
 
+# Test 7: Landing review gate verdict parsing, fix-findings, and re-review
+echo "=== Test 7: Landing review gate verdict parsing, fix-findings, and re-review ==="
+
+# 1. Regex parsing unit tests
+check_parse() {
+  local last_status="$1"
+  local exp_v="$2"
+  local exp_r="$3"
+  local verdict="" report=""
+  if [[ $last_status =~ review=(.*)[[:space:]]+report=([^[:space:]]*) ]]; then
+    verdict="${BASH_REMATCH[1]}"
+    report="${BASH_REMATCH[2]}"
+  elif [[ $last_status =~ review=([^ ]+( [^ ]+)*) ]]; then
+    verdict="${BASH_REMATCH[1]}"
+  fi
+  if [ -z "$report" ] && [[ $last_status =~ report=([^[:space:]]+) ]]; then
+    report="${BASH_REMATCH[1]}"
+  fi
+  verdict=$(echo "$verdict" | sed -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//")
+  report=$(echo "$report" | sed -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//")
+  [ "$verdict" = "$exp_v" ] && [ "$report" = "$exp_r" ]
+}
+
+check_parse "ready: branch=b review=APPROVE report=none" "APPROVE" "none" && pass "parsed APPROVE report=none" || fail "failed parse APPROVE"
+check_parse "ready: branch=b review=APPROVE WITH NITS report=.agents/reviews/r1.md" "APPROVE WITH NITS" ".agents/reviews/r1.md" && pass "parsed APPROVE WITH NITS" || fail "failed parse APPROVE WITH NITS"
+check_parse "ready: branch=b review=NEEDS CHANGES report=r2.md" "NEEDS CHANGES" "r2.md" && pass "parsed NEEDS CHANGES" || fail "failed parse NEEDS CHANGES"
+
+# 2. APPROVE WITH NITS and NEEDS CHANGES report path resolution & /fix-findings dispatch
+t7_dir="$KINGPIN_HOME/tasks/t7-nits"
+mkdir -p "$t7_dir"
+tmux new-window -d -t kingpin: -n t7-nits cat
+cat > "$t7_dir/task.env" << EOF
+TASK_ID=t7-nits
+PROJECT=demo-auto
+MODE=review
+WORKTREE=$T/proj
+ISSUE=301
+TMUX_TARGET=kingpin:t7-nits
+EOF
+echo "ready: branch=b review=APPROVE WITH NITS report=.agents/reviews/r1.md" > "$t7_dir/status"
+
+"$KP_BIN/kingpin" land t7-nits >/dev/null
+[ -f "$t7_dir/landing_in_progress" ] && pass "landing_in_progress set on APPROVE WITH NITS" || fail "landing_in_progress missing"
+[ ! -f "$KINGPIN_HOME/projects/demo-auto.landing" ] && pass "landing lock not acquired during fix pass" || fail "landing lock prematurely acquired"
+sleep 0.1
+pane_out=$(tmux capture-pane -pt kingpin:t7-nits -S -5)
+echo "$pane_out" | grep -q "/fix-findings $T/proj/.agents/reviews/r1.md" && pass "resolved report path sent to /fix-findings" || fail "wrong fix-findings command: $pane_out"
+
+# 3. fixed: high > 0 triggers /review dispatch
+echo "fixed: high=1 report=.agents/reviews/r1.md" >> "$t7_dir/status"
+"$KP_BIN/kingpin" land t7-nits >/dev/null
+sleep 0.1
+pane_out=$(tmux capture-pane -pt kingpin:t7-nits -S -5)
+echo "$pane_out" | grep -q "/review --issue 301" && pass "/review --issue dispatched on high > 0" || fail "wrong review command: $pane_out"
+[ ! -f "$KINGPIN_HOME/projects/demo-auto.landing" ] && pass "landing lock not acquired during re-review" || fail "landing lock prematurely acquired on re-review"
+
+# Re-review without issue
+t7_noissue="$KINGPIN_HOME/tasks/t7-noissue"
+mkdir -p "$t7_noissue"
+tmux new-window -d -t kingpin: -n t7-noissue cat
+cat > "$t7_noissue/task.env" << EOF
+TASK_ID=t7-noissue
+PROJECT=demo-auto
+MODE=review
+WORKTREE=$T/proj
+TMUX_TARGET=kingpin:t7-noissue
+EOF
+echo "fixed: high=2 report=r.md" > "$t7_noissue/status"
+"$KP_BIN/kingpin" land t7-noissue >/dev/null
+sleep 0.1
+pane_out=$(tmux capture-pane -pt kingpin:t7-noissue -S -5)
+echo "$pane_out" | grep -qx "/review" && pass "/review dispatched when issue not set" || fail "wrong review command without issue: $pane_out"
+tmux kill-window -t kingpin:t7-noissue 2>/dev/null || true
+rm -rf "$t7_noissue"
+
+# 4. fixed: high == 0 auto-advances to project landing lock & /issue-flow-done in review mode
+echo "fixed: high=0 report=.agents/reviews/r1.md" >> "$t7_dir/status"
+"$KP_BIN/kingpin" watch --once >/dev/null
+[ -f "$KINGPIN_HOME/projects/demo-auto.landing" ] && pass "project landing lock acquired on clean fix pass" || fail "landing lock not acquired"
+[ -f "$t7_dir/landing_sent" ] && pass "landing_sent marker created on landing dispatch" || fail "landing_sent missing"
+sleep 0.1
+pane_out=$(tmux capture-pane -pt kingpin:t7-nits -S -5)
+echo "$pane_out" | grep -q "/issue-flow-done 301" && pass "/issue-flow-done dispatched after clean fix" || fail "wrong done command: $pane_out"
+
+tmux kill-window -t kingpin:t7-nits 2>/dev/null || true
+rm -f "$KINGPIN_HOME/projects/demo-auto.landing" "$KINGPIN_HOME/projects/demo-auto.landing_queue"
+rm -rf "$t7_dir"
+
+# Auto mode continuation on fixed: high=0
+t7_auto="$KINGPIN_HOME/tasks/t7-auto"
+mkdir -p "$t7_auto"
+tmux new-window -d -t kingpin: -n t7-auto cat
+cat > "$t7_auto/task.env" << EOF
+TASK_ID=t7-auto
+PROJECT=demo-auto
+MODE=auto
+WORKTREE=$T/proj
+ISSUE=303
+TMUX_TARGET=kingpin:t7-auto
+EOF
+echo "fixed: high=0 report=r.md" > "$t7_auto/status"
+"$KP_BIN/kingpin" watch --once >/dev/null
+[ -f "$KINGPIN_HOME/projects/demo-auto.landing" ] && pass "auto-mode acquired landing lock on clean fix pass" || fail "auto-mode landing lock not acquired"
+[ -f "$t7_auto/landing_sent" ] && pass "auto-mode landing_sent created" || fail "auto-mode landing_sent missing"
+sleep 0.1
+pane_out=$(tmux capture-pane -pt kingpin:t7-auto -S -5)
+echo "$pane_out" | grep -q "/issue-flow-done 303" && pass "auto-mode /issue-flow-done dispatched" || fail "wrong auto done command: $pane_out"
+
+tmux kill-window -t kingpin:t7-auto 2>/dev/null || true
+rm -f "$KINGPIN_HOME/projects/demo-auto.landing" "$KINGPIN_HOME/projects/demo-auto.landing_queue"
+rm -rf "$t7_auto"
+
+# 5. APPROVE with no findings goes straight to landing queue
+t7_app="$KINGPIN_HOME/tasks/t7-app"
+mkdir -p "$t7_app"
+tmux new-window -d -t kingpin: -n t7-app cat
+cat > "$t7_app/task.env" << EOF
+TASK_ID=t7-app
+PROJECT=demo-auto
+MODE=review
+WORKTREE=$T/proj
+ISSUE=302
+TMUX_TARGET=kingpin:t7-app
+EOF
+echo "ready: branch=b review=APPROVE report=none" > "$t7_app/status"
+
+"$KP_BIN/kingpin" land t7-app >/dev/null
+[ -f "$KINGPIN_HOME/projects/demo-auto.landing" ] && pass "landing lock acquired directly for APPROVE" || fail "landing lock not acquired for APPROVE"
+[ -f "$t7_app/landing_sent" ] && pass "landing_sent created for APPROVE" || fail "landing_sent missing for APPROVE"
+sleep 0.1
+pane_out=$(tmux capture-pane -pt kingpin:t7-app -S -5)
+echo "$pane_out" | grep -q "/issue-flow-done 302" && pass "/issue-flow-done dispatched for APPROVE" || fail "wrong done command for APPROVE: $pane_out"
+
+tmux kill-window -t kingpin:t7-app 2>/dev/null || true
+rm -f "$KINGPIN_HOME/projects/demo-auto.landing" "$KINGPIN_HOME/projects/demo-auto.landing_queue"
+rm -rf "$t7_app"
+
 for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
   tmux kill-window -t "$w" 2>/dev/null || true
 done

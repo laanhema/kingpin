@@ -51,10 +51,20 @@ process_task_event() {
     ready:*)
       if [ "$mode" = "auto" ] && [ ! -f "$task_dir/landing_sent" ]; then
         echo "[kingpin-watch] $id is ready (auto mode); initiating landing..."
-        touch "$task_dir/landing_sent"
         "$KP_BIN/kingpin-land" "$id" || true
       elif [ "$mode" = "review" ]; then
-        echo "[kingpin-watch] $id is ready for review (lavish-axi $task_dir/report.html)"
+        if [ -f "$task_dir/landing_in_progress" ] && [ ! -f "$task_dir/landing_sent" ]; then
+          echo "[kingpin-watch] $id is ready (review mode, landing in progress); continuing landing..."
+          "$KP_BIN/kingpin-land" "$id" || true
+        else
+          echo "[kingpin-watch] $id is ready for review (lavish-axi $task_dir/report.html)"
+        fi
+      fi
+      ;;
+    fixed:*)
+      if [ "$mode" = "auto" ] || [ -f "$task_dir/landing_in_progress" ]; then
+        echo "[kingpin-watch] $id reported fix pass; continuing landing..."
+        "$KP_BIN/kingpin-land" "$id" || true
       fi
       ;;
     merged:*)

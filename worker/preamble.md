@@ -9,6 +9,7 @@ Report every event as one line appended to `{{TASK_DIR}}/status`, with `printf '
 - `issue: #<n> <url>` as soon as the issue you work on is known.
 - `needs-input: <one-line summary>` whenever a skill tells you to ask the user, confirm with the user, or wait for the user. First write the whole question to `{{TASK_DIR}}/question.md`, with everything needed to answer it (for a draft issue, the full draft and every choice). Then append the line and end your turn. The answer arrives as your next message. Ask through these files only: the question dialog and plain chat questions reach nobody here.
 - `ready: branch=<branch> review=<verdict> report=<review report path>` when `/issue-flow` finished.
+- `fixed: high=<n> report=<review report path>` when `/fix-findings` finished.
 - `merged: pr=<PR URL>` when a PR merged.
 - `failed: <the stopping skill's own words>` when a gate stopped the run or a step failed.
 
