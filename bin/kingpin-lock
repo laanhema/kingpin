@@ -1,11 +1,58 @@
 #!/usr/bin/env bash
 # Acquire or inspect the kingpin orchestrator session lock.
-# Usage: kingpin-lock [status|check|acquire]
+# Usage: kingpin-lock [status|check|acquire|release] [pid]
 set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 LOCK_FILE="$KP_HOME/orchestrator.lock"
 mkdir -p "$KP_HOME"
+
+is_harness_pid() {
+  local p=$1
+  [ -n "$p" ] || return 1
+  [ "$p" -gt 1 ] 2>/dev/null || return 1
+  kill -0 "$p" 2>/dev/null || return 1
+  local comm
+  comm=$(ps -o comm= -p "$p" 2>/dev/null | tr -d ' ' || true)
+  case "$comm" in
+    bash|sh|zsh|dash|tmux*) return 1 ;;
+    claude|claude-*|agy|agy-*|opencode|opencode-*|codex|codex-*|pi|pi-*|grok|grok-*|kimi|kimi-*) return 0 ;;
+  esac
+  local args
+  args=$(ps -o args= -p "$p" 2>/dev/null || true)
+  local pattern='(^|[ /])(claude|agy|opencode|codex|pi|grok|kimi)(-[^ ]*)?([ ]|$)'
+  if [[ "$args" =~ $pattern ]]; then
+    return 0
+  fi
+  return 1
+}
+
+resolve_session_pid() {
+  if [ -n "${KINGPIN_LOCK_PID:-}" ] && [[ "${KINGPIN_LOCK_PID:-}" =~ ^[0-9]+$ ]]; then
+    echo "$KINGPIN_LOCK_PID"
+    return 0
+  fi
+  if [ -n "${2:-}" ] && [[ "$2" =~ ^[0-9]+$ ]]; then
+    echo "$2"
+    return 0
+  fi
+  if [ -n "${1:-}" ] && [[ "$1" =~ ^[0-9]+$ ]]; then
+    echo "$1"
+    return 0
+  fi
+  local c1=$PPID
+  if is_harness_pid "$c1"; then
+    echo "$c1"
+    return 0
+  fi
+  local c2
+  c2=$(ps -o ppid= -p "$c1" 2>/dev/null | tr -d ' ' || true)
+  if [ -n "$c2" ] && is_harness_pid "$c2"; then
+    echo "$c2"
+    return 0
+  fi
+  echo "$c1"
+}
 
 cmd=${1:-acquire}
 
@@ -26,24 +73,28 @@ case "$cmd" in
   check)
     if [ -f "$LOCK_FILE" ]; then
       pid=$(head -n 1 "$LOCK_FILE" 2>/dev/null || true)
-      if [ -n "$pid" ] && [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then
-        echo "error: another live kingpin orchestrator session holds the lock (pid $pid)" >&2
-        exit 1
+      if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        target_pid=$(resolve_session_pid "$@")
+        if [ "$pid" != "$target_pid" ]; then
+          echo "error: another live kingpin orchestrator session holds the lock (pid $pid)" >&2
+          exit 1
+        fi
       fi
     fi
     echo "lock: verified"
     exit 0
     ;;
   acquire)
+    target_pid=$(resolve_session_pid "$@")
     if [ -f "$LOCK_FILE" ]; then
       pid=$(head -n 1 "$LOCK_FILE" 2>/dev/null || true)
-      if [ -n "$pid" ] && [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then
+      if [ -n "$pid" ] && [ "$pid" != "$target_pid" ] && kill -0 "$pid" 2>/dev/null; then
         echo "error: another live kingpin orchestrator session holds the lock (pid $pid)" >&2
         exit 1
       fi
     fi
-    echo "$$" > "$LOCK_FILE"
-    echo "lock: acquired (pid $$)"
+    echo "$target_pid" > "$LOCK_FILE"
+    echo "lock: acquired (pid $target_pid)"
     ;;
   release)
     rm -f "$LOCK_FILE"
