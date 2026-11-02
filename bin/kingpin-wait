@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+# Wait for task updates across the kingpin fleet.
+#
+# Inspects $KINGPIN_HOME/tasks/ for:
+#   1. New status lines (status line count > seen count)
+#   2. Unexpected window termination (tmux window gone without terminal status)
+#   3. Qualified quiet worker (stopped newer than status, pane not waiting on subagents)
+#
+# Outputs: one line per task update: "<task-id> <reason>" (status|quiet|exited)
+# Exit 0 if updates found, 1 on timeout or no updates (--once).
+#
+# Usage: kingpin-wait [--timeout <seconds>] [--once]
+set -euo pipefail
+
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+TIMEOUT=300
+ONCE=0
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --timeout) TIMEOUT=${2:?--timeout needs seconds}; shift 2 ;;
+    --once) ONCE=1; shift ;;
+    -h|--help)
+      echo "usage: kingpin-wait [--timeout <seconds>] [--once]"
+      exit 0
+      ;;
+    *) echo "kingpin-wait: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+
+tasks_dir="$KP_HOME/tasks"
+mkdir -p "$tasks_dir"
+
+is_terminal_status() {
+  local last_line=$1
+  case "$last_line" in
+    merged:*|failed:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+check_task() {
+  local dir=$1
+  local id
+  id=$(basename "$dir")
+  local task_env="$dir/task.env"
+  [ -f "$task_env" ] || return 0
+
+  local status_file="$dir/status"
+  local seen_file="$dir/seen"
+  local stopped_file="$dir/stopped"
+  local seen_stopped_file="$dir/seen_stopped"
+
+  local status_count=0
+  local seen_count=0
+  local last_status=""
+
+  if [ -f "$status_file" ]; then
+    status_count=$(wc -l < "$status_file" | tr -d ' ')
+    last_status=$(tail -n 1 "$status_file" 2>/dev/null || true)
+  fi
+  if [ -f "$seen_file" ]; then
+    seen_count=$(cat "$seen_file" 2>/dev/null | tr -d ' ' || echo 0)
+  fi
+
+  # 1. New status lines
+  if [ "$status_count" -gt "$seen_count" ]; then
+    echo "$id status"
+    return 0
+  fi
+
+  # Terminal tasks need no further checks
+  if is_terminal_status "$last_status"; then
+    return 0
+  fi
+
+  # Read tmux target
+  local tmux_target=""
+  tmux_target=$(sed -n 's/^TMUX_TARGET=//p' "$task_env" 2>/dev/null || true)
+  [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
+
+  # 2. Window liveness check
+  local window_alive=0
+  if tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
+    window_alive=1
+  fi
+
+  if [ "$window_alive" -eq 0 ]; then
+    echo "$id exited"
+    return 0
+  fi
+
+  # 3. Qualified quiet check
+  if [ -f "$stopped_file" ]; then
+    local stop_time
+    stop_time=$(cat "$stopped_file" 2>/dev/null | tr -d ' ' || echo 0)
+    local seen_stop=0
+    [ -f "$seen_stopped_file" ] && seen_stop=$(cat "$seen_stopped_file" 2>/dev/null | tr -d ' ' || echo 0)
+
+    if [ "$stop_time" -gt "$seen_stop" ]; then
+      # Qualify quiet by inspecting pane
+      local pane_tail
+      pane_tail=$(tmux capture-pane -pt "$tmux_target" -S -30 2>/dev/null || true)
+      if echo "$pane_tail" | grep -qE "Waiting for [0-9]+ background agent|Background agent"; then
+        # Still running subagents, not quiet
+        :
+      else
+        echo "$id quiet"
+        return 0
+      fi
+    fi
+  fi
+
+  return 0
+}
+
+check_all() {
+  local updates=0
+  for dir in "$tasks_dir"/*; do
+    [ -d "$dir" ] || continue
+    local res
+    res=$(check_task "$dir")
+    if [ -n "$res" ]; then
+      echo "$res"
+      updates=1
+    fi
+  done
+  [ "$updates" -eq 1 ] && return 0 || return 1
+}
+
+# Immediate check before waiting
+if check_all; then
+  exit 0
+fi
+
+if [ "$ONCE" -eq 1 ]; then
+  exit 1
+fi
+
+# Wait for file system events with inotifywait fallback to sleep
+if command -v inotifywait >/dev/null 2>&1; then
+  inotifywait -q -r -e modify,create,delete,attrib -t "$TIMEOUT" "$tasks_dir" >/dev/null 2>&1 || true
+else
+  sleep "$TIMEOUT"
+fi
+
+if check_all; then
+  exit 0
+fi
+
+exit 1
