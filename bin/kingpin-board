@@ -162,6 +162,7 @@ def render_html(tasks: list) -> str:
         tid = html.escape(t["id"])
         project = html.escape(t["env"].get("PROJECT", "unknown"))
         mode = html.escape(t["env"].get("MODE", "review"))
+        harness = html.escape(t["env"].get("HARNESS", "claude"))
         branch = html.escape(t["env"].get("BRANCH", f"kingpin/{t['id']}"))
         state = t["state"]
         badge_cls = STATE_BADGES.get(state, "badge-neutral")
@@ -219,6 +220,7 @@ def render_html(tasks: list) -> str:
             <div class="flex items-center justify-between gap-2">
               <h3 class="card-title text-base font-bold font-mono">{tid}</h3>
               <div class="flex items-center gap-1">
+                <span class="badge badge-sm badge-outline">{harness}</span>
                 <span class="badge badge-sm badge-outline">{mode}</span>
                 <span class="badge badge-sm {badge_cls}">{html.escape(state)}</span>
               </div>

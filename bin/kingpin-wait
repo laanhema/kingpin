@@ -4,7 +4,7 @@
 # Inspects $KINGPIN_HOME/tasks/ for:
 #   1. New status lines (status line count > seen count)
 #   2. Unexpected window termination (tmux window gone without terminal status)
-#   3. Qualified quiet worker (stopped newer than status, pane not waiting on subagents)
+#   3. Qualified quiet worker (stopped newer than status, pane not waiting on subagents/turns)
 #
 # Outputs: one line per task update: "<task-id> <reason>" (status|quiet|exited)
 # Exit 0 if updates found, 1 on timeout or no updates (--once).
@@ -98,16 +98,43 @@ check_task() {
     [ -f "$seen_stopped_file" ] && seen_stop=$(cat "$seen_stopped_file" 2>/dev/null | tr -d ' ' || echo 0)
 
     if [ "$stop_time" -gt "$seen_stop" ]; then
-      # Qualify quiet by inspecting pane
+      local harness="claude"
+      harness=$(sed -n 's/^HARNESS=//p' "$task_env" 2>/dev/null || echo "claude")
+      [ -n "$harness" ] || harness="claude"
+
       local pane_tail
       pane_tail=$(tmux capture-pane -pt "$tmux_target" -S -30 2>/dev/null || true)
-      if echo "$pane_tail" | grep -qE "Waiting for [0-9]+ background agent|Background agent"; then
-        # Still running subagents, not quiet
-        :
-      else
-        echo "$id quiet"
-        return 0
-      fi
+
+      case "$harness" in
+        claude)
+          if echo "$pane_tail" | grep -qE "Waiting for [0-9]+ background agent|Background agent"; then
+            :
+          else
+            echo "$id quiet"
+            return 0
+          fi
+          ;;
+        agy)
+          if echo "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel'; then
+            :
+          else
+            echo "$id quiet"
+            return 0
+          fi
+          ;;
+        opencode)
+          if echo "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel|Interrupt'; then
+            :
+          else
+            echo "$id quiet"
+            return 0
+          fi
+          ;;
+        *)
+          echo "$id quiet"
+          return 0
+          ;;
+      esac
     fi
   fi
 
