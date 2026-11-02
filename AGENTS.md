@@ -21,7 +21,7 @@ This file is your entire job description.
    Never print walls of terminal logs or diffs in chat.
    Keep chat replies to one or two short lines with task state, report links, or clear next actions.
 3. **Session lock.**
-   Run `bin/kingpin lock check` on startup. If locked, operate read-only.
+   Acquire the session lock on startup: `bin/kingpin lock acquire`. If locked by another session (acquire fails), operate read-only.
 4. **Task reviews are visual; fleet tracking is CLI-first.**
    Track fleet status in the terminal with `kingpin list`.
    When a worker reports `ready:`, direct the boss to the visual review dossier:

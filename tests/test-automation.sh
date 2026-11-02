@@ -167,6 +167,53 @@ spawn_out_fallback=$(TMUX="/tmp/nonexistent-sock,99999,99999" "$KP_BIN/kingpin" 
 grep -q "^TMUX_TARGET=kingpin:task-target-fallback$" "$KINGPIN_HOME/tasks/task-target-fallback/task.env" && pass "fallback resolved a valid TMUX_TARGET" || fail "wrong TMUX_TARGET on fallback"
 "$KP_BIN/kingpin" done task-target-fallback --force >/dev/null
 
+# Test 6: kingpin lock lifecycle
+echo "=== Test 6: kingpin lock lifecycle ==="
+lock_status_init=$("$KP_BIN/kingpin" lock status)
+[ "$lock_status_init" = "lock: free" ] && pass "initial lock status free" || fail "initial lock status not free: $lock_status_init"
+
+# Start long-lived background process holding the lock
+(
+  "$KP_BIN/kingpin" lock acquire >/dev/null
+  sleep 30
+) &
+holder_pid=$!
+
+# Wait briefly for lock acquisition
+for _ in 1 2 3 4 5; do
+  [ -f "$KINGPIN_HOME/orchestrator.lock" ] && break
+  sleep 0.1
+done
+
+lock_status_held=$("$KP_BIN/kingpin" lock status)
+echo "$lock_status_held" | grep -q "lock: held by pid $holder_pid" && pass "lock reported held by parent pid" || fail "lock not held by parent: $lock_status_held"
+
+# Collision rejection: second acquire from different process must exit 1 and name holder
+acquire_rc=0
+acquire_err=$( ("$KP_BIN/kingpin" lock acquire) 2>&1 ) || acquire_rc=$?
+[ "$acquire_rc" -ne 0 ] && echo "$acquire_err" | grep -q "another live kingpin orchestrator session holds the lock (pid $holder_pid)" && pass "second acquire rejected with holder pid" || fail "second acquire did not reject: $acquire_err"
+
+# Collision rejection: check from different process must exit 1 and name holder
+check_rc=0
+check_err=$( ("$KP_BIN/kingpin" lock check) 2>&1 ) || check_rc=$?
+[ "$check_rc" -ne 0 ] && echo "$check_err" | grep -q "another live kingpin orchestrator session holds the lock (pid $holder_pid)" && pass "check rejected with holder pid" || fail "check did not reject: $check_err"
+
+# Kill holder process and verify auto-freeing
+kill -9 "$holder_pid" 2>/dev/null || true
+wait "$holder_pid" 2>/dev/null || true
+
+lock_status_stale=$("$KP_BIN/kingpin" lock status)
+[ "$lock_status_stale" = "lock: stale" ] && pass "lock reports stale after holder dies" || fail "lock not stale after holder dies: $lock_status_stale"
+
+# Re-acquire lock over stale lock
+reacquire_out=$("$KP_BIN/kingpin" lock acquire)
+echo "$reacquire_out" | grep -q "lock: acquired" && pass "re-acquire over stale lock succeeded" || fail "re-acquire failed: $reacquire_out"
+
+# Release lock
+"$KP_BIN/kingpin" lock release >/dev/null
+lock_status_released=$("$KP_BIN/kingpin" lock status)
+[ "$lock_status_released" = "lock: free" ] && pass "lock release returned state to free" || fail "lock not free after release: $lock_status_released"
+
 for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
   tmux kill-window -t "$w" 2>/dev/null || true
 done
