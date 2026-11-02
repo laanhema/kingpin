@@ -40,15 +40,17 @@ if [[ $last_status =~ ^fixed: ]]; then
     high="${BASH_REMATCH[1]}"
   fi
   if [ "$high" -gt 0 ]; then
-    echo "kingpin-land: task $id fixed $high High/Critical finding(s); requesting re-review"
+    # The outcome line is the last stdout line: kingpin-send's own "OK" line is
+    # silenced, because kingpin-listen shows the last line to the reviewer.
+    echo "kingpin-land: task $id fix pass left $high High/Critical finding(s): not landing yet, requesting a re-review (/review); run kingpin land again once the worker reports ready:"
     if [ -n "$issue" ]; then
-      "$KP_BIN/kingpin-send" "$id" "/review --issue $issue"
+      "$KP_BIN/kingpin-send" "$id" "/review --issue $issue" >/dev/null
     else
-      "$KP_BIN/kingpin-send" "$id" "/review"
+      "$KP_BIN/kingpin-send" "$id" "/review" >/dev/null
     fi
     exit 0
   fi
-  echo "kingpin-land: task $id fix pass completed cleanly; proceeding to landing"
+  landing_reason="the fix pass completed cleanly"
 else
   # Extract report and review verdict if present
   verdict=""
@@ -76,14 +78,19 @@ else
 
   # If verdict is NEEDS CHANGES or has findings, run /fix-findings first
   if [ "$verdict" = "APPROVE WITH NITS" ] || [ "$verdict" = "NEEDS CHANGES" ] || [ "$verdict" = "NEEDS_CHANGES" ] || [ "$verdict" = "NEEDS-CHANGES" ]; then
-    echo "kingpin-land: task $id review verdict is $verdict; sending /fix-findings"
+    echo "kingpin-land: task $id review has findings ($verdict): running the fix pass first (/fix-findings), not landing yet; landing continues after the worker reports fixed: (kingpin watch does it, or run kingpin land again)"
     touch "$task_dir/landing_in_progress"
     if [ -n "$resolved_report" ]; then
-      "$KP_BIN/kingpin-send" "$id" "/fix-findings $resolved_report"
+      "$KP_BIN/kingpin-send" "$id" "/fix-findings $resolved_report" >/dev/null
     else
-      "$KP_BIN/kingpin-send" "$id" "/fix-findings"
+      "$KP_BIN/kingpin-send" "$id" "/fix-findings" >/dev/null
     fi
     exit 0
+  fi
+  if [ -n "$verdict" ]; then
+    landing_reason="the review is clean ($verdict)"
+  else
+    landing_reason="no review verdict recorded"
   fi
 fi
 
@@ -122,9 +129,9 @@ fi
 touch "$task_dir/landing_sent"
 
 if [ -n "$issue" ]; then
-  echo "kingpin-land: sending /issue-flow-done $issue to $id"
-  "$KP_BIN/kingpin-send" "$id" "/issue-flow-done $issue"
+  echo "kingpin-land: task $id: $landing_reason; starting landing (sending /issue-flow-done $issue)"
+  "$KP_BIN/kingpin-send" "$id" "/issue-flow-done $issue" >/dev/null
 else
-  echo "kingpin-land: no issue number found for $id; sending /create-pr-merge"
-  "$KP_BIN/kingpin-send" "$id" "/create-pr-merge"
+  echo "kingpin-land: task $id: $landing_reason; starting landing (no issue number found, sending /create-pr-merge)"
+  "$KP_BIN/kingpin-send" "$id" "/create-pr-merge" >/dev/null
 fi

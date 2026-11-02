@@ -1145,6 +1145,71 @@ if pane_has_line "multi-a" && pane_has_line "multi-b"; then pass "multi-line mes
 tmux kill-window -t kingpin:t13-send 2>/dev/null || true
 rm -rf "$t13_dir"
 
+# Test 14: kingpin land states whether it lands or runs the fix pass first
+echo "=== Test 14: kingpin land output (fix pass vs landing) and approve alias ==="
+mk_t14() {
+  local name=$1 status=$2
+  local d="$KINGPIN_HOME/tasks/$name"
+  mkdir -p "$d"
+  tmux new-window -d -t kingpin: -n "$name" cat
+  cat > "$d/task.env" << ENVEOF
+TASK_ID=$name
+PROJECT=demo-t14
+MODE=review
+WORKTREE=$T/proj
+ISSUE=314
+TMUX_TARGET=kingpin:$name
+ENVEOF
+  echo "$status" > "$d/status"
+}
+rm -f "$KINGPIN_HOME/projects/demo-t14.landing" "$KINGPIN_HOME/projects/demo-t14.landing_queue"
+
+# Fix-findings path: says a fix pass runs first and that landing continues after fixed:
+mk_t14 t14-nits "ready: branch=b review=APPROVE WITH NITS report=.agents/reviews/r.md"
+out=$("$KP_BIN/kingpin" land t14-nits)
+last=$(printf '%s\n' "$out" | tail -n 1)
+echo "$last" | grep -q "fix pass" && echo "$last" | grep -q "fixed:" && pass "fix path: last line says the fix pass runs first and landing continues after fixed:" || fail "fix path output unclear: $out"
+echo "$last" | grep -q "not landing yet" && pass "fix path: output says it is not landing yet" || fail "fix path does not say it is not landing: $last"
+[ ! -f "$KINGPIN_HOME/projects/demo-t14.landing" ] && pass "fix path: no landing lock taken" || fail "fix path took the landing lock"
+
+# Fix pass left High findings: re-review, not landing
+echo "fixed: high=1 report=r.md" >> "$KINGPIN_HOME/tasks/t14-nits/status"
+out=$("$KP_BIN/kingpin" land t14-nits)
+echo "$out" | tail -n 1 | grep -q "re-review" && pass "re-review path: output says a re-review comes first" || fail "re-review path output unclear: $out"
+
+# Clean fix pass: says landing is starting, and the last line is the outcome (not kingpin-send's OK line)
+echo "fixed: high=0 report=r.md" >> "$KINGPIN_HOME/tasks/t14-nits/status"
+out=$("$KP_BIN/kingpin" land t14-nits)
+last=$(printf '%s\n' "$out" | tail -n 1)
+echo "$last" | grep -q "starting landing" && pass "clean fix pass: output says landing is starting" || fail "clean fix pass output unclear: $out"
+echo "$last" | grep -q "^OK: sent" && fail "kingpin-send's OK line hides the outcome line" || pass "outcome line is the last line"
+sleep 0.1
+tmux capture-pane -pt kingpin:t14-nits -S -8 | grep -q "/issue-flow-done 314" && pass "clean fix pass dispatched /issue-flow-done" || fail "no /issue-flow-done after clean fix pass"
+tmux kill-window -t kingpin:t14-nits 2>/dev/null || true
+rm -f "$KINGPIN_HOME/projects/demo-t14.landing"
+
+# Clean review, via both names
+mk_t14 t14-clean "ready: branch=b review=APPROVE report=none"
+out=$("$KP_BIN/kingpin" land t14-clean)
+last=$(printf '%s\n' "$out" | tail -n 1)
+echo "$last" | grep -q "starting landing" && echo "$last" | grep -q "review is clean" && pass "clean path: output says the review is clean and landing is starting" || fail "clean path output unclear: $out"
+tmux kill-window -t kingpin:t14-clean 2>/dev/null || true
+rm -f "$KINGPIN_HOME/projects/demo-t14.landing"
+# No parsable verdict: lands as before, but does not claim the review is clean
+mk_t14 t14-nover "ready: branch=b"
+out=$("$KP_BIN/kingpin" land t14-nover)
+last=$(printf '%s\n' "$out" | tail -n 1)
+echo "$last" | grep -q "no review verdict recorded" && ! echo "$last" | grep -q "review is clean" && pass "no verdict: output does not claim the review is clean" || fail "no-verdict output unclear: $out"
+tmux kill-window -t kingpin:t14-nover 2>/dev/null || true
+rm -f "$KINGPIN_HOME/projects/demo-t14.landing"
+mk_t14 t14-alias "ready: branch=b review=APPROVE report=none"
+out=$("$KP_BIN/kingpin" approve t14-alias)
+echo "$out" | tail -n 1 | grep -q "starting landing" && [ -f "$KINGPIN_HOME/tasks/t14-alias/landing_sent" ] && pass "kingpin approve behaves like kingpin land" || fail "kingpin approve failed: $out"
+tmux kill-window -t kingpin:t14-alias 2>/dev/null || true
+"$KP_BIN/kingpin" --help | grep -q "approve" && pass "kingpin --help mentions the approve alias" || fail "--help does not mention approve"
+rm -f "$KINGPIN_HOME/projects/demo-t14.landing" "$KINGPIN_HOME/projects/demo-t14.landing_queue"
+rm -rf "$KINGPIN_HOME/tasks/t14-nits" "$KINGPIN_HOME/tasks/t14-clean" "$KINGPIN_HOME/tasks/t14-nover" "$KINGPIN_HOME/tasks/t14-alias"
+
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"
 else

@@ -101,7 +101,7 @@ kingpin watch
 | `kingpin board` | `kingpin board [--out <path>]` | Renders the live fleet status HTML board. |
 | `kingpin list` | `kingpin list [--all]` | Displays active fleet tasks and states in the terminal; `--all` also shows finished (archived) tasks. |
 | `kingpin send` | `kingpin send <task-id> "<text>"` | Types the text literally into a worker window, then presses Enter. |
-| `kingpin land` | `kingpin land <task-id>` | Serializes project landing and triggers merge. |
+| `kingpin land` | `kingpin land <task-id>` (alias: `kingpin approve <task-id>`) | Serializes project landing and triggers merge. When the review verdict has findings (`APPROVE WITH NITS`, `NEEDS CHANGES`) it runs `/fix-findings` first and says so; landing continues after the worker reports `fixed:`. When the review is clean it says that landing is starting. |
 | `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, advances the queue, and archives the task record to `~/.kingpin/archive/<task-id>`. Refuses, even with `--force`, when another unfinished task records the same worktree. |
 | `kingpin lock` | `kingpin lock [status\|check\|acquire [--harness <name>]\|release\|harness]` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. |
 | `kingpin guard` | `kingpin guard [install\|check\|warn]` | Installs or verifies the orchestrator-only tool deny rules in `.claude/settings.local.json` (untracked, so workers never inherit them); `warn` prints a stderr warning when they are missing; `list` and `wait` run it at startup, and `lock acquire` prints the same warning. |
