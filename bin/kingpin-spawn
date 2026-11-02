@@ -168,7 +168,7 @@ else
 fi
 printf '%s\n' "$prompt" > "$task_dir/prompt.txt"
 
-sed -e "s|{{TASK_ID}}|$id|g" -e "s|{{TASK_DIR}}|$task_dir|g" -e "s|{{MODE}}|$mode|g" -e "s|{{WORKTREE}}|$worktree|g" \
+sed -e "s|{{TASK_ID}}|$id|g" -e "s|{{TASK_DIR}}|$task_dir|g" -e "s|{{MODE}}|$mode|g" -e "s|{{WORKTREE}}|$worktree|g" -e "s|{{KP_ROOT}}|$KP_ROOT|g" \
   "$KP_ROOT/worker/preamble.md" > "$task_dir/preamble.md"
 : > "$task_dir/status"
 
