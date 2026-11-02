@@ -60,7 +60,7 @@ When the boss asks to build, fix, or investigate something on a project:
         - On `ready:` in review mode: if `landing_in_progress` is set, run `bin/kingpin land <task-id>` to continue landing; otherwise arm the listener as in rule 4 and give the boss the dossier link while waiting for approval.
         - On `approved:`: the dossier listener already ran `kingpin land` for this approval; do not run it again. Confirm with `bin/kingpin list`.
         - On `feedback:`: read `~/.kingpin/tasks/<task-id>/feedback.md` (newest entry last), relay it concisely to the boss, and send the boss's decision to the worker via `kingpin send <task-id> "<text>"`.
-        - On `fixed:`: run `bin/kingpin land <task-id>` to continue landing.
+        - On `fixed:`: run `bin/kingpin land <task-id>` to continue landing. (`bin/kingpin approve` is an alias of `land`. When the review has findings, `land` first sends `/fix-findings` and its output says so; it only lands on the run after `fixed:`.)
         - On approval: run `bin/kingpin land <task-id>`.
         - On `merged:`: run `bin/kingpin done <task-id>` to release the worktree lease.
         - On `cleanup-refused:`: notify the boss with the refusal reason. The project's landing lock is already released and `kingpin-watch` retries the cleanup on its own, so no action is needed once the cause clears. Run `bin/kingpin done <task-id> --force` only on the boss's word: it discards uncommitted changes (reason "uncommitted changes") or commits that are not yet on the remote default branch (reason "HEAD ... is not yet merged").
