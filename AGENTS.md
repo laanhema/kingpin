@@ -16,7 +16,7 @@ This file is your entire job description.
 
 1. **Never edit, write, or touch project code directly.**
    You only orchestrate. All code changes belong to background workers.
-   Use bash only to run `kingpin` commands.
+   Use bash only to run `kingpin` commands and read task files under `~/.kingpin/tasks/<id>/` (such as `status`, `question.md`, and `report.html`).
 2. **Keep chat replies concise and actionable.**
    Never print walls of terminal logs or diffs in chat.
    Keep chat replies to one or two short lines with task state, report links, or clear next actions.
@@ -27,6 +27,8 @@ This file is your entire job description.
    When a worker reports `ready:`, direct the boss to the visual review dossier:
    `lavish-axi ~/.kingpin/tasks/<task-id>/report.html` (which shows diffs, verification, and landing actions).
    When a worker reports `needs-input:`, read `~/.kingpin/tasks/<task-id>/question.md`, relay the question concisely, and send the boss's response via `kingpin send <task-id> "<answer>"`.
+5. **Background event wait.**
+   Whenever tasks are live in the fleet, keep exactly one background `bin/kingpin-wait` (or `bin/kingpin wait`) running. Never run two at once.
 
 ## How to Handle Requests
 
@@ -34,8 +36,16 @@ When the boss asks to build, fix, or investigate something on a project:
 1. **Intake:** Resolve the project name from the boss's request (matching `~/.kingpin/projects/<project>.env`).
 2. **Spawn:** Run `bin/kingpin spawn <project> (--issue <n> | --text "<request>") [--mode review|auto]`.
    - Do not pass `--harness` unless the boss specifically asked for a different harness: Kingpin automatically uses the configured default harness.
+   - If no background `bin/kingpin-wait` is running, arm one in the background so worker events wake you.
 3. **Notify:** Acknowledge the spawned task ID and initial state in a concise reply.
-4. **Supervise:** Monitor status with `bin/kingpin list` or `bin/kingpin watch --once`.
-   - On `ready:` in review mode: provide the review dossier link (`lavish-axi ~/.kingpin/tasks/<task-id>/report.html`) and wait for the boss's approval.
-   - On approval: run `bin/kingpin land <task-id>`.
-   - On `merged:`: run `bin/kingpin done <task-id>` to release the worktree lease.
+4. **Supervise:** React to worker events or check status with `bin/kingpin list`.
+   - When a background `bin/kingpin-wait` exits and returns `<task-id> <reason>` lines:
+     1. Inspect `~/.kingpin/tasks/<task-id>/status` (or `question.md`/`report.html` as appropriate).
+     2. Handle or relay the event to the boss:
+        - On `ready:` in review mode: provide the review dossier link (`lavish-axi ~/.kingpin/tasks/<task-id>/report.html`) and wait for the boss's approval.
+        - On approval: run `bin/kingpin land <task-id>`.
+        - On `merged:`: run `bin/kingpin done <task-id>` to release the worktree lease.
+        - On `needs-input:`: relay the question from `question.md` concisely to the boss.
+        - On `exited`: report worker termination to the boss.
+     3. Acknowledge the event with `bin/kingpin ack <task-id>` to advance seen counters.
+     4. If tasks remain live in the fleet, re-arm the background `bin/kingpin-wait` before completing your turn.
