@@ -43,7 +43,7 @@ cd /path/to/my-repo
 kingpin init
 ```
 
-Kingpin detects the git repository and writes `~/.kingpin/projects/my-repo.env` automatically. You can specify a default harness:
+Kingpin detects the git repository and writes `~/.kingpin/projects/my-repo.env` automatically. It also installs the orchestrator tool guard (`kingpin guard install`): the deny rules for `Edit`, `Write`, `NotebookEdit` and `Agent` go into the untracked `.claude/settings.local.json` of the Kingpin checkout, so only the orchestrator session is restricted and leased workers keep full tooling. You can specify a default harness:
 
 ```bash
 kingpin init --harness agy
@@ -90,6 +90,7 @@ kingpin watch
 | `kingpin land` | `kingpin land <task-id>` | Serializes project landing and triggers merge. |
 | `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, and advances queue. |
 | `kingpin lock` | `kingpin lock check` | Enforces single active orchestrator session. |
+| `kingpin guard` | `kingpin guard [install\|check\|warn]` | Installs or verifies the orchestrator-only tool deny rules in `.claude/settings.local.json` (untracked, so workers never inherit them); `warn` prints a stderr warning when they are missing; `list` and `wait` run it at startup, and `lock acquire` prints the same warning. |
 | `kingpin curate` | `kingpin curate` | Aggregates critique files from finished worker tasks. |
 
 ---
@@ -154,6 +155,9 @@ Run the full test suite from the repository root:
 
 # Multi-harness contract and isolation test
 ./tests/test-harnesses.sh
+
+# Orchestrator tool guard: workers inherit no Edit/Write/Agent deny rules
+./tests/test-worker-settings.sh
 
 # 3-worker parallel concurrency and serial landing acceptance test
 ./tests/test-acceptance.sh

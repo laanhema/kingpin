@@ -15,6 +15,7 @@
 #   kingpin ack <task-id>... | --all
 #   kingpin list
 #   kingpin lock [check|acquire|release]
+#   kingpin guard [install|check|warn]
 #   kingpin curate
 set -euo pipefail
 
@@ -41,6 +42,7 @@ Commands:
   ack       Acknowledge task events to advance seen counters
   list      Display active tasks and fleet state in the terminal
   lock      Check, acquire, or release the orchestrator session lock
+  guard     Install or verify the orchestrator-only tool deny rules
   curate    Aggregate critique logs from finished workers
 
 Run 'kingpin <command> --help' for details on a specific command.
@@ -83,6 +85,9 @@ case "$cmd" in
   lock)
     exec "$KP_BIN/kingpin-lock" "$@"
     ;;
+  guard)
+    exec "$KP_BIN/kingpin-guard" "$@"
+    ;;
   curate)
     exec "$KP_BIN/kingpin-curate" "$@"
     ;;
@@ -90,6 +95,7 @@ case "$cmd" in
     exec "$KP_BIN/kingpin-listen" "$@"
     ;;
   list|status)
+    "$KP_BIN/kingpin-guard" warn || true
     tasks_dir="$KP_HOME/tasks"
     if [ ! -d "$tasks_dir" ] || [ -z "$(ls -A "$tasks_dir" 2>/dev/null)" ]; then
       echo "No tasks in fleet."

@@ -36,6 +36,15 @@ This file is your entire job description.
 5. **Background event wait.**
    Whenever tasks are live in the fleet, keep exactly one background `bin/kingpin-wait` (or `bin/kingpin wait`) running. Never run two at once.
 
+## Orchestrator Tool Guard
+
+The rule that keeps the orchestrator from editing code (deny `Edit`, `Write`, `NotebookEdit`, `Agent`) lives in `.claude/settings.local.json` of the main Kingpin checkout. That file is untracked and git-ignored on purpose: a tracked copy would be inherited by every leased worker worktree and block workers from editing files and spawning subagents.
+
+- Never commit deny rules to `.claude/settings.json` or any other tracked settings file.
+- `kingpin init` installs the guard, `kingpin guard install` (re)installs it, and `kingpin guard check` verifies it. `kingpin lock acquire`, `kingpin list` and the `kingpin-wait` startup warn on stderr when it is missing (`kingpin guard warn`; silent in a worker worktree or with `KINGPIN_SKIP_GUARD=1`), which is the case on a fresh clone and on an existing clone that pulled the removal of the old tracked file.
+- The guard refuses to install into a linked worktree, so it can never land in a worker checkout.
+- `tests/test-worker-settings.sh` checks that a spawned worker's effective settings deny none of those tools.
+
 ## How to Handle Requests
 
 When the boss asks to build, fix, or investigate something on a project:

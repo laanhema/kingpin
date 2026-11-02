@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# Install or verify the orchestrator-only tool guard.
+#
+# The orchestrator session must not edit code, so the Kingpin checkout denies
+# Edit, Write, NotebookEdit and Agent. The rules live in the untracked, git-ignored
+# .claude/settings.local.json of that checkout. They must never be committed:
+# every leased worker worktree is a checkout of the repo and would inherit them.
+#
+# Usage: kingpin-guard [install|check|warn] [--dir <kingpin-checkout>]
+#   warn  print a one-line stderr warning when the guard is not active; always exit 0,
+#         and stay silent in a linked worktree or with KINGPIN_SKIP_GUARD=1
+set -euo pipefail
+
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+DENY='["Edit","Write","NotebookEdit","Agent"]'
+
+die() { echo "kingpin-guard: $*" >&2; exit 1; }
+
+cmd=install dir=$KP_ROOT
+while [ $# -gt 0 ]; do
+  case $1 in
+    install|check|warn) cmd=$1; shift ;;
+    --dir) dir=${2:?--dir needs a path}; shift 2 ;;
+    -h|--help)
+      echo "usage: kingpin-guard [install|check|warn] [--dir <kingpin-checkout>]"
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+if [ "$cmd" = warn ]; then
+  # Cheap and quiet: used at `kingpin list` and `kingpin-wait` startup.
+  [ "${KINGPIN_SKIP_GUARD:-}" != 1 ] || exit 0
+  [ -d "$dir" ] && git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || exit 0
+fi
+
+[ -d "$dir" ] || die "directory does not exist: $dir"
+git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $dir"
+dir=$(cd "$dir" && pwd -P)
+file="$dir/.claude/settings.local.json"
+
+# A leased worktree is a linked worktree; the guard there would block the worker.
+if [ "$(git -C "$dir" rev-parse --path-format=absolute --git-dir)" != \
+     "$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir)" ]; then
+  [ "$cmd" != warn ] || exit 0
+  die "$dir is a linked worktree (a worker checkout); run this in the main Kingpin checkout"
+fi
+
+case "$cmd" in
+  check)
+    [ -f "$file" ] || { echo "guard: missing ($file); run 'kingpin guard install'" >&2; exit 1; }
+    node -e '
+      const fs = require("fs");
+      let cfg;
+      try { cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch (e) { process.exit(1); }
+      const deny = cfg && cfg.permissions && cfg.permissions.deny;
+      process.exit(Array.isArray(deny) && JSON.parse(process.argv[2]).every((t) => deny.includes(t)) ? 0 : 1);
+    ' "$file" "$DENY" || { echo "guard: incomplete ($file); run 'kingpin guard install'" >&2; exit 1; }
+    echo "guard: active ($file)"
+    ;;
+  warn)
+    "$0" check --dir "$dir" >/dev/null 2>&1 \
+      || echo "warning: orchestrator guard is not active; run 'kingpin guard install'" >&2
+    ;;
+  install)
+    mkdir -p "$dir/.claude"
+    node -e '
+      const fs = require("fs");
+      const [file, deny] = [process.argv[1], JSON.parse(process.argv[2])];
+      let cfg = {};
+      if (fs.existsSync(file)) {
+        try { cfg = JSON.parse(fs.readFileSync(file, "utf8")); }
+        catch (e) { console.error(`kingpin-guard: malformed JSON in ${file}: ${e.message}`); process.exit(1); }
+      }
+      const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+      if (!plain(cfg)) { console.error(`kingpin-guard: ${file} must contain a JSON object`); process.exit(1); }
+      if (cfg.permissions !== undefined && !plain(cfg.permissions)) {
+        console.error(`kingpin-guard: "permissions" in ${file} must be a JSON object`); process.exit(1);
+      }
+      cfg.permissions = cfg.permissions || {};
+      const have = Array.isArray(cfg.permissions.deny) ? cfg.permissions.deny : [];
+      cfg.permissions.deny = [...have, ...deny.filter((t) => !have.includes(t))];
+      const tmp = `${file}.tmp.${process.pid}`;
+      fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + "\n");
+      fs.renameSync(tmp, file);
+    ' "$file" "$DENY"
+    # The guard file must stay out of git, or worker worktrees would inherit it.
+    if ! git -C "$dir" check-ignore -q "$file"; then
+      excl=$(git -C "$dir" rev-parse --path-format=absolute --git-path info/exclude)
+      mkdir -p "$(dirname "$excl")"
+      echo ".claude/settings.local.json" >> "$excl"
+    fi
+    echo "OK: orchestrator guard installed in $file"
+    ;;
+esac
