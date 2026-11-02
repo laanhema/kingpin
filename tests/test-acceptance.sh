@@ -2,6 +2,8 @@
 # Full acceptance test: 3 parallel workers, separate worktrees, serial landing, clean teardown.
 set -euo pipefail
 
+unset TMUX
+
 T=$(mktemp -d)
 export KINGPIN_HOME=$T/kp
 export TREEHOUSE_ROOT=$T/pool
@@ -14,7 +16,8 @@ pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAILED=1; }
 FAILED=0
 
-KP_BIN="/home/lauri/github/kingpin/bin"
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+KP_BIN="$KP_ROOT/bin"
 
 # 1. Set up test repo with origin remote
 git init -q --bare "$T/origin.git"
@@ -143,7 +146,7 @@ leased_count=$( (cd "$T/proj" && treehouse status 2>/dev/null | grep -c leased |
 [ "$leased_count" -eq 0 ] && pass "all treehouse leases returned clean" || fail "lingering leases: $leased_count"
 
 # Restore original kingpin-send
-git -C /home/lauri/github/kingpin checkout bin/kingpin-send >/dev/null 2>&1
+git -C "$KP_ROOT" checkout bin/kingpin-send >/dev/null 2>&1
 
 tmux kill-session -t kingpin 2>/dev/null || true
 rm -rf "$T"
