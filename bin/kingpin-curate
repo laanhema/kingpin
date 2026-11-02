@@ -5,27 +5,45 @@
 set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
-SKILLS_DIR="$HOME/.claude/skills"
+SKILLS_DIR="${KINGPIN_SKILLS_DIR:-$HOME/.claude/skills}"
+CLAUDE_CMD="${KINGPIN_CURATOR_CMD:-${KINGPIN_CLAUDE:-claude}}"
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
 [ -d "$SKILLS_DIR" ] || { echo "kingpin-curate: skills directory $SKILLS_DIR not found" >&2; exit 1; }
 
-input_file="$KP_HOME/curator-input.txt"
-mkdir -p "$KP_HOME"
+curator_dir="$KP_HOME/curator"
+mkdir -p "$KP_HOME" "$curator_dir"
+
+input_file="$curator_dir/curator-input.txt"
+batch_file="$curator_dir/batch-critiques.txt"
+prompt_file="$curator_dir/prompt.txt"
+launch_file="$curator_dir/launch.sh"
+result_file="$KP_HOME/curator-result"
+
 : > "$input_file"
+: > "$batch_file"
 
 count=0
-for task_dir in "$KP_HOME/tasks"/*; do
-  [ -d "$task_dir" ] || continue
-  crit_file="$task_dir/critique"
-  if [ -f "$crit_file" ] && [ -s "$crit_file" ]; then
+seen_tasks=""
+for search_dir in "$KP_HOME/tasks" "$KP_HOME/archive"; do
+  [ -d "$search_dir" ] || continue
+  for task_dir in "$search_dir"/*; do
+    [ -d "$task_dir" ] || continue
     task_id=$(basename "$task_dir")
-    echo "--- Task $task_id ---" >> "$input_file"
-    cat "$crit_file" >> "$input_file"
-    echo "" >> "$input_file"
-    count=$((count + 1))
-  fi
+    case " $seen_tasks " in
+      *" $task_id "*) continue ;;
+    esac
+    crit_file="$task_dir/critique"
+    if [ -f "$crit_file" ] && [ -s "$crit_file" ]; then
+      seen_tasks="$seen_tasks $task_id"
+      echo "--- Task $task_id ---" >> "$input_file"
+      cat "$crit_file" >> "$input_file"
+      echo "" >> "$input_file"
+      echo "$crit_file" >> "$batch_file"
+      count=$((count + 1))
+    fi
+  done
 done
 
 if [ "$count" -eq 0 ]; then
@@ -45,20 +63,50 @@ if tmux list-panes -t kingpin:curator >/dev/null 2>&1; then
   exit 1
 fi
 
-prompt="Apply the following skill critique(s) per the Skill Optimization Protocol in your rules:
+# Write prompt to file safely preserving single/double quotes and $() verbatim
+cat > "$prompt_file" << 'EOF_PROMPT'
+Apply the following skill critique(s) per the Skill Optimization Protocol in your rules:
 
-$(cat "$input_file")"
+EOF_PROMPT
+cat "$input_file" >> "$prompt_file"
+cat >> "$prompt_file" << EOF_PROMPT
+
+When finished, record each applied edit in:
+$result_file
+EOF_PROMPT
+
+# Reset result file before launching
+rm -f "$result_file"
+
+# Generate launch script
+cat > "$launch_file" << EOF_LAUNCH
+#!/usr/bin/env bash
+set -uo pipefail
+
+export KINGPIN_HOME='$KP_HOME'
+PROMPT_FILE='$prompt_file'
+RESULT_FILE='$result_file'
+BATCH_FILE='$batch_file'
+
+curator_rc=0
+$CLAUDE_CMD "\$(cat "\$PROMPT_FILE")" || curator_rc=\$?
+
+if [ "\$curator_rc" -eq 0 ] && [ -f "\$RESULT_FILE" ] && [ -s "\$RESULT_FILE" ]; then
+  applied_count=0
+  while IFS= read -r crit_file; do
+    if [ -f "\$crit_file" ]; then
+      mv -f "\$crit_file" "\$crit_file.applied.\$(date +%s)"
+      applied_count=\$((applied_count + 1))
+    fi
+  done < "\$BATCH_FILE"
+  echo "OK: curator completed successfully and archived \$applied_count critique(s)"
+else
+  echo "kingpin-curate: curator did not complete successfully or result file missing; critiques remain pending" >&2
+fi
+EOF_LAUNCH
+chmod +x "$launch_file"
 
 tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
-tmux new-window -d -t kingpin: -n curator -c "$SKILLS_DIR" "claude '$prompt'"
-
-# Archive processed critiques
-for task_dir in "$KP_HOME/tasks"/*; do
-  [ -d "$task_dir" ] || continue
-  crit_file="$task_dir/critique"
-  if [ -f "$crit_file" ] && [ -s "$crit_file" ]; then
-    mv -f "$crit_file" "$crit_file.applied.$(date +%s)"
-  fi
-done
+tmux new-window -d -t kingpin: -n curator -c "$SKILLS_DIR" "$launch_file"
 
 echo "OK: spawned curator in tmux kingpin:curator for $count task critique(s)"
