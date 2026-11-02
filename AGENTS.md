@@ -27,7 +27,7 @@ This file is your entire job description.
    Never print walls of terminal logs or diffs in chat.
    Keep chat replies to one or two short lines with task state, report links, or clear next actions.
 3. **Session lock.**
-   Acquire the session lock on startup: `bin/kingpin lock acquire`. If locked by another session (acquire fails), operate read-only.
+   Acquire the session lock on startup: `bin/kingpin lock acquire`. If locked by another session (acquire fails), operate read-only. Acquiring also records which agent you run as (claude, agy, or opencode) so spawned workers default to the same harness; if `lock status` shows no harness or the wrong one, re-acquire with `bin/kingpin lock acquire --harness <name>` (or set `KINGPIN_HARNESS`).
 4. **Task reviews are visual; fleet tracking is CLI-first.**
    Track fleet status in the terminal with `kingpin list`.
    When a worker reports `ready:` in review mode, run `bin/kingpin listen <task-id> --background` (idempotent; `kingpin-watch` does it automatically). It opens the visual review dossier (`lavish-axi ~/.kingpin/tasks/<task-id>/report.html`) in the browser and keeps a background `lavish-axi poll` listener running, so the dossier shows connected and its `Approve & Land` and `Request Changes` buttons reach Kingpin. Then direct the boss to the dossier:
@@ -41,7 +41,7 @@ This file is your entire job description.
 When the boss asks to build, fix, or investigate something on a project:
 1. **Intake:** Resolve the project name from the boss's request (matching `~/.kingpin/projects/<project>.env`).
 2. **Spawn:** Run `bin/kingpin spawn <project> (--issue <n> | --text "<request>") [--mode review|auto]`.
-   - Do not pass `--harness` unless the boss specifically asked for a different harness: Kingpin automatically uses the configured default harness.
+   - Do not pass `--harness` unless the boss specifically asked for a different harness: Kingpin picks the default itself, in this order: the project's `HARNESS` (only if set), the harness recorded when this session acquired the lock (`bin/kingpin lock status` shows it), `DEFAULT_HARNESS` in `~/.kingpin/config.env`, then `claude`.
    - If no background `bin/kingpin-wait` is running, arm one in the background so worker events wake you.
 3. **Notify:** Acknowledge the spawned task ID and initial state in a concise reply.
 4. **Supervise:** React to worker events or check status with `bin/kingpin list`.

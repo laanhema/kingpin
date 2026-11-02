@@ -11,7 +11,7 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 
 die() { echo "kingpin-init: $*" >&2; exit 1; }
 
-name='' path='' harness='claude' setup=''
+name='' path='' harness='' setup=''
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -36,7 +36,7 @@ while [ $# -gt 0 ]; do
 done
 
 case $harness in
-  claude|agy|opencode) ;;
+  ''|claude|agy|opencode) ;;
   *) die "unsupported harness: $harness (must be claude, agy, or opencode)" ;;
 esac
 
@@ -62,13 +62,15 @@ conf_file="$KP_HOME/projects/$name.env"
 
 cat > "$conf_file" <<EOF
 PROJECT_PATH=$abs_path
-HARNESS=$harness
 SETUP_CMD=$(printf '%q' "$setup")
 EOF
+# Only an explicit --harness is written: a HARNESS line overrides the harness of
+# the orchestrator session that holds the lock (see kingpin-spawn).
+[ -z "$harness" ] || printf 'HARNESS=%s\n' "$harness" >> "$conf_file"
 
 echo "OK: configured project '$name' at $conf_file"
 echo "  PROJECT_PATH: $abs_path"
-echo "  HARNESS:      $harness"
+echo "  HARNESS:      ${harness:-(not set: follows the orchestrator session, then DEFAULT_HARNESS, then claude)}"
 if [ -n "$setup" ]; then
   echo "  SETUP_CMD:    $setup"
 fi

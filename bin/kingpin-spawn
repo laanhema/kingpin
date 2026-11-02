@@ -8,7 +8,11 @@
 #   --text     a free-text request: the worker runs /create-issue first, then the same
 #   --mode     review (default) stops at a ready branch for the Lavish review; auto merges when green
 #   --id       task id; defaults to <project>-<n> or <project>-<MMDD-HHMMSS>
-#   --harness  worker harness: claude (default), agy, or opencode (overrides project config)
+#   --harness  worker harness: claude, agy, or opencode (overrides everything below)
+#
+# Default harness, first match wins: --harness > project HARNESS (only if set in
+# the project env) > the harness recorded by `kingpin lock acquire` for the live
+# orchestrator session > DEFAULT_HARNESS in $KINGPIN_HOME/config.env > claude.
 #
 # Project config: $KINGPIN_HOME/projects/<project>.env sets PROJECT_PATH (a git
 # clone), optionally HARNESS (claude|agy|opencode), and optionally SETUP_CMD
@@ -74,7 +78,8 @@ PROJECT_PATH='' SETUP_CMD='' HARNESS=''
 global_conf=$KP_HOME/config.env
 DEFAULT_HARNESS=''
 [ -f "$global_conf" ] && DEFAULT_HARNESS=$(sed -n 's/^DEFAULT_HARNESS=//p' "$global_conf" 2>/dev/null || true)
-harness=${harness_cli:-${HARNESS:-${DEFAULT_HARNESS:-claude}}}
+lock_harness=$("$KP_ROOT/bin/kingpin-lock" harness 2>/dev/null || true)
+harness=${harness_cli:-${HARNESS:-${lock_harness:-${DEFAULT_HARNESS:-claude}}}}
 case $harness in
   claude|agy|opencode) ;;
   *) die "unsupported harness: $harness (must be claude, agy, or opencode)" ;;

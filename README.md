@@ -43,11 +43,25 @@ cd /path/to/my-repo
 kingpin init
 ```
 
-Kingpin detects the git repository and writes `~/.kingpin/projects/my-repo.env` automatically. You can specify a default harness:
+Kingpin detects the git repository and writes `~/.kingpin/projects/my-repo.env` automatically. You can pin a harness for the project:
 
 ```bash
 kingpin init --harness agy
 ```
+
+Without `--harness`, no `HARNESS` is written and the project follows the default harness below.
+
+### Which harness a worker uses
+
+`kingpin spawn` picks the first of these that is set:
+
+1. `--harness <name>` on the command
+2. `HARNESS` in the project's `~/.kingpin/projects/<name>.env` (only when set explicitly, e.g. by `kingpin init --harness`)
+3. the harness of the orchestrator session that holds the lock (`kingpin lock acquire` records it; `kingpin lock status` shows it)
+4. `DEFAULT_HARNESS` in `~/.kingpin/config.env`
+5. `claude`
+
+`kingpin lock acquire` finds the harness in this order: `--harness <name>` on `acquire`, the `KINGPIN_HARNESS` environment variable, the command name of the session process (`claude`, `agy`, `opencode`), then the calling agent's own marker (`CLAUDECODE=1`, `OPENCODE=1`). A session that matches none records nothing. The record is dropped by `kingpin lock release` and ignored once the holder process is gone. Project files written by older versions of `kingpin init` contain `HARNESS=claude`, which counts as set; delete that line to let the lock holder decide.
 
 ### 2. Run a task to completion in one command
 
@@ -89,7 +103,7 @@ kingpin watch
 | `kingpin send` | `kingpin send <task-id> "<keys>"` | Sends input or answers to a worker window. |
 | `kingpin land` | `kingpin land <task-id>` | Serializes project landing and triggers merge. |
 | `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, and advances queue. |
-| `kingpin lock` | `kingpin lock check` | Enforces single active orchestrator session. |
+| `kingpin lock` | `kingpin lock [status\|check\|acquire [--harness <name>]\|release\|harness]` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. |
 | `kingpin curate` | `kingpin curate` | Aggregates critique files from finished worker tasks. |
 
 ---
