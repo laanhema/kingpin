@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -n \"${KINGPIN_TASK_DIR:-}\" ] && date +%s > \"$KINGPIN_TASK_DIR/stopped\" || true"
+          }
+        ]
+      }
+    ]
+  }
+}

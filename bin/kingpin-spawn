@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# Start one worker for one task: lease a worktree, open a tmux window there,
+# and launch claude with the worker preamble and the Stop hook.
+#
+# Usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>]
+#   --issue  an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
+#   --text   a free-text request: the worker runs /create-issue first, then the same
+#   --mode   review (default) stops at a ready branch for the Lavish review; auto merges when green
+#   --id     task id; defaults to <project>-<n> or <project>-<MMDD-HHMMSS>
+#
+# Project config: $KINGPIN_HOME/projects/<project>.env sets PROJECT_PATH (a git
+# clone) and optionally SETUP_CMD (run in the worktree before launch).
+# KINGPIN_HOME defaults to ~/.kingpin. KINGPIN_CLAUDE overrides the claude
+# command, for testing the plumbing without a real agent.
+set -euo pipefail
+
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+CLAUDE_CMD=${KINGPIN_CLAUDE:-claude}
+
+die() { echo "kingpin-spawn: $*" >&2; exit 1; }
+
+[ $# -ge 1 ] || die "usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>]"
+project=$1; shift
+issue='' text='' mode=review id=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    --issue) issue=${2:?--issue needs a number}; shift 2 ;;
+    --text) text=${2:?--text needs a request}; shift 2 ;;
+    --mode) mode=${2:?--mode needs review or auto}; shift 2 ;;
+    --id) id=${2:?--id needs a value}; shift 2 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+[ -n "$issue$text" ] || die "give --issue <n> or --text <request>"
+[ -z "$issue" ] || [ -z "$text" ] || die "give only one of --issue and --text"
+[ -z "$issue" ] || [[ $issue =~ ^[0-9]+$ ]] || die "--issue must be a number: $issue"
+case $mode in review|auto) ;; *) die "--mode must be review or auto: $mode" ;; esac
+for tool in git tmux treehouse node "${CLAUDE_CMD%% *}"; do
+  command -v "$tool" >/dev/null || die "missing command: $tool"
+done
+
+conf=$KP_HOME/projects/$project.env
+[ -f "$conf" ] || die "no project config: $conf"
+PROJECT_PATH='' SETUP_CMD=''
+# shellcheck source=/dev/null
+. "$conf"
+[ -n "$PROJECT_PATH" ] && git -C "$PROJECT_PATH" rev-parse --git-dir >/dev/null 2>&1 \
+  || die "PROJECT_PATH in $conf is not a git clone: $PROJECT_PATH"
+
+if [ -z "$id" ]; then
+  if [ -n "$issue" ]; then id=$project-$issue; else id=$project-$(date +%m%d-%H%M%S); fi
+fi
+[[ $id =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "task id must be lowercase letters, digits, and dashes: $id"
+
+task_dir=$KP_HOME/tasks/$id
+mkdir -p "$KP_HOME/tasks"
+mkdir "$task_dir" 2>/dev/null || die "task $id already exists: $task_dir"
+
+worktree=''
+launched=0
+cleanup() {
+  [ "$launched" = 1 ] && return
+  [ -n "$worktree" ] && (cd "$PROJECT_PATH" && treehouse return "$worktree" >/dev/null 2>&1) || true
+  rm -rf "$task_dir"
+}
+trap cleanup EXIT
+
+branch=kingpin/$id
+worktree=$(cd "$PROJECT_PATH" && treehouse get --lease -b "$branch") || die "treehouse could not lease a worktree"
+[ -d "$worktree" ] || die "treehouse returned no directory: $worktree"
+[ "$(git -C "$worktree" rev-parse --path-format=absolute --git-dir)" != \
+  "$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)" ] \
+  || die "refusing to launch: $worktree is not a linked worktree"
+[ "$(git -C "$worktree" branch --show-current)" = "$branch" ] || die "worktree is not on $branch"
+
+if [ -n "$SETUP_CMD" ]; then
+  (cd "$worktree" && bash -c "$SETUP_CMD") > "$task_dir/setup.log" 2>&1 \
+    || die "setup failed in $worktree; see $task_dir/setup.log"
+fi
+
+node "$KP_ROOT/lib/claude-trust.mjs" "$worktree" >/dev/null
+
+if [ -n "$issue" ]; then
+  printf 'GitHub issue #%s\n' "$issue" > "$task_dir/brief.md"
+  case $mode in
+    review) prompt="Run /issue-flow $issue." ;;
+    auto) prompt="Run /do $issue." ;;
+  esac
+else
+  printf '%s\n' "$text" > "$task_dir/brief.md"
+  case $mode in
+    review) next="/issue-flow" ;;
+    auto) next="/do" ;;
+  esac
+  prompt="Run /create-issue on the request in $task_dir/brief.md (read it first; it is the user's own words). When the issue exists, run $next on it."
+fi
+printf '%s\n' "$prompt" > "$task_dir/prompt.txt"
+
+sed -e "s|{{TASK_ID}}|$id|g" -e "s|{{TASK_DIR}}|$task_dir|g" -e "s|{{MODE}}|$mode|g" \
+  "$KP_ROOT/worker/preamble.md" > "$task_dir/preamble.md"
+: > "$task_dir/status"
+
+cat > "$task_dir/task.env" <<EOF
+TASK_ID=$id
+PROJECT=$project
+PROJECT_PATH=$PROJECT_PATH
+ISSUE=$issue
+MODE=$mode
+BRANCH=$branch
+WORKTREE=$worktree
+TMUX_TARGET=kingpin:$id
+CREATED=$(date -Iseconds)
+EOF
+
+cat > "$task_dir/launch.sh" <<EOF
+#!/usr/bin/env bash
+export KINGPIN_TASK_DIR='$task_dir'
+exec $CLAUDE_CMD --append-system-prompt-file '$task_dir/preamble.md' --settings '$KP_ROOT/worker/hooks.json' "\$(cat '$task_dir/prompt.txt')"
+EOF
+chmod +x "$task_dir/launch.sh"
+
+tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
+tmux new-window -d -t kingpin: -n "$id" -c "$worktree" "$task_dir/launch.sh"
+launched=1
+
+echo "OK: spawned $id in $worktree on $branch (tmux kingpin:$id, mode $mode)"
