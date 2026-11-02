@@ -2,6 +2,8 @@
 # Verification test for Kingpin automation (kingpin CLI, init, watch, and run).
 set -euo pipefail
 
+unset TMUX
+
 T=$(mktemp -d)
 export KINGPIN_HOME=$T/kp
 export TREEHOUSE_ROOT=$T/pool
@@ -127,6 +129,43 @@ export KINGPIN_AGY=$T/fake-runner
 # Run kingpin run in auto mode (should spawn, auto-land via watch, clean up, and exit 0)
 "$KP_BIN/kingpin" run demo-auto --issue 202 --id task-run-1 --mode auto > "$T/run.log" 2>&1
 grep -q "merged and cleaned up successfully" "$T/run.log" && pass "kingpin run completed full lifecycle" || fail "kingpin run failed"
+
+# Test 5: Worker tmux session targeting (inside and outside tmux)
+echo "=== Test 5: Worker tmux session targeting ==="
+export KINGPIN_AGY=$T/fake-worker
+
+# Case A: Outside tmux (TMUX unset or empty)
+spawn_out_outside=$(TMUX='' "$KP_BIN/kingpin" spawn demo-auto --issue 203 --id task-target-outside --mode review)
+echo "$spawn_out_outside" | grep -q "tmux kingpin:task-target-outside" && pass "spawn logged kingpin target when TMUX is empty" || fail "spawn did not log kingpin target"
+grep -q "^TMUX_TARGET=kingpin:task-target-outside$" "$KINGPIN_HOME/tasks/task-target-outside/task.env" && pass "task.env recorded kingpin:task-target-outside" || fail "wrong TMUX_TARGET in task.env"
+tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "task-target-outside" && pass "window spawned in kingpin session" || fail "window missing in kingpin session"
+"$KP_BIN/kingpin" done task-target-outside --force >/dev/null
+! tmux list-windows -t kingpin -F '#{window_name}' 2>/dev/null | grep -qx "task-target-outside" && pass "kingpin done cleaned up outside window" || fail "window lingering in kingpin session"
+
+# Case B: Inside tmux (active session targeting)
+tmux kill-session -t kp-test-active 2>/dev/null || true
+tmux new-session -d -s kp-test-active -n home
+active_sid=$(tmux display-message -p -t kp-test-active '#{session_id}' | tr -d '$')
+tmux_sock=$(tmux display-message -p '#{socket_path}' 2>/dev/null || echo "/tmp/tmux-$(id -u)/default")
+mock_tmux="$tmux_sock,$$,$active_sid"
+
+spawn_out_inside=$(TMUX="$mock_tmux" "$KP_BIN/kingpin" spawn demo-auto --issue 204 --id task-target-inside --mode review)
+echo "$spawn_out_inside" | grep -q "tmux kp-test-active:task-target-inside" && pass "spawn logged active session target when TMUX is set" || fail "spawn did not log active session target"
+grep -q "^TMUX_TARGET=kp-test-active:task-target-inside$" "$KINGPIN_HOME/tasks/task-target-inside/task.env" && pass "task.env recorded kp-test-active:task-target-inside" || fail "wrong TMUX_TARGET in task.env"
+tmux list-windows -t kp-test-active -F '#{window_name}' | grep -qx "task-target-inside" && pass "window spawned in active session" || fail "window missing in active session"
+
+# Test downstream kingpin-send targeting active session window
+send_out=$("$KP_BIN/kingpin" send task-target-inside "echo inside-active-ok")
+echo "$send_out" | grep -q "OK: sent to kp-test-active:task-target-inside" && pass "kingpin-send targeted active session window" || fail "kingpin-send failed targeting active session"
+
+"$KP_BIN/kingpin" done task-target-inside --force >/dev/null
+! tmux list-windows -t kp-test-active -F '#{window_name}' 2>/dev/null | grep -qx "task-target-inside" && pass "kingpin done cleaned up active session window" || fail "window lingering in active session"
+tmux kill-session -t kp-test-active 2>/dev/null || true
+
+# Case C: Lookup fallback when TMUX has invalid session id or lookup fails
+spawn_out_fallback=$(TMUX="/tmp/nonexistent-sock,99999,99999" "$KP_BIN/kingpin" spawn demo-auto --issue 205 --id task-target-fallback --mode review)
+grep -q "^TMUX_TARGET=kingpin:task-target-fallback$" "$KINGPIN_HOME/tasks/task-target-fallback/task.env" && pass "fallback resolved a valid TMUX_TARGET" || fail "wrong TMUX_TARGET on fallback"
+"$KP_BIN/kingpin" done task-target-fallback --force >/dev/null
 
 for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
   tmux kill-window -t "$w" 2>/dev/null || true
