@@ -193,6 +193,7 @@ case "$harness" in
     cat > "$task_dir/launch.sh" <<EOF
 #!/usr/bin/env bash
 export KINGPIN_TASK_DIR='$task_dir'
+export KINGPIN_ROOT='$KP_ROOT'
 exec $CLAUDE_CMD --append-system-prompt-file '$task_dir/preamble.md' --settings '$KP_ROOT/worker/hooks.json' "\$(cat '$task_dir/prompt.txt')"
 EOF
     ;;

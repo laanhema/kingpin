@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -x \"${KINGPIN_ROOT:-/nonexistent}/bin/kingpin-guard\" ] || { echo \"kingpin: edit guard unavailable (KINGPIN_ROOT unset or kingpin-guard missing)\" >&2; exit 2; }; \"$KINGPIN_ROOT/bin/kingpin-guard\" hook worker || exit 2"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [

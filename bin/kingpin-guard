@@ -1,20 +1,33 @@
 #!/usr/bin/env bash
-# Install or verify the orchestrator-only tool guard.
+# Install or verify the orchestrator-only tool guard, and serve its hooks.
 #
-# The orchestrator session must not edit code, so the Kingpin checkout denies
-# Edit, Write, NotebookEdit and Agent. The rules live in the untracked, git-ignored
-# .claude/settings.local.json of that checkout. They must never be committed:
-# every leased worker worktree is a checkout of the repo and would inherit them.
+# The orchestrator session must not edit code. The guard is a PreToolUse hook in the
+# untracked, git-ignored .claude/settings.local.json of the Kingpin checkout. It must
+# not be a plain deny rule: Claude Code loads that file for the checkout's linked
+# worktrees too, so deny rules for Edit, Write, NotebookEdit and Agent would strip the
+# same tools from every leased worker. The hook sees the session's working directory
+# and denies only in the main checkout. The file must never be committed either.
 #
 # Usage: kingpin-guard [install|check|warn] [--dir <kingpin-checkout>]
-#   warn  print a one-line stderr warning when the guard is not active; always exit 0,
-#         and stay silent in a linked worktree or with KINGPIN_SKIP_GUARD=1
+#        kingpin-guard hook <orchestrator|worker>   (PreToolUse hook; JSON on stdin)
+#   install  write the hook and remove the legacy deny rules an older version wrote
+#   warn     print a one-line stderr warning when the guard is not active; always exit 0,
+#            and stay silent in a linked worktree or with KINGPIN_SKIP_GUARD=1
 set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-DENY='["Edit","Write","NotebookEdit","Agent"]'
+# The deny rules older versions wrote; install removes them, check rejects them.
+LEGACY_DENY='["Edit","Write","NotebookEdit","Agent"]'
+MATCHER='Edit|Write|NotebookEdit|Agent'
 
 die() { echo "kingpin-guard: $*" >&2; exit 1; }
+
+if [ "${1:-}" = hook ]; then
+  case "${2:-}" in
+    orchestrator|worker) exec node "$KP_ROOT/lib/guard-hook.mjs" "$2" ;;
+    *) die "usage: kingpin-guard hook <orchestrator|worker>" ;;
+  esac
+fi
 
 cmd=install dir=$KP_ROOT
 while [ $# -gt 0 ]; do
@@ -23,6 +36,7 @@ while [ $# -gt 0 ]; do
     --dir) dir=${2:?--dir needs a path}; shift 2 ;;
     -h|--help)
       echo "usage: kingpin-guard [install|check|warn] [--dir <kingpin-checkout>]"
+      echo "       kingpin-guard hook <orchestrator|worker>"
       exit 0
       ;;
     *) die "unknown argument: $1" ;;
@@ -39,8 +53,10 @@ fi
 git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $dir"
 dir=$(cd "$dir" && pwd -P)
 file="$dir/.claude/settings.local.json"
+# "|| exit 2": a hook that cannot run (script missing, node missing) must deny, not let the edit through.
+hook_cmd="'$dir/bin/kingpin-guard' hook orchestrator || exit 2"
 
-# A leased worktree is a linked worktree; the guard there would block the worker.
+# A leased worktree is a linked worktree; the guard file there would be a second copy.
 if [ "$(git -C "$dir" rev-parse --path-format=absolute --git-dir)" != \
      "$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir)" ]; then
   [ "$cmd" != warn ] || exit 0
@@ -54,9 +70,20 @@ case "$cmd" in
       const fs = require("fs");
       let cfg;
       try { cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch (e) { process.exit(1); }
+      const legacy = JSON.parse(process.argv[2]);
       const deny = cfg && cfg.permissions && cfg.permissions.deny;
-      process.exit(Array.isArray(deny) && JSON.parse(process.argv[2]).every((t) => deny.includes(t)) ? 0 : 1);
-    ' "$file" "$DENY" || { echo "guard: incomplete ($file); run 'kingpin guard install'" >&2; exit 1; }
+      // Legacy deny rules leak into every worker worktree, so they fail the check.
+      if (Array.isArray(deny) && legacy.some((t) => deny.includes(t))) process.exit(2);
+      const entries = (cfg && cfg.hooks && cfg.hooks.PreToolUse) || [];
+      const ok = Array.isArray(entries) && entries.some((e) => e && e.matcher === process.argv[4] &&
+        Array.isArray(e.hooks) && e.hooks.some((h) => h && h.type === "command" && h.command === process.argv[3]));
+      process.exit(ok ? 0 : 1);
+    ' "$file" "$LEGACY_DENY" "$hook_cmd" "$MATCHER" && rc=0 || rc=$?
+    case $rc in
+      0) ;;
+      2) echo "guard: stale deny rules in $file reach worker worktrees; run 'kingpin guard install'" >&2; exit 1 ;;
+      *) echo "guard: incomplete ($file); run 'kingpin guard install'" >&2; exit 1 ;;
+    esac
     echo "guard: active ($file)"
     ;;
   warn)
@@ -67,24 +94,37 @@ case "$cmd" in
     mkdir -p "$dir/.claude"
     node -e '
       const fs = require("fs");
-      const [file, deny] = [process.argv[1], JSON.parse(process.argv[2])];
+      const [file, legacy, hookCmd, matcher] = [process.argv[1], JSON.parse(process.argv[2]), process.argv[3], process.argv[4]];
       let cfg = {};
       if (fs.existsSync(file)) {
         try { cfg = JSON.parse(fs.readFileSync(file, "utf8")); }
         catch (e) { console.error(`kingpin-guard: malformed JSON in ${file}: ${e.message}`); process.exit(1); }
       }
       const plain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+      const bad = (what) => { console.error(`kingpin-guard: ${what} in ${file} must be a JSON object`); process.exit(1); };
       if (!plain(cfg)) { console.error(`kingpin-guard: ${file} must contain a JSON object`); process.exit(1); }
-      if (cfg.permissions !== undefined && !plain(cfg.permissions)) {
-        console.error(`kingpin-guard: "permissions" in ${file} must be a JSON object`); process.exit(1);
+      if (cfg.permissions !== undefined && !plain(cfg.permissions)) bad("\"permissions\"");
+      if (cfg.hooks !== undefined && !plain(cfg.hooks)) bad("\"hooks\"");
+      if (cfg.hooks && cfg.hooks.PreToolUse !== undefined && !Array.isArray(cfg.hooks.PreToolUse)) {
+        console.error(`kingpin-guard: "hooks.PreToolUse" in ${file} must be a JSON array`); process.exit(1);
       }
-      cfg.permissions = cfg.permissions || {};
-      const have = Array.isArray(cfg.permissions.deny) ? cfg.permissions.deny : [];
-      cfg.permissions.deny = [...have, ...deny.filter((t) => !have.includes(t))];
+      // Drop the legacy deny rules (they strip the tools from worker worktrees).
+      if (cfg.permissions && Array.isArray(cfg.permissions.deny)) {
+        cfg.permissions.deny = cfg.permissions.deny.filter((t) => !legacy.includes(t));
+        if (cfg.permissions.deny.length === 0) delete cfg.permissions.deny;
+        if (Object.keys(cfg.permissions).length === 0) delete cfg.permissions;
+      }
+      // Replace any earlier copy of the guard hook (it may point at another path).
+      const ours = (h) => h && typeof h.command === "string" && /kingpin-guard.? hook orchestrator/.test(h.command);
+      cfg.hooks = cfg.hooks || {};
+      cfg.hooks.PreToolUse = (cfg.hooks.PreToolUse || [])
+        .map((e) => (e && Array.isArray(e.hooks) ? { ...e, hooks: e.hooks.filter((h) => !ours(h)) } : e))
+        .filter((e) => !(e && Array.isArray(e.hooks) && e.hooks.length === 0));
+      cfg.hooks.PreToolUse.push({ matcher, hooks: [{ type: "command", command: hookCmd }] });
       const tmp = `${file}.tmp.${process.pid}`;
       fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + "\n");
       fs.renameSync(tmp, file);
-    ' "$file" "$DENY"
+    ' "$file" "$LEGACY_DENY" "$hook_cmd" "$MATCHER"
     # The guard file must stay out of git, or worker worktrees would inherit it.
     if ! git -C "$dir" check-ignore -q "$file"; then
       excl=$(git -C "$dir" rev-parse --path-format=absolute --git-path info/exclude)

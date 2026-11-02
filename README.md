@@ -43,7 +43,7 @@ cd /path/to/my-repo
 kingpin init
 ```
 
-Kingpin detects the git repository and writes `~/.kingpin/projects/my-repo.env` automatically. It also installs the orchestrator tool guard (`kingpin guard install`): the deny rules for `Edit`, `Write`, `NotebookEdit` and `Agent` go into the untracked `.claude/settings.local.json` of the Kingpin checkout, so only the orchestrator session is restricted and leased workers keep full tooling. You can pin a harness for the project:
+Kingpin detects the git repository and writes `~/.kingpin/projects/my-repo.env` automatically. It also installs the orchestrator tool guard (`kingpin guard install`): a `PreToolUse` hook in the untracked `.claude/settings.local.json` of the Kingpin checkout denies `Edit`, `Write`, `NotebookEdit` and `Agent` when the session runs in the main checkout, so only the orchestrator session is restricted and leased workers keep full tooling (see [Worker permissions](#worker-permissions)). You can pin a harness for the project:
 
 ```bash
 kingpin init --harness agy
@@ -104,7 +104,7 @@ kingpin watch
 | `kingpin land` | `kingpin land <task-id>` (alias: `kingpin approve <task-id>`) | Serializes project landing and triggers merge. When the review verdict has findings (`APPROVE WITH NITS`, `NEEDS CHANGES`) it runs `/fix-findings` first and says so; landing continues after the worker reports `fixed:`. When the review is clean it says that landing is starting. |
 | `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, advances the queue, and archives the task record to `~/.kingpin/archive/<task-id>`. Refuses, even with `--force`, when another unfinished task records the same worktree. |
 | `kingpin lock` | `kingpin lock [status\|check\|acquire [--harness <name>]\|release\|harness]` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. |
-| `kingpin guard` | `kingpin guard [install\|check\|warn]` | Installs or verifies the orchestrator-only tool deny rules in `.claude/settings.local.json` (untracked, so workers never inherit them); `warn` prints a stderr warning when they are missing; `list` and `wait` run it at startup, and `lock acquire` prints the same warning. |
+| `kingpin guard` | `kingpin guard [install\|check\|warn]` | Installs or verifies the orchestrator-only tool guard, a `PreToolUse` hook in `.claude/settings.local.json` (untracked); `install` also removes the deny rules that older versions wrote there, which leaked into workers; `warn` prints a stderr warning when the guard is missing or stale; `kingpin guard hook <orchestrator\|worker>` is the hook entry point; `list` and `wait` run it at startup, and `lock acquire` prints the same warning. |
 | `kingpin curate` | `kingpin curate` | Aggregates critique files from finished worker tasks. |
 
 ---
@@ -149,6 +149,17 @@ kingpin board
 
 ---
 
+## Worker permissions
+
+**What a Claude Code worker may edit.** A worker runs in its own leased worktree with every tool. `worker/hooks.json` adds a `PreToolUse` hook (`kingpin guard hook worker`) for `Edit`, `Write` and `NotebookEdit`: it allows files inside the worker's worktree and its task folder (`~/.kingpin/tasks/<id>/`, where it writes `status`, `question.md` and `report.html`), and denies every other path, including the main checkout. The hook decides before the permission prompt or the auto-mode classifier, so these edits need no human approval. It does not sandbox `Bash`. Both hooks fail closed: if `kingpin-guard` cannot run (for example `KINGPIN_ROOT` is unset), the edit is denied.
+
+**Why workers used to lose `Edit`, `Write` and `Agent` (issue #40).** Claude Code loads the main checkout's `.claude/settings.local.json` for its linked worktrees. The orchestrator guard used to be `permissions.deny` rules for `Edit`, `Write`, `NotebookEdit` and `Agent` in that file, so every worker started without those tools, and fell back to `Bash` heredocs that the auto-mode classifier sometimes denied. A deny rule beats any allow rule, so a worker cannot override it. To reproduce: in a throwaway repo, put those four deny rules in `.claude/settings.local.json` of the main checkout, add a linked worktree with `git worktree add`, and run `claude -p "List your tools"` in the worktree; the four tools are missing, and they come back when the file is moved away. The guard is now a hook that denies only when the session runs in the main checkout.
+
+**Unblocking a worker.**
+- *No `Edit`/`Write`/`Agent` tool:* run `kingpin guard check` in the main checkout. If it reports stale deny rules, run `kingpin guard install` (it removes them) and respawn the worker; a running session keeps the tool list it started with.
+- *A `Bash` command denied as "dangerous":* the worker stops with `needs-input`. Approve the command in the worker's tmux window, or add a Bash permission rule with `/permissions`. Workers should edit with `Edit`/`Write`, which the hook allows.
+- *An edit denied for being outside the worktree:* the path belongs to the main checkout or another place. Put that change in a task of its own.
+
 ## Multi-Harness Architecture
 
 Each supported harness uses native configuration and hook mechanisms without dirtying repository tracking:
@@ -172,7 +183,7 @@ Run the full test suite from the repository root:
 # Multi-harness contract and isolation test
 ./tests/test-harnesses.sh
 
-# Orchestrator tool guard: workers inherit no Edit/Write/Agent deny rules
+# Orchestrator tool guard and worker edit boundary: workers keep Edit/Write/Agent inside their worktree
 ./tests/test-worker-settings.sh
 
 # 3-worker parallel concurrency and serial landing acceptance test
