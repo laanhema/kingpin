@@ -51,6 +51,28 @@ tmux_target=${TMUX_TARGET:-kingpin:$id}
 tmux kill-window -t "$tmux_target" 2>/dev/null || true
 "$KP_BIN/kingpin-ack" "$id" >/dev/null 2>&1 || true
 
+# Clean up background lavish listener and session
+if [ -f "$task_dir/listener.pid" ]; then
+  lpid=$(cat "$task_dir/listener.pid" 2>/dev/null || true)
+  if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
+    # The listener runs in its own process group (setsid): stop its poll child too.
+    kill -- "-$lpid" 2>/dev/null || kill "$lpid" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$lpid" 2>/dev/null || break
+      sleep 0.05
+    done
+    if kill -0 "$lpid" 2>/dev/null; then
+      kill -KILL -- "-$lpid" 2>/dev/null || kill -KILL "$lpid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$task_dir/listener.pid"
+fi
+
+LAVISH_CMD=${KINGPIN_LAVISH:-lavish-axi}
+if command -v "$LAVISH_CMD" >/dev/null 2>&1 && [ -f "$task_dir/report.html" ]; then
+  "$LAVISH_CMD" end "$task_dir/report.html" >/dev/null 2>&1 || true
+fi
+
 # 2. Return treehouse slot
 if [ -d "$WORKTREE" ]; then
   ret_args=()

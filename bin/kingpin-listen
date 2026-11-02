@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# Maintain an active background Lavish listener for review dossiers,
+# auto-open review dossiers in the browser, and route user feedback or approval.
+#
+# Usage: kingpin-listen <task-id> [--once] [--background]
+set -euo pipefail
+
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+KP_BIN=$(cd "$(dirname "$0")" && pwd)
+
+id=""
+ONCE=0
+BACKGROUND=0
+
+usage() {
+  echo "usage: kingpin-listen <task-id> [--once] [--background]" >&2
+  exit 1
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --once)
+      ONCE=1
+      shift
+      ;;
+    --background)
+      BACKGROUND=1
+      shift
+      ;;
+    -h|--help)
+      echo "usage: kingpin-listen <task-id> [--once] [--background]"
+      exit 0
+      ;;
+    -*)
+      echo "kingpin-listen: unknown option $1" >&2
+      exit 2
+      ;;
+    *)
+      if [ -z "$id" ]; then
+        id="$1"
+      else
+        echo "kingpin-listen: unexpected argument $1" >&2
+        exit 2
+      fi
+      shift
+      ;;
+  esac
+done
+
+[ -n "$id" ] || usage
+
+task_dir="$KP_HOME/tasks/$id"
+[ -d "$task_dir" ] || { echo "kingpin-listen: task $id not found: $task_dir" >&2; exit 1; }
+[ -f "$task_dir/report.html" ] || { echo "kingpin-listen: report.html not found in $task_dir" >&2; exit 1; }
+
+LAVISH_CMD=${KINGPIN_LAVISH:-lavish-axi}
+if ! command -v "$LAVISH_CMD" >/dev/null 2>&1; then
+  echo "kingpin-listen: $LAVISH_CMD not installed; skipping lavish review dossier listener" >&2
+  exit 0
+fi
+
+if [ "$BACKGROUND" -eq 1 ]; then
+  # Launch lock: two simultaneous launches (kingpin-watch and a manual
+  # `kingpin listen`) must not both start a listener.
+  lock_dir="$task_dir/listener.lock"
+  locked=0
+  for _ in $(seq 1 60); do
+    if mkdir "$lock_dir" 2>/dev/null; then locked=1; break; fi
+    sleep 0.05
+  done
+  if [ "$locked" -eq 0 ]; then
+    # Held for 3 s: the launcher that took it died. Take it over.
+    rm -rf "$lock_dir"
+    mkdir "$lock_dir" 2>/dev/null || exit 0
+  fi
+  trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
+
+  if [ -f "$task_dir/listener.pid" ]; then
+    existing_pid=$(cat "$task_dir/listener.pid" 2>/dev/null || true)
+    if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+      exit 0
+    fi
+  fi
+  bg_args=("$id")
+  if [ "$ONCE" -eq 1 ]; then bg_args+=(--once); fi
+  # Own session and process group, so kingpin-done can stop the poll child too.
+  starter=(); command -v setsid >/dev/null 2>&1 && starter=(setsid)
+  ${starter[@]+"${starter[@]}"} "$KP_BIN/kingpin-listen" "${bg_args[@]}" > "$task_dir/listener.log" 2>&1 < /dev/null &
+  for _ in $(seq 1 40); do
+    [ -f "$task_dir/listener.pid" ] && break
+    sleep 0.05
+  done
+  exit 0
+fi
+
+# Foreground listener process
+echo "$$" > "$task_dir/listener.pid"
+cleanup() {
+  if [ -f "$task_dir/listener.pid" ]; then
+    current_pid=$(cat "$task_dir/listener.pid" 2>/dev/null || true)
+    if [ "$current_pid" = "$$" ]; then
+      rm -f "$task_dir/listener.pid"
+    fi
+  fi
+}
+trap cleanup EXIT
+trap 'cleanup; exit 0' INT TERM
+
+# Open review dossier in browser if not already opened
+if [ ! -f "$task_dir/lavish_opened" ]; then
+  "$LAVISH_CMD" "$task_dir/report.html" >/dev/null 2>&1 || true
+  touch "$task_dir/lavish_opened"
+fi
+
+LAVISH_PATH=$(command -v "$LAVISH_CMD")
+PROMPTS_MJS="$KP_BIN/../lib/lavish-prompts.mjs"
+
+# Listener notes in the status file wake the orchestrator (kingpin-wait).
+note() { printf '%s\n' "$1" >> "$task_dir/status"; }
+reply() { "$LAVISH_CMD" reply "$task_dir/report.html" --agent-reply "$1" >/dev/null 2>&1 || true; }
+
+# How many events the worker itself has reported (listener notes do not count).
+worker_event_count() { grep -vcE '^(approved|feedback):' "$task_dir/status" 2>/dev/null || true; }
+
+handle_approve() {
+  if [ -f "$task_dir/landing_sent" ]; then
+    reply "Task $id is already landing."
+    return 0
+  fi
+  # A fix pass or re-review that an earlier approval started is still running:
+  # the worker has not reported a new event, so landing again would resend it.
+  local last
+  last=$(worker_event_count)
+  if [ -f "$task_dir/approve_pending" ] && [ "$(cat "$task_dir/approve_pending")" = "$last" ]; then
+    reply "Approval already received; waiting for the worker to finish its fix pass or re-review."
+    return 0
+  fi
+  # kingpin-land reads the worker's last ready:/fixed: line, so land first and
+  # only then record the approval for the orchestrator.
+  local out
+  out=$("$KP_BIN/kingpin-land" "$id" 2>&1 || true)
+  if [ -f "$task_dir/landing_sent" ]; then
+    rm -f "$task_dir/approve_pending"
+  else
+    printf '%s\n' "$last" > "$task_dir/approve_pending"
+  fi
+  note "approved: by user via lavish dossier"
+  reply "Approval received. $(printf '%s\n' "$out" | tail -n 1)"
+}
+
+handle_feedback() {
+  local text=$1 summary
+  {
+    printf '## %s\n\n%s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$text"
+  } >> "$task_dir/feedback.md"
+  summary=$(printf '%s\n' "$text" | head -n 1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | cut -c 1-100)
+  note "feedback: $summary"
+  reply "Feedback received. Forwarded to the orchestrator."
+}
+
+# Poll loop: re-poll after every response; only an ended session stops it.
+fails=0
+while true; do
+  [ -d "$task_dir" ] || break
+  [ -f "$task_dir/report.html" ] || break
+
+  if poll_out=$("$LAVISH_CMD" poll "$task_dir/report.html" --owner "kingpin:$id" --takeover 2>&1); then
+    fails=0
+  else
+    fails=$((fails + 1))
+    if [ "$fails" -ge 20 ]; then
+      echo "kingpin-listen: poll failed $fails times in a row; giving up" >&2
+      break
+    fi
+    # Session lost (e.g. server restart): open it again, unless the user ended it.
+    if printf '%s' "$poll_out" | grep -q 'NOT_FOUND' && [ ! -f "$task_dir/lavish_ended" ]; then
+      "$LAVISH_CMD" "$task_dir/report.html" >/dev/null 2>&1 || true
+    fi
+    [ "$ONCE" -eq 1 ] && break
+    sleep 2
+    continue
+  fi
+
+  status=""
+  parsed=0
+  while IFS=$'\t' read -r kind payload; do
+    case "$kind" in
+      status) status=$payload ;;
+      approve) parsed=$((parsed + 1)); handle_approve ;;
+      feedback) parsed=$((parsed + 1)); handle_feedback "$(printf '%s' "$payload" | base64 -d)" ;;
+    esac
+  done < <(printf '%s\n' "$poll_out" | LAVISH_AXI_BIN="$LAVISH_PATH" node "$PROMPTS_MJS" "$id" 2>/dev/null || true)
+
+  # The poll carried prompts that the parser could not read: keep the raw
+  # response, so a lavish-axi output change does not lose feedback silently.
+  if [ "$parsed" -eq 0 ] && printf '%s\n' "$poll_out" | grep -qE '^prompts\[[1-9]'; then
+    {
+      echo "kingpin-listen: $(date -u +%Y-%m-%dT%H:%M:%SZ) poll returned prompts that could not be parsed; raw response:"
+      printf '%s\n' "$poll_out"
+    } >> "$task_dir/listener.log"
+    reply "I could not read your last message. Please resend it as plain text."
+  fi
+
+  if [ "$status" = "ended" ]; then
+    touch "$task_dir/lavish_ended"
+    break
+  fi
+  [ "$ONCE" -eq 1 ] && break
+  # waiting / browser_disconnected / feedback: poll again (the session stays resumable)
+  [ "$status" = "feedback" ] || sleep 2
+done

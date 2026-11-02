@@ -10,6 +10,7 @@
 #   kingpin land <task-id>
 #   kingpin done <task-id> [--force]
 #   kingpin send <task-id> "<keys>"
+#   kingpin listen <task-id> [--once] [--background]
 #   kingpin wait [--timeout <seconds>] [--once]
 #   kingpin ack <task-id>... | --all
 #   kingpin list
@@ -35,6 +36,7 @@ Commands:
   land      Initiate serialized project landing for a ready worker
   done      Verify merge, release worktree lease, and advance queue
   send      Send input or approval keys to a worker
+  listen    Maintain background Lavish listener and handle review actions
   wait      Wait for fleet task events (blocking or --once)
   ack       Acknowledge task events to advance seen counters
   list      Display active tasks and fleet state in the terminal
@@ -84,6 +86,9 @@ case "$cmd" in
   curate)
     exec "$KP_BIN/kingpin-curate" "$@"
     ;;
+  listen)
+    exec "$KP_BIN/kingpin-listen" "$@"
+    ;;
   list|status)
     tasks_dir="$KP_HOME/tasks"
     if [ ! -d "$tasks_dir" ] || [ -z "$(ls -A "$tasks_dir" 2>/dev/null)" ]; then
@@ -112,7 +117,14 @@ case "$cmd" in
       fi
       printf "%-22s %-10s %-8s %-12s %s\n" "$tid" "$proj" "$harness" "$mode" "$st"
       if [ -f "$d/report.html" ]; then
-        printf "  %-20s %s\n" "↳ Review:" "lavish-axi $d/report.html"
+        listen_info=""
+        if [ -f "$d/listener.pid" ]; then
+          lpid=$(cat "$d/listener.pid" 2>/dev/null || true)
+          if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
+            listen_info=" (listening: pid $lpid)"
+          fi
+        fi
+        printf "  %-20s %s%s\n" "↳ Review:" "lavish-axi $d/report.html" "$listen_info"
       fi
     done
     ;;

@@ -30,7 +30,7 @@ This file is your entire job description.
    Acquire the session lock on startup: `bin/kingpin lock acquire`. If locked by another session (acquire fails), operate read-only.
 4. **Task reviews are visual; fleet tracking is CLI-first.**
    Track fleet status in the terminal with `kingpin list`.
-   When a worker reports `ready:`, direct the boss to the visual review dossier:
+   When a worker reports `ready:` in review mode, run `bin/kingpin listen <task-id> --background` (idempotent; `kingpin-watch` does it automatically). It opens the visual review dossier (`lavish-axi ~/.kingpin/tasks/<task-id>/report.html`) in the browser and keeps a background `lavish-axi poll` listener running, so the dossier shows connected and its `Approve & Land` and `Request Changes` buttons reach Kingpin. Then direct the boss to the dossier:
    `lavish-axi ~/.kingpin/tasks/<task-id>/report.html` (which shows diffs, verification, and landing actions).
    When a worker reports `needs-input:`, read `~/.kingpin/tasks/<task-id>/question.md`, relay the question concisely, and send the boss's response via `kingpin send <task-id> "<answer>"`.
 5. **Background event wait.**
@@ -48,7 +48,9 @@ When the boss asks to build, fix, or investigate something on a project:
    - When a background `bin/kingpin-wait` exits and returns `<task-id> <reason>` lines:
      1. Inspect `~/.kingpin/tasks/<task-id>/status` (or `question.md`/`report.html` as appropriate).
      2. Handle or relay the event to the boss:
-        - On `ready:` in review mode: if `landing_in_progress` is set, run `bin/kingpin land <task-id>` to continue landing; otherwise provide the review dossier link (`lavish-axi ~/.kingpin/tasks/<task-id>/report.html`) and wait for the boss's approval.
+        - On `ready:` in review mode: if `landing_in_progress` is set, run `bin/kingpin land <task-id>` to continue landing; otherwise arm the listener as in rule 4 and give the boss the dossier link while waiting for approval.
+        - On `approved:`: the dossier listener already ran `kingpin land` for this approval; do not run it again. Confirm with `bin/kingpin list`.
+        - On `feedback:`: read `~/.kingpin/tasks/<task-id>/feedback.md` (newest entry last), relay it concisely to the boss, and send the boss's decision to the worker via `kingpin send <task-id> "<text>"`.
         - On `fixed:`: run `bin/kingpin land <task-id>` to continue landing.
         - On approval: run `bin/kingpin land <task-id>`.
         - On `merged:`: run `bin/kingpin done <task-id>` to release the worktree lease.
