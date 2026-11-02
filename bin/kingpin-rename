@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Rename the tmux window of a --text task once its worker has created the
+# GitHub issue, so the window reads kp-<n>-<slug> like an --issue task.
+#
+# Only the window and TMUX_TARGET change. The task ID, the task folder, the
+# branch and the worktree keep their first name: the worker holds those paths
+# while it runs. Idempotent: a `renamed` marker in the task folder makes later
+# calls a no-op, and it is written last, so a failed rename retries.
+#
+# Usage: kingpin-rename <task-id>
+# Command overrides: KINGPIN_GH.
+set -euo pipefail
+
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+GH_CMD=${KINGPIN_GH:-gh}
+# kingpin-wait calls this synchronously: a hung gh call must not block fleet events.
+GH_TIMEOUT=; ! command -v timeout >/dev/null || GH_TIMEOUT="timeout 10"
+
+[ $# -ge 1 ] || { echo "usage: kingpin-rename <task-id>" >&2; exit 1; }
+id=$1
+
+task_dir=$KP_HOME/tasks/$id
+env_file=$task_dir/task.env
+status_file=$task_dir/status
+[ -d "$task_dir" ] && [ -f "$env_file" ] || exit 0
+[ ! -f "$task_dir/renamed" ] || exit 0
+[ -z "$(sed -n 's/^ISSUE=//p' "$env_file")" ] || exit 0
+[ -f "$status_file" ] || exit 0
+
+line=$(grep -E '^issue: #[0-9]+' "$status_file" | head -n 1 || true)
+[ -n "$line" ] || exit 0
+n=$(printf '%s\n' "$line" | sed -E 's/^issue: #([0-9]+).*/\1/')
+
+project_path=$(sed -n 's/^PROJECT_PATH=//p' "$env_file")
+target=$(sed -n 's/^TMUX_TARGET=//p' "$env_file")
+window_id=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$env_file")
+[ -n "$target" ] || target=kingpin:$id
+
+title=''
+[ -d "$project_path" ] && title=$(cd "$project_path" && $GH_TIMEOUT $GH_CMD issue view "$n" --json title -q .title 2>/dev/null || true)
+slug=$(node "$KP_ROOT/lib/slug.mjs" "$title" 2>/dev/null || true)
+[ -n "$slug" ] || slug=${id#kp-}
+new=kp-$n${slug:+-$slug}
+[[ $new =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 0
+
+window=${window_id:-$target}
+if tmux list-panes -t "$window" >/dev/null 2>&1; then
+  tmux rename-window -t "$window" "$new"
+fi
+
+session=${target%%:*}
+tmp=$env_file.rename.$$
+sed "s|^TMUX_TARGET=.*|TMUX_TARGET=$session:$new|" "$env_file" > "$tmp"
+mv "$tmp" "$env_file"
+printf '%s\n' "$new" > "$task_dir/renamed"
+echo "kingpin-rename: $id window renamed to $new"

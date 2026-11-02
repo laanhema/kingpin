@@ -7,7 +7,9 @@
 #   --issue    an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
 #   --text     a free-text request: the worker runs /create-issue first, then the same
 #   --mode     review (default) stops at a ready branch for the Lavish review; auto merges when green
-#   --id       task id; defaults to <project>-<n> or <project>-<MMDD-HHMMSS>
+#   --id       task id; defaults to kp-<n>-<slug> (slug from the issue title) or kp-<slug>
+#              (slug from the request). The id is also the branch (kingpin/<id>) and the
+#              tmux window name. An explicit --id skips slug generation.
 #   --harness  worker harness: claude, agy, or opencode (overrides everything below)
 #
 # Default harness, first match wins: --harness > project HARNESS (only if set in
@@ -18,7 +20,7 @@
 # clone), optionally HARNESS (claude|agy|opencode), and optionally SETUP_CMD
 # (run in the worktree before launch).
 # KINGPIN_HOME defaults to ~/.kingpin.
-# Command overrides: KINGPIN_CLAUDE, KINGPIN_AGY, KINGPIN_OPENCODE.
+# Command overrides: KINGPIN_CLAUDE, KINGPIN_AGY, KINGPIN_OPENCODE, KINGPIN_GH.
 set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -26,6 +28,9 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 CLAUDE_CMD=${KINGPIN_CLAUDE:-claude}
 AGY_CMD=${KINGPIN_AGY:-agy}
 OPENCODE_CMD=${KINGPIN_OPENCODE:-opencode}
+GH_CMD=${KINGPIN_GH:-gh}
+# A hung gh call must degrade to the kp-<n> fallback, not stall the spawn.
+GH_TIMEOUT=; ! command -v timeout >/dev/null || GH_TIMEOUT="timeout 10"
 
 die() { echo "kingpin-spawn: $*" >&2; exit 1; }
 
@@ -96,7 +101,19 @@ for tool in git tmux treehouse node "$harness_bin"; do
 done
 
 if [ -z "$id" ]; then
-  if [ -n "$issue" ]; then id=$project-$issue; else id=$project-$(date +%m%d-%H%M%S); fi
+  if [ -n "$issue" ]; then
+    # A failed gh call or an empty slug degrades to kp-<n>; it never aborts the spawn.
+    title=$(cd "$PROJECT_PATH" && $GH_TIMEOUT $GH_CMD issue view "$issue" --json title -q .title 2>/dev/null || true)
+    slug=$(node "$KP_ROOT/lib/slug.mjs" "$title" 2>/dev/null || true)
+    id=kp-$issue${slug:+-$slug}
+  else
+    slug=$(node "$KP_ROOT/lib/slug.mjs" "$text" 2>/dev/null || true)
+    base=kp-${slug:-task}
+    id=$base
+    n=2
+    # Two live text tasks with the same opening words must not collide.
+    while [ -e "$KP_HOME/tasks/$id" ]; do id=$base-$n; n=$((n + 1)); done
+  fi
 fi
 [[ $id =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "task id must be lowercase letters, digits, and dashes: $id"
 

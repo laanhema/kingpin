@@ -1358,6 +1358,80 @@ t16_local feature/t16-unmerged && t16_remote_has feature/t16-unmerged && pass "t
 PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t16-unmerged --force >/dev/null 2>&1 || true
 t16_remote_has feature/t16-unmerged && pass "t16: --force leaves the unverified remote branch alone" || fail "t16: --force deleted the remote branch"
 
+# Test 17: descriptive slugs for task ID, branch and window (kp-<n>-<slug> / kp-<slug>)
+echo "=== Test 17: descriptive title slugs ==="
+t17_title='Unify Task ID, git branch, and window name with descriptive title slugs'
+[ "$(node "$KP_ROOT/lib/slug.mjs" "$t17_title")" = "unify-task-id" ] && pass "t17: slug of a long title is 3 words" || fail "t17: wrong slug for the long title"
+[ -z "$(node "$KP_ROOT/lib/slug.mjs" '!!!')" ] && pass "t17: punctuation-only text gives an empty slug" || fail "t17: punctuation-only slug not empty"
+[ "$(node "$KP_ROOT/lib/slug.mjs" 'Überprüfung der API')" = "uberprufung-der-api" ] && pass "t17: accents are folded" || fail "t17: accents not folded"
+t17_long=$(node "$KP_ROOT/lib/slug.mjs" 'Internationalization infrastructure modernization')
+[[ $t17_long =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] && [ "${#t17_long}" -le 24 ] && pass "t17: slug is lowercase dashes and at most 24 chars ($t17_long)" || fail "t17: bad slug shape: $t17_long"
+[ "$(node "$KP_ROOT/lib/slug.mjs" 'the supercalifragilisticexpialidocious thing')" = "supercalifragilisticexpi" ] && pass "t17: an over-long first word falls back to a non-stop word" || fail "t17: over-long first word fell back to a stop word"
+
+# gh stub: prints a fixed title, logs every call, fails when t17-gh-fail exists
+cat > "$T/t17-gh" << 'EOF17'
+#!/usr/bin/env bash
+echo "$*" >> "$(dirname "$0")/t17-gh-calls"
+[ ! -e "$(dirname "$0")/t17-gh-fail" ] || exit 1
+echo "Wait for worker wakeup events"
+EOF17
+chmod +x "$T/t17-gh"
+export KINGPIN_GH=$T/t17-gh
+export KINGPIN_AGY=$T/fake-worker
+
+# Issue mode: ID, branch, window and TMUX_TARGET carry the same slug
+t17_id=kp-301-wait-worker-wakeup
+t17_out=$("$KP_BIN/kingpin" spawn demo-auto --issue 301 --mode review)
+echo "$t17_out" | grep -q "spawned $t17_id " && pass "t17: issue spawn named $t17_id" || fail "t17: issue spawn ID wrong: $t17_out"
+t17_env=$KINGPIN_HOME/tasks/$t17_id/task.env
+grep -qx "BRANCH=kingpin/$t17_id" "$t17_env" && pass "t17: BRANCH is kingpin/$t17_id" || fail "t17: wrong BRANCH"
+grep -qx "TMUX_TARGET=kingpin:$t17_id" "$t17_env" && pass "t17: TMUX_TARGET is kingpin:$t17_id" || fail "t17: wrong TMUX_TARGET"
+tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "$t17_id" && pass "t17: tmux window is named $t17_id" || fail "t17: window name wrong"
+t17_wt=$(sed -n 's/^WORKTREE=//p' "$t17_env")
+[ "$(git -C "$t17_wt" branch --show-current)" = "kingpin/$t17_id" ] && pass "t17: worktree is on kingpin/$t17_id" || fail "t17: worktree branch wrong"
+"$KP_BIN/kingpin" send "$t17_id" "echo t17-ok" | grep -q "OK: sent to kingpin:$t17_id" && pass "t17: kingpin send reaches the slugged window" || fail "t17: kingpin send failed"
+"$KP_BIN/kingpin" done "$t17_id" --force >/dev/null
+! tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "$t17_id" && [ ! -d "$KINGPIN_HOME/tasks/$t17_id" ] && pass "t17: kingpin done closed and archived the slugged task" || fail "t17: kingpin done left the task behind"
+
+# gh failing: the spawn degrades to kp-<n>
+touch "$T/t17-gh-fail"
+"$KP_BIN/kingpin" spawn demo-auto --issue 302 --mode review | grep -q "spawned kp-302 " && pass "t17: gh failure falls back to kp-302" || fail "t17: gh failure did not fall back to kp-302"
+"$KP_BIN/kingpin" done kp-302 --force >/dev/null
+rm -f "$T/t17-gh-fail"
+
+# Text mode: kp-<slug>, second identical request gets -2
+"$KP_BIN/kingpin" spawn demo-auto --text "refactor authentication service" --mode review | grep -q "spawned kp-refactor-authentication " && pass "t17: text spawn named kp-refactor-authentication" || fail "t17: text spawn ID wrong"
+"$KP_BIN/kingpin" spawn demo-auto --text "refactor authentication service" --mode review | grep -q "spawned kp-refactor-authentication-2 " && pass "t17: second identical text spawn gets -2" || fail "t17: text spawn collided"
+tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "kp-refactor-authentication" && pass "t17: text window is named kp-refactor-authentication" || fail "t17: text window name wrong"
+
+# Rename: once the worker reports its issue, the window and TMUX_TARGET follow
+t17_text=kp-refactor-authentication
+t17_tenv=$KINGPIN_HOME/tasks/$t17_text/task.env
+t17_twid=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$t17_tenv")
+t17_tbranch=$(sed -n 's/^BRANCH=//p' "$t17_tenv")
+echo "issue: #303 https://example/303" >> "$KINGPIN_HOME/tasks/$t17_text/status"
+"$KP_BIN/kingpin-wait" --once >/dev/null || true
+t17_new=kp-303-wait-worker-wakeup
+[ "$(tmux display-message -p -t "$t17_twid" '#{window_name}')" = "$t17_new" ] && pass "t17: window renamed to $t17_new after the issue line" || fail "t17: window not renamed"
+grep -qx "TMUX_TARGET=kingpin:$t17_new" "$t17_tenv" && pass "t17: TMUX_TARGET rewritten to kingpin:$t17_new" || fail "t17: TMUX_TARGET not rewritten"
+grep -qx "TMUX_WINDOW_ID=$t17_twid" "$t17_tenv" && grep -qx "BRANCH=$t17_tbranch" "$t17_tenv" && [ -d "$KINGPIN_HOME/tasks/$t17_text" ] && pass "t17: window ID, branch and task folder unchanged" || fail "t17: rename touched the window ID, branch or task folder"
+[ -f "$KINGPIN_HOME/tasks/$t17_text/renamed" ] && pass "t17: renamed marker written" || fail "t17: no renamed marker"
+"$KP_BIN/kingpin" send "$t17_text" "echo t17-renamed" | grep -q "OK: sent to kingpin:$t17_new" && pass "t17: kingpin send reaches the renamed window" || fail "t17: kingpin send after rename failed"
+t17_calls=$(wc -l < "$T/t17-gh-calls")
+"$KP_BIN/kingpin-wait" --once >/dev/null || true
+"$KP_BIN/kingpin-rename" "$t17_text" >/dev/null
+[ "$(wc -l < "$T/t17-gh-calls")" = "$t17_calls" ] && [ "$(tmux display-message -p -t "$t17_twid" '#{window_name}')" = "$t17_new" ] && pass "t17: a second rename is a no-op" || fail "t17: second rename was not a no-op"
+"$KP_BIN/kingpin" done "$t17_text" --force >/dev/null
+"$KP_BIN/kingpin" done kp-refactor-authentication-2 --force >/dev/null
+! tmux list-windows -t kingpin -F '#{window_name}' | grep -qE "^kp-(303|refactor)" && pass "t17: kingpin done closed the renamed windows" || fail "t17: windows left behind"
+
+# An explicit --id wins and never calls gh
+rm -f "$T/t17-gh-calls"
+"$KP_BIN/kingpin" spawn demo-auto --issue 304 --id t17-explicit --mode review | grep -q "spawned t17-explicit " && pass "t17: --id overrides the generated ID" || fail "t17: --id ignored"
+[ ! -e "$T/t17-gh-calls" ] && pass "t17: --id spawn made no gh call" || fail "t17: --id spawn called gh"
+"$KP_BIN/kingpin" done t17-explicit --force >/dev/null
+unset KINGPIN_GH
+
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"
 else

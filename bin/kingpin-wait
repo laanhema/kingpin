@@ -69,6 +69,8 @@ check_task() {
 
   # 1. New status lines
   if [ "$status_count" -gt "$seen_count" ]; then
+    # A --text task learns its issue number here: rename its window (best effort).
+    "$(dirname "$0")/kingpin-rename" "$id" >/dev/null 2>&1 || true
     echo "$id status"
     return 0
   fi
