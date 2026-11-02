@@ -48,7 +48,8 @@ When the boss asks to build, fix, or investigate something on a project:
    - When a background `bin/kingpin-wait` exits and returns `<task-id> <reason>` lines:
      1. Inspect `~/.kingpin/tasks/<task-id>/status` (or `question.md`/`report.html` as appropriate).
      2. Handle or relay the event to the boss:
-        - On `ready:` in review mode: provide the review dossier link (`lavish-axi ~/.kingpin/tasks/<task-id>/report.html`) and wait for the boss's approval.
+        - On `ready:` in review mode: if `landing_in_progress` is set, run `bin/kingpin land <task-id>` to continue landing; otherwise provide the review dossier link (`lavish-axi ~/.kingpin/tasks/<task-id>/report.html`) and wait for the boss's approval.
+        - On `fixed:`: run `bin/kingpin land <task-id>` to continue landing.
         - On approval: run `bin/kingpin land <task-id>`.
         - On `merged:`: run `bin/kingpin done <task-id>` to release the worktree lease.
         - On `needs-input:`: relay the question from `question.md` concisely to the boss.

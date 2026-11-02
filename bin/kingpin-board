@@ -63,6 +63,8 @@ def derive_task_state(task_dir: Path, task_env: dict, status_lines: list) -> tup
         return "failed", last_line[len("failed:"):].strip()
     if last_line.startswith("ready:"):
         return "ready", "Review complete, ready to land"
+    if last_line.startswith("fixed:"):
+        return "fixing", f"Fix pass: {last_line[len('fixed:'):].strip()}"
     if not alive and not last_line:
         return "failed", "Window closed before startup"
     if not alive:
@@ -155,7 +157,7 @@ def render_html(tasks: list) -> str:
     total = len(tasks)
     ready_count = sum(1 for t in tasks if t["state"] == "ready")
     input_count = sum(1 for t in tasks if t["state"] == "needs-input")
-    running_count = sum(1 for t in tasks if t["state"] in ("running", "drafting", "quiet"))
+    running_count = sum(1 for t in tasks if t["state"] in ("running", "drafting", "quiet", "fixing"))
 
     cards_html = []
     for t in tasks:

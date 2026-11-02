@@ -19,30 +19,71 @@ env_file="$task_dir/task.env"
 
 project=$(sed -n 's/^PROJECT=//p' "$env_file" 2>/dev/null || true)
 issue=$(sed -n 's/^ISSUE=//p' "$env_file" 2>/dev/null || true)
+worktree=$(sed -n 's/^WORKTREE=//p' "$env_file" 2>/dev/null || true)
 [ -n "$project" ] || project="default"
 
 status_file="$task_dir/status"
 last_status=$(tail -n 1 "$status_file" 2>/dev/null || true)
 
-# Extract report and review verdict if present
-verdict=""
-report=""
-if [[ $last_status =~ review=([^ ]+) ]]; then
-  verdict="${BASH_REMATCH[1]}"
-fi
-if [[ $last_status =~ report=([^ ]+) ]]; then
-  report="${BASH_REMATCH[1]}"
+if [ -z "$issue" ] && [ -f "$status_file" ]; then
+  # Parse issue number from status if not in task.env
+  if grep -E -q '^issue: #[0-9]+' "$status_file"; then
+    issue=$(grep -E '^issue: #[0-9]+' "$status_file" | head -n 1 | sed -E 's/^issue: #([0-9]+).*/\1/')
+  fi
 fi
 
-# If verdict is NEEDS CHANGES or has findings, run /fix-findings first
-if [ "$verdict" = "NEEDS_CHANGES" ] || [ "$verdict" = "NEEDS-CHANGES" ]; then
-  echo "kingpin-land: task $id review verdict is $verdict; sending /fix-findings"
-  if [ -n "$report" ] && [ -f "$report" ]; then
-    "$KP_BIN/kingpin-send" "$id" "/fix-findings $report"
-  else
-    "$KP_BIN/kingpin-send" "$id" "/fix-findings"
+# Handle fixed: status line
+if [[ $last_status =~ ^fixed: ]]; then
+  high=0
+  if [[ $last_status =~ high=([0-9]+) ]]; then
+    high="${BASH_REMATCH[1]}"
   fi
-  exit 0
+  if [ "$high" -gt 0 ]; then
+    echo "kingpin-land: task $id fixed $high High/Critical finding(s); requesting re-review"
+    if [ -n "$issue" ]; then
+      "$KP_BIN/kingpin-send" "$id" "/review --issue $issue"
+    else
+      "$KP_BIN/kingpin-send" "$id" "/review"
+    fi
+    exit 0
+  fi
+  echo "kingpin-land: task $id fix pass completed cleanly; proceeding to landing"
+else
+  # Extract report and review verdict if present
+  verdict=""
+  report=""
+  if [[ $last_status =~ review=(.*)[[:space:]]+report=([^[:space:]]*) ]]; then
+    verdict="${BASH_REMATCH[1]}"
+    report="${BASH_REMATCH[2]}"
+  elif [[ $last_status =~ review=([^ ]+( [^ ]+)*) ]]; then
+    verdict="${BASH_REMATCH[1]}"
+  fi
+  if [ -z "$report" ] && [[ $last_status =~ report=([^[:space:]]+) ]]; then
+    report="${BASH_REMATCH[1]}"
+  fi
+  verdict=$(echo "$verdict" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  report=$(echo "$report" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+
+  resolved_report=""
+  if [ -n "$report" ] && [ "$report" != "none" ]; then
+    if [[ "$report" != /* ]] && [ -n "$worktree" ]; then
+      resolved_report="$worktree/$report"
+    else
+      resolved_report="$report"
+    fi
+  fi
+
+  # If verdict is NEEDS CHANGES or has findings, run /fix-findings first
+  if [ "$verdict" = "APPROVE WITH NITS" ] || [ "$verdict" = "NEEDS CHANGES" ] || [ "$verdict" = "NEEDS_CHANGES" ] || [ "$verdict" = "NEEDS-CHANGES" ]; then
+    echo "kingpin-land: task $id review verdict is $verdict; sending /fix-findings"
+    touch "$task_dir/landing_in_progress"
+    if [ -n "$resolved_report" ]; then
+      "$KP_BIN/kingpin-send" "$id" "/fix-findings $resolved_report"
+    else
+      "$KP_BIN/kingpin-send" "$id" "/fix-findings"
+    fi
+    exit 0
+  fi
 fi
 
 # Project-level serialization lock
@@ -62,13 +103,7 @@ fi
 
 # Acquire landing lock for this project
 echo "$id" > "$project_landing_lock"
-
-if [ -z "$issue" ]; then
-  # Parse issue number from status if not in task.env
-  if grep -E -q '^issue: #[0-9]+' "$status_file"; then
-    issue=$(grep -E '^issue: #[0-9]+' "$status_file" | head -n 1 | sed -E 's/^issue: #([0-9]+).*/\1/')
-  fi
-fi
+touch "$task_dir/landing_sent"
 
 if [ -n "$issue" ]; then
   echo "kingpin-land: sending /issue-flow-done $issue to $id"
