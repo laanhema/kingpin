@@ -52,6 +52,7 @@ When the boss asks to build, fix, or investigate something on a project:
         - On `fixed:`: run `bin/kingpin land <task-id>` to continue landing.
         - On approval: run `bin/kingpin land <task-id>`.
         - On `merged:`: run `bin/kingpin done <task-id>` to release the worktree lease.
+        - On `cleanup-refused:`: notify the boss with the refusal reason. The project's landing lock is already released and `kingpin-watch` retries the cleanup on its own, so no action is needed once the cause clears. Run `bin/kingpin done <task-id> --force` only on the boss's word: it discards uncommitted changes (reason "uncommitted changes") or commits that are not yet on the remote default branch (reason "HEAD ... is not yet merged").
         - On `needs-input:`: relay the question from `question.md` concisely to the boss.
         - On `exited`: report worker termination to the boss.
      3. Acknowledge the event with `bin/kingpin ack <task-id>` to advance seen counters.

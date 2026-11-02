@@ -510,6 +510,165 @@ tmux kill-window -t kingpin:t7-app 2>/dev/null || true
 rm -f "$KINGPIN_HOME/projects/demo-auto.landing" "$KINGPIN_HOME/projects/demo-auto.landing_queue"
 rm -rf "$t7_app"
 
+# Test 10: Refused cleanup handling and landing queue preservation
+echo "=== Test 10: Refused cleanup handling and landing queue preservation ==="
+t10_dir1="$KINGPIN_HOME/tasks/t10-dirty"
+t10_dir2="$KINGPIN_HOME/tasks/t10-queued"
+mkdir -p "$t10_dir1" "$t10_dir2"
+
+t10_wt1="$T/wt-t10-1"
+t10_wt2="$T/wt-t10-2"
+mkdir -p "$t10_wt1" "$t10_wt2"
+git -C "$t10_wt1" init -q
+git -C "$t10_wt2" init -q
+
+(
+  cd "$t10_wt1"
+  git checkout -qb main
+  git config user.name "Tester"
+  git config user.email "test@example.com"
+  echo "initial" > init.txt
+  git add init.txt
+  git commit -qm "initial commit"
+)
+
+t10_remote="$T/remote-t10.git"
+git init --bare -q "$t10_remote"
+(
+  cd "$t10_wt1"
+  git remote add origin "$t10_remote"
+  git push -q origin main
+  git branch -u origin/main main
+)
+
+cat > "$t10_dir1/task.env" << EOF
+TASK_ID=t10-dirty
+PROJECT=demo-t10
+PROJECT_PATH=$t10_wt1
+WORKTREE=$t10_wt1
+BRANCH=feature-t10-1
+TMUX_TARGET=kingpin:t10-dirty
+EOF
+echo "dirty uncommitted changes" > "$t10_wt1/uncommitted.txt"
+echo "ready: branch=feature-t10-1 review=APPROVE report=none" > "$t10_dir1/status"
+
+cat > "$t10_dir2/task.env" << EOF
+TASK_ID=t10-queued
+PROJECT=demo-t10
+PROJECT_PATH=$t10_wt2
+WORKTREE=$t10_wt2
+BRANCH=feature-t10-2
+TMUX_TARGET=kingpin:t10-queued
+EOF
+echo "ready: branch=feature-t10-2 review=APPROVE report=none" > "$t10_dir2/status"
+
+tmux new-window -d -t kingpin: -n t10-dirty cat
+tmux new-window -d -t kingpin: -n t10-queued cat
+
+# 1. Task 1 lands and acquires landing lock
+"$KP_BIN/kingpin" land t10-dirty >/dev/null
+[ -f "$KINGPIN_HOME/projects/demo-t10.landing" ] && pass "t10-dirty acquired landing lock" || fail "t10-dirty landing lock missing"
+
+# 2. Task 2 attempts to land and gets queued
+"$KP_BIN/kingpin" land t10-queued >/dev/null
+grep -qx "t10-queued" "$KINGPIN_HOME/projects/demo-t10.landing_queue" 2>/dev/null && pass "t10-queued added to landing_queue" || fail "t10-queued not queued"
+
+# 3. Simulate Task 1 reporting merged
+echo "merged: pr=https://github.com/example/demo/pull/1" >> "$t10_dir1/status"
+
+# 4. Run kingpin-watch --once (which will run kingpin-done t10-dirty)
+"$KP_BIN/kingpin" watch --once >/dev/null 2>&1 || true
+
+# Assert AC 1: done_cleaned is NOT written on refused cleanup
+[ ! -f "$t10_dir1/done_cleaned" ] && pass "done_cleaned not written on refused cleanup" || fail "done_cleaned prematurely written on refused cleanup"
+
+# Assert AC 2: A refused cleanup appears as a task event with refusal reason
+grep -q "^cleanup-refused:" "$t10_dir1/status" && pass "cleanup-refused recorded in status" || fail "cleanup-refused not found in status"
+refusal_reason=$(tail -n 1 "$t10_dir1/status")
+echo "$refusal_reason" | grep -q "uncommitted changes" && pass "refusal reason captured in status event" || fail "refusal reason missing: $refusal_reason"
+
+# Assert AC 3: Refused cleanup does not leave landing lock held forever; next queued task can land
+holder=$(cat "$KINGPIN_HOME/projects/demo-t10.landing" 2>/dev/null || true)
+[ "$holder" = "t10-queued" ] && pass "landing lock handed off to next queued task t10-queued" || fail "landing lock not handed off: holder=$holder"
+[ -f "$t10_dir2/landing_sent" ] && pass "t10-queued received landing dispatch" || fail "t10-queued landing_sent missing"
+
+# Assert dedupe: the watch cycle (event + retry) and repeated refusals add one status line only
+refused_count=$(grep -c "^cleanup-refused:" "$t10_dir1/status" || true)
+[ "$refused_count" = "1" ] && pass "watch cycle recorded exactly one cleanup-refused line" || fail "expected 1 cleanup-refused line after watch cycle, got $refused_count"
+"$KP_BIN/kingpin-done" t10-dirty >/dev/null 2>&1 || true
+"$KP_BIN/kingpin-done" t10-dirty >/dev/null 2>&1 || true
+refused_count=$(grep -c "^cleanup-refused:" "$t10_dir1/status" || true)
+[ "$refused_count" = "1" ] && pass "repeated refusals do not append duplicate cleanup-refused lines" || fail "duplicate cleanup-refused lines: $refused_count"
+
+# Assert the refusal is a task event the orchestrator sees via kingpin-wait
+wait_out=$("$KP_BIN/kingpin-wait" --once 2>/dev/null || true)
+echo "$wait_out" | grep -q "^t10-dirty status" && pass "kingpin-wait reports the cleanup-refused event" || fail "kingpin-wait did not report t10-dirty: $wait_out"
+"$KP_BIN/kingpin-ack" t10-dirty >/dev/null 2>&1 || true
+
+# Assert a repeated refusal by a task that no longer holds the lock leaves the queue order alone
+printf 't10-other\nt10-other2\n' > "$KINGPIN_HOME/projects/demo-t10.landing_queue"
+"$KP_BIN/kingpin-done" t10-dirty >/dev/null 2>&1 || true
+[ "$(cat "$KINGPIN_HOME/projects/demo-t10.landing_queue")" = "$(printf 't10-other\nt10-other2')" ] && pass "repeated refusal does not pop the landing queue" || fail "landing queue changed by non-holder refusal: $(cat "$KINGPIN_HOME/projects/demo-t10.landing_queue")"
+[ "$(cat "$KINGPIN_HOME/projects/demo-t10.landing")" = "t10-queued" ] && pass "repeated refusal leaves the lock holder alone" || fail "lock holder changed by non-holder refusal"
+rm -f "$KINGPIN_HOME/projects/demo-t10.landing_queue"
+
+# Assert automatic retry: once the cause clears, kingpin-watch completes the cleanup
+rm -f "$t10_wt1/uncommitted.txt"
+"$KP_BIN/kingpin" watch --once >/dev/null 2>&1 || true
+[ -f "$t10_dir1/done_cleaned" ] && pass "kingpin-watch retried the refused cleanup and wrote done_cleaned" || fail "refused cleanup was not retried by kingpin-watch"
+[ "$(cat "$KINGPIN_HOME/projects/demo-t10.landing")" = "t10-queued" ] && pass "retried cleanup left the new lock holder alone" || fail "retried cleanup disturbed the landing lock"
+
+# Assert kingpin-land treats a lock holder in a terminal status as free
+t10_dir3="$KINGPIN_HOME/tasks/t10-land"
+t10_hold="$KINGPIN_HOME/tasks/t10-holder"
+mkdir -p "$t10_dir3" "$t10_hold"
+tmux new-window -d -t kingpin: -n t10-land cat
+cat > "$t10_dir3/task.env" << EOF2
+TASK_ID=t10-land
+PROJECT=demo-t10
+MODE=review
+WORKTREE=$t10_wt2
+TMUX_TARGET=kingpin:t10-land
+EOF2
+echo "ready: branch=b review=APPROVE report=none" > "$t10_dir3/status"
+for terminal in "merged: pr=x" "failed: boom" "cleanup-refused: r"; do
+  echo "$terminal" > "$t10_hold/status"
+  echo "t10-holder" > "$KINGPIN_HOME/projects/demo-t10.landing"
+  rm -f "$t10_dir3/landing_sent"
+  "$KP_BIN/kingpin" land t10-land >/dev/null 2>&1 || true
+  [ "$(cat "$KINGPIN_HOME/projects/demo-t10.landing")" = "t10-land" ] && [ -f "$t10_dir3/landing_sent" ] && pass "land takes the lock from a '${terminal%%:*}' holder" || fail "land blocked by a '${terminal%%:*}' holder"
+done
+echo "ready: branch=b review=APPROVE report=none" > "$t10_hold/status"
+echo "t10-holder" > "$KINGPIN_HOME/projects/demo-t10.landing"
+rm -f "$t10_dir3/landing_sent"
+"$KP_BIN/kingpin" land t10-land >/dev/null 2>&1 || true
+[ "$(cat "$KINGPIN_HOME/projects/demo-t10.landing")" = "t10-holder" ] && [ ! -f "$t10_dir3/landing_sent" ] && pass "land still queues behind a live holder" || fail "land overtook a live holder"
+tmux kill-window -t kingpin:t10-land 2>/dev/null || true
+rm -rf "$t10_dir3" "$t10_hold"
+
+# 5. Force cleanup of a dirty worktree succeeds and touches done_cleaned
+t10_dir4="$KINGPIN_HOME/tasks/t10-force"
+mkdir -p "$t10_dir4"
+cat > "$t10_dir4/task.env" << EOF2
+TASK_ID=t10-force
+PROJECT=demo-t10
+PROJECT_PATH=$t10_wt1
+WORKTREE=$t10_wt2
+TMUX_TARGET=kingpin:t10-force
+EOF2
+echo "merged: pr=x" > "$t10_dir4/status"
+echo "dirty" > "$t10_wt2/uncommitted.txt"
+"$KP_BIN/kingpin-done" t10-force >/dev/null 2>&1 && fail "dirty cleanup was not refused" || pass "dirty cleanup refused without --force"
+[ ! -f "$t10_dir4/done_cleaned" ] && pass "no done_cleaned after refusal without --force" || fail "done_cleaned written despite refusal"
+"$KP_BIN/kingpin" done t10-force --force >/dev/null
+[ -f "$t10_dir4/done_cleaned" ] && pass "kingpin-done --force created done_cleaned" || fail "done_cleaned missing after force cleanup"
+rm -rf "$t10_dir4"
+
+tmux kill-window -t kingpin:t10-dirty 2>/dev/null || true
+tmux kill-window -t kingpin:t10-queued 2>/dev/null || true
+rm -f "$KINGPIN_HOME/projects/demo-t10.landing" "$KINGPIN_HOME/projects/demo-t10.landing_queue"
+rm -rf "$t10_dir1" "$t10_dir2" "$t10_wt1" "$t10_wt2" "$t10_remote"
+
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"
 else

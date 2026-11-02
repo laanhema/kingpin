@@ -57,6 +57,8 @@ def derive_task_state(task_dir: Path, task_env: dict, status_lines: list) -> tup
     alive = is_window_alive(tmux_target)
     last_line = status_lines[-1] if status_lines else ""
 
+    if last_line.startswith("cleanup-refused:"):
+        return "cleanup-refused", f"Cleanup refused: {last_line[len('cleanup-refused:'):].strip()}"
     if last_line.startswith("merged:"):
         return "merged", "PR merged"
     if last_line.startswith("failed:"):
@@ -148,6 +150,7 @@ STATE_BADGES = {
     "queued to land": "badge-info",
     "landing": "badge-primary",
     "merged": "badge-success",
+    "cleanup-refused": "badge-warning",
     "failed": "badge-error",
 }
 
@@ -199,6 +202,11 @@ def render_html(tasks: list) -> str:
                   <button type="submit" class="btn btn-sm btn-primary">Submit Answer</button>
                 </div>
               </form>
+            </div>'''
+        elif state == "cleanup-refused":
+            actions_html = f'''
+            <div class="card-actions justify-end mt-4 pt-3 border-t border-base-300">
+              <button class="btn btn-sm btn-warning" onclick="if(window.lavish){{window.lavish.queuePrompt('done {tid} --force', {{tag:'action',text:'Force cleanup: {tid}'}})}}">Force Done</button>
             </div>'''
         elif state == "failed":
             actions_html = f'''

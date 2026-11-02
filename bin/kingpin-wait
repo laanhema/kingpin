@@ -34,7 +34,7 @@ mkdir -p "$tasks_dir"
 is_terminal_status() {
   local last_line=$1
   case "$last_line" in
-    merged:*|failed:*) return 0 ;;
+    merged:*|failed:*|cleanup-refused:*) return 0 ;;
     *) return 1 ;;
   esac
 }
