@@ -42,23 +42,10 @@ process_task_event() {
   mode=$(sed -n 's/^MODE=//p' "$env_file" 2>/dev/null || echo "review")
 
   local status_file="$task_dir/status"
-  local seen_file="$task_dir/seen"
   local last_status=""
+  [ -f "$status_file" ] && last_status=$(tail -n 1 "$status_file" 2>/dev/null || true)
 
-  if [ -f "$status_file" ]; then
-    local status_count
-    status_count=$(wc -l < "$status_file" | tr -d ' ')
-    echo "$status_count" > "$seen_file"
-    last_status=$(tail -n 1 "$status_file" 2>/dev/null || true)
-  fi
-
-  local stopped_file="$task_dir/stopped"
-  local seen_stopped_file="$task_dir/seen_stopped"
-  if [ -f "$stopped_file" ]; then
-    local stop_time
-    stop_time=$(cat "$stopped_file" 2>/dev/null | tr -d ' ' || echo 0)
-    echo "$stop_time" > "$seen_stopped_file"
-  fi
+  "$KP_BIN/kingpin-ack" "$id"
 
   case "$last_status" in
     ready:*)
