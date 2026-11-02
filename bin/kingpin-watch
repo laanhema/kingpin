@@ -58,8 +58,18 @@ process_task_event() {
           "$KP_BIN/kingpin-land" "$id" || true
         else
           echo "[kingpin-watch] $id is ready for review (lavish-axi $task_dir/report.html)"
+          if [ -f "$task_dir/report.html" ]; then
+            "$KP_BIN/kingpin-listen" "$id" --background || true
+          fi
         fi
       fi
+      ;;
+    approved:*)
+      # kingpin-listen already ran kingpin-land for this approval.
+      echo "[kingpin-watch] $id was approved via the review dossier; landing started by its listener"
+      ;;
+    feedback:*)
+      echo "[kingpin-watch] $id received review feedback: $last_status"
       ;;
     fixed:*)
       if [ "$mode" = "auto" ] || [ -f "$task_dir/landing_in_progress" ]; then

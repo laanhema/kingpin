@@ -23,7 +23,8 @@ worktree=$(sed -n 's/^WORKTREE=//p' "$env_file" 2>/dev/null || true)
 [ -n "$project" ] || project="default"
 
 status_file="$task_dir/status"
-last_status=$(tail -n 1 "$status_file" 2>/dev/null || true)
+# Ignore listener notes (approved:, feedback:): the gate needs the worker's own last event.
+last_status=$(grep -vE '^(approved|feedback):' "$status_file" 2>/dev/null | tail -n 1 || true)
 
 if [ -z "$issue" ] && [ -f "$status_file" ]; then
   # Parse issue number from status if not in task.env
