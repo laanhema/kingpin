@@ -88,9 +88,12 @@ case "$cmd" in
       env_file="$d/task.env"
       proj="-" harness="claude" mode="review"
       if [ -f "$env_file" ]; then
-        proj=$(sed -n 's/^PROJECT=//p' "$env_file" 2>/dev/null || echo "-")
-        harness=$(sed -n 's/^HARNESS=//p' "$env_file" 2>/dev/null || echo "claude")
-        mode=$(sed -n 's/^MODE=//p' "$env_file" 2>/dev/null || echo "review")
+        proj=$(sed -n 's/^PROJECT=//p' "$env_file" 2>/dev/null || true)
+        [ -n "$proj" ] || proj="-"
+        harness=$(sed -n 's/^HARNESS=//p' "$env_file" 2>/dev/null || true)
+        [ -n "$harness" ] || harness="claude"
+        mode=$(sed -n 's/^MODE=//p' "$env_file" 2>/dev/null || true)
+        [ -n "$mode" ] || mode="review"
       fi
       status_file="$d/status"
       st="(pending)"
