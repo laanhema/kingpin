@@ -13,6 +13,10 @@ id=$1
 [ "${2:-}" = "--force" ] && FORCE=1
 
 task_dir="$KP_HOME/tasks/$id"
+if [ ! -d "$task_dir" ] && [ -d "$KP_HOME/archive/$id" ]; then
+  echo "OK: task $id already cleaned up (archived)"
+  exit 0
+fi
 [ -d "$task_dir" ] || { echo "kingpin-done: task $id not found: $task_dir" >&2; exit 1; }
 
 env_file="$task_dir/task.env"
@@ -62,6 +66,24 @@ refuse_cleanup() {
   release_landing_lock_and_advance_queue
   exit 1
 }
+
+# Slot guard: never release a worktree that another unfinished task holds, not
+# even with --force. A stale record may still point at a slot that has since
+# been leased to a live worker.
+for other_env in "$KP_HOME"/tasks/*/task.env; do
+  [ -f "$other_env" ] || continue
+  other_dir=$(dirname "$other_env")
+  other_id=$(basename "$other_dir")
+  [ "$other_id" != "$id" ] || continue
+  other_wt=$(sed -n 's/^WORKTREE=//p' "$other_env" 2>/dev/null | tail -n 1 || true)
+  [ -n "$other_wt" ] && [ "$other_wt" = "$WORKTREE" ] || continue
+  other_last=""
+  [ -f "$other_dir/status" ] && other_last=$(tail -n 1 "$other_dir/status" 2>/dev/null || true)
+  case "$other_last" in
+    merged:*|failed:*|cleanup-refused:*) ;;
+    *) refuse_cleanup "worktree $WORKTREE is held by unfinished task $other_id; refusing to release it, even with --force" ;;
+  esac
+done
 
 # Check uncommitted changes
 if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ]; then
@@ -126,4 +148,16 @@ fi
 release_landing_lock_and_advance_queue
 
 touch "$task_dir/done_cleaned"
-echo "OK: cleaned up task $id"
+
+# 5. Archive the task record out of the live fleet. The done_cleaned marker and
+# any critique file travel with it; kingpin-curate scans the archive.
+archive_root="$KP_HOME/archive"
+mkdir -p "$archive_root"
+archive_dir="$archive_root/$id"
+n=1
+while [ -e "$archive_dir" ]; do
+  n=$((n + 1))
+  archive_dir="$archive_root/$id.$n"
+done
+mv "$task_dir" "$archive_dir"
+echo "OK: cleaned up task $id (archived to $archive_dir)"
