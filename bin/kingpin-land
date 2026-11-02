@@ -93,9 +93,21 @@ mkdir -p "$lock_dir"
 project_landing_lock="$lock_dir/$project.landing"
 queue_file="$lock_dir/$project.landing_queue"
 
+is_terminal_status() {
+  local last_line=${1:-}
+  case "$last_line" in
+    merged:*|failed:*|cleanup-refused:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 if [ -f "$project_landing_lock" ]; then
   holder=$(cat "$project_landing_lock" 2>/dev/null || true)
-  if [ "$holder" != "$id" ] && [ -d "$KP_HOME/tasks/$holder" ]; then
+  holder_status=""
+  if [ -n "$holder" ] && [ -f "$KP_HOME/tasks/$holder/status" ]; then
+    holder_status=$(tail -n 1 "$KP_HOME/tasks/$holder/status" 2>/dev/null || true)
+  fi
+  if [ "$holder" != "$id" ] && [ -d "$KP_HOME/tasks/$holder" ] && ! is_terminal_status "$holder_status"; then
     echo "kingpin-land: project $project is already landing $holder; queuing $id"
     grep -qx "$id" "$queue_file" 2>/dev/null || echo "$id" >> "$queue_file"
     exit 0
@@ -104,6 +116,9 @@ fi
 
 # Acquire landing lock for this project
 echo "$id" > "$project_landing_lock"
+if [ -f "$queue_file" ]; then
+  sed -i "/^$id$/d" "$queue_file" 2>/dev/null || true
+fi
 touch "$task_dir/landing_sent"
 
 if [ -n "$issue" ]; then

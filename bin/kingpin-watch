@@ -80,9 +80,11 @@ process_task_event() {
     merged:*)
       if [ ! -f "$task_dir/done_cleaned" ]; then
         echo "[kingpin-watch] $id merged; running cleanup..."
-        touch "$task_dir/done_cleaned"
         "$KP_BIN/kingpin-done" "$id" || true
       fi
+      ;;
+    cleanup-refused:*)
+      echo "[kingpin-watch] $id cleanup refused: ${last_status#cleanup-refused: }"
       ;;
     failed:*)
       echo "[kingpin-watch] $id reported failure: $last_status"
@@ -91,6 +93,25 @@ process_task_event() {
       echo "[kingpin-watch] $id needs input (question at $task_dir/question.md)"
       ;;
   esac
+}
+
+# Retry cleanups that kingpin-done refused (dirty worktree, HEAD not yet on the
+# remote default branch). A task is pending while its last status is
+# cleanup-refused: and it has no done_cleaned marker. kingpin-done does not add
+# a status line when the refusal reason is unchanged, so retrying every cycle
+# raises no new events; it writes done_cleaned once the cleanup succeeds.
+retry_pending_cleanups() {
+  local dir id last
+  for dir in "$KP_HOME"/tasks/*; do
+    [ -d "$dir" ] || continue
+    [ -f "$dir/task.env" ] || continue
+    [ ! -f "$dir/done_cleaned" ] || continue
+    id=$(basename "$dir")
+    last=$(tail -n 1 "$dir/status" 2>/dev/null || true)
+    case "$last" in
+      cleanup-refused:*) "$KP_BIN/kingpin-done" "$id" >/dev/null 2>&1 || true ;;
+    esac
+  done
 }
 
 step_supervision() {
@@ -113,6 +134,7 @@ step_supervision() {
 
 if [ "$ONCE" -eq 1 ]; then
   step_supervision || true
+  retry_pending_cleanups
   exit 0
 fi
 
@@ -126,4 +148,5 @@ while true; do
     done <<< "$updates"
     "$KP_BIN/kingpin-board" >/dev/null 2>&1 || true
   fi
+  retry_pending_cleanups
 done

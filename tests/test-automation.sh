@@ -21,6 +21,24 @@ FAILED=0
 KP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KP_BIN="$KP_ROOT/bin"
 
+# Set up isolated private tmux server on a temporary socket
+export TMUX_TMPDIR="$T/tmux-tmp"
+mkdir -p "$TMUX_TMPDIR" "$T/bin"
+TEST_SOCKET="kingpin-test-auto-$$"
+REAL_TMUX=$(command -v tmux)
+cat > "$T/bin/tmux" << EOF
+#!/usr/bin/env bash
+exec "$REAL_TMUX" -L "$TEST_SOCKET" "\$@"
+EOF
+chmod +x "$T/bin/tmux"
+export PATH="$T/bin:$PATH"
+
+cleanup() {
+  "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
+  rm -rf "$T"
+}
+trap cleanup EXIT
+
 # 1. Set up test repo with origin remote
 git init -q --bare "$T/origin.git"
 git clone -q "$T/origin.git" "$T/proj" 2>/dev/null
@@ -38,6 +56,7 @@ tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n hom
 for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
   tmux kill-window -t "$w" 2>/dev/null || true
 done
+tmux display-message -p '#{socket_path}' | grep -q "$TEST_SOCKET" && pass "test operates on private tmux socket" || fail "test socket not isolated"
 
 # Test 1: kingpin init
 echo "=== Test 1: kingpin init ==="
@@ -491,8 +510,167 @@ tmux kill-window -t kingpin:t7-app 2>/dev/null || true
 rm -f "$KINGPIN_HOME/projects/demo-auto.landing" "$KINGPIN_HOME/projects/demo-auto.landing_queue"
 rm -rf "$t7_app"
 
-# Test 10: Lavish review dossier auto-opening, live listener, and prompt routing
-echo "=== Test 10: Lavish review dossier auto-opening, live listener, and prompt routing ==="
+# Test 10: Refused cleanup handling and landing queue preservation
+echo "=== Test 10: Refused cleanup handling and landing queue preservation ==="
+t10_dir1="$KINGPIN_HOME/tasks/t10-dirty"
+t10_dir2="$KINGPIN_HOME/tasks/t10-queued"
+mkdir -p "$t10_dir1" "$t10_dir2"
+
+t10_wt1="$T/wt-t10-1"
+t10_wt2="$T/wt-t10-2"
+mkdir -p "$t10_wt1" "$t10_wt2"
+git -C "$t10_wt1" init -q
+git -C "$t10_wt2" init -q
+
+(
+  cd "$t10_wt1"
+  git checkout -qb main
+  git config user.name "Tester"
+  git config user.email "test@example.com"
+  echo "initial" > init.txt
+  git add init.txt
+  git commit -qm "initial commit"
+)
+
+t10_remote="$T/remote-t10.git"
+git init --bare -q "$t10_remote"
+(
+  cd "$t10_wt1"
+  git remote add origin "$t10_remote"
+  git push -q origin main
+  git branch -u origin/main main
+)
+
+cat > "$t10_dir1/task.env" << EOF
+TASK_ID=t10-dirty
+PROJECT=demo-t10
+PROJECT_PATH=$t10_wt1
+WORKTREE=$t10_wt1
+BRANCH=feature-t10-1
+TMUX_TARGET=kingpin:t10-dirty
+EOF
+echo "dirty uncommitted changes" > "$t10_wt1/uncommitted.txt"
+echo "ready: branch=feature-t10-1 review=APPROVE report=none" > "$t10_dir1/status"
+
+cat > "$t10_dir2/task.env" << EOF
+TASK_ID=t10-queued
+PROJECT=demo-t10
+PROJECT_PATH=$t10_wt2
+WORKTREE=$t10_wt2
+BRANCH=feature-t10-2
+TMUX_TARGET=kingpin:t10-queued
+EOF
+echo "ready: branch=feature-t10-2 review=APPROVE report=none" > "$t10_dir2/status"
+
+tmux new-window -d -t kingpin: -n t10-dirty cat
+tmux new-window -d -t kingpin: -n t10-queued cat
+
+# 1. Task 1 lands and acquires landing lock
+"$KP_BIN/kingpin" land t10-dirty >/dev/null
+[ -f "$KINGPIN_HOME/projects/demo-t10.landing" ] && pass "t10-dirty acquired landing lock" || fail "t10-dirty landing lock missing"
+
+# 2. Task 2 attempts to land and gets queued
+"$KP_BIN/kingpin" land t10-queued >/dev/null
+grep -qx "t10-queued" "$KINGPIN_HOME/projects/demo-t10.landing_queue" 2>/dev/null && pass "t10-queued added to landing_queue" || fail "t10-queued not queued"
+
+# 3. Simulate Task 1 reporting merged
+echo "merged: pr=https://github.com/example/demo/pull/1" >> "$t10_dir1/status"
+
+# 4. Run kingpin-watch --once (which will run kingpin-done t10-dirty)
+"$KP_BIN/kingpin" watch --once >/dev/null 2>&1 || true
+
+# Assert AC 1: done_cleaned is NOT written on refused cleanup
+[ ! -f "$t10_dir1/done_cleaned" ] && pass "done_cleaned not written on refused cleanup" || fail "done_cleaned prematurely written on refused cleanup"
+
+# Assert AC 2: A refused cleanup appears as a task event with refusal reason
+grep -q "^cleanup-refused:" "$t10_dir1/status" && pass "cleanup-refused recorded in status" || fail "cleanup-refused not found in status"
+refusal_reason=$(tail -n 1 "$t10_dir1/status")
+echo "$refusal_reason" | grep -q "uncommitted changes" && pass "refusal reason captured in status event" || fail "refusal reason missing: $refusal_reason"
+
+# Assert AC 3: Refused cleanup does not leave landing lock held forever; next queued task can land
+holder=$(cat "$KINGPIN_HOME/projects/demo-t10.landing" 2>/dev/null || true)
+[ "$holder" = "t10-queued" ] && pass "landing lock handed off to next queued task t10-queued" || fail "landing lock not handed off: holder=$holder"
+[ -f "$t10_dir2/landing_sent" ] && pass "t10-queued received landing dispatch" || fail "t10-queued landing_sent missing"
+
+# Assert dedupe: the watch cycle (event + retry) and repeated refusals add one status line only
+refused_count=$(grep -c "^cleanup-refused:" "$t10_dir1/status" || true)
+[ "$refused_count" = "1" ] && pass "watch cycle recorded exactly one cleanup-refused line" || fail "expected 1 cleanup-refused line after watch cycle, got $refused_count"
+"$KP_BIN/kingpin-done" t10-dirty >/dev/null 2>&1 || true
+"$KP_BIN/kingpin-done" t10-dirty >/dev/null 2>&1 || true
+refused_count=$(grep -c "^cleanup-refused:" "$t10_dir1/status" || true)
+[ "$refused_count" = "1" ] && pass "repeated refusals do not append duplicate cleanup-refused lines" || fail "duplicate cleanup-refused lines: $refused_count"
+
+# Assert the refusal is a task event the orchestrator sees via kingpin-wait
+wait_out=$("$KP_BIN/kingpin-wait" --once 2>/dev/null || true)
+echo "$wait_out" | grep -q "^t10-dirty status" && pass "kingpin-wait reports the cleanup-refused event" || fail "kingpin-wait did not report t10-dirty: $wait_out"
+"$KP_BIN/kingpin-ack" t10-dirty >/dev/null 2>&1 || true
+
+# Assert a repeated refusal by a task that no longer holds the lock leaves the queue order alone
+printf 't10-other\nt10-other2\n' > "$KINGPIN_HOME/projects/demo-t10.landing_queue"
+"$KP_BIN/kingpin-done" t10-dirty >/dev/null 2>&1 || true
+[ "$(cat "$KINGPIN_HOME/projects/demo-t10.landing_queue")" = "$(printf 't10-other\nt10-other2')" ] && pass "repeated refusal does not pop the landing queue" || fail "landing queue changed by non-holder refusal: $(cat "$KINGPIN_HOME/projects/demo-t10.landing_queue")"
+[ "$(cat "$KINGPIN_HOME/projects/demo-t10.landing")" = "t10-queued" ] && pass "repeated refusal leaves the lock holder alone" || fail "lock holder changed by non-holder refusal"
+rm -f "$KINGPIN_HOME/projects/demo-t10.landing_queue"
+
+# Assert automatic retry: once the cause clears, kingpin-watch completes the cleanup
+rm -f "$t10_wt1/uncommitted.txt"
+"$KP_BIN/kingpin" watch --once >/dev/null 2>&1 || true
+[ -f "$t10_dir1/done_cleaned" ] && pass "kingpin-watch retried the refused cleanup and wrote done_cleaned" || fail "refused cleanup was not retried by kingpin-watch"
+[ "$(cat "$KINGPIN_HOME/projects/demo-t10.landing")" = "t10-queued" ] && pass "retried cleanup left the new lock holder alone" || fail "retried cleanup disturbed the landing lock"
+
+# Assert kingpin-land treats a lock holder in a terminal status as free
+t10_dir3="$KINGPIN_HOME/tasks/t10-land"
+t10_hold="$KINGPIN_HOME/tasks/t10-holder"
+mkdir -p "$t10_dir3" "$t10_hold"
+tmux new-window -d -t kingpin: -n t10-land cat
+cat > "$t10_dir3/task.env" << EOF2
+TASK_ID=t10-land
+PROJECT=demo-t10
+MODE=review
+WORKTREE=$t10_wt2
+TMUX_TARGET=kingpin:t10-land
+EOF2
+echo "ready: branch=b review=APPROVE report=none" > "$t10_dir3/status"
+for terminal in "merged: pr=x" "failed: boom" "cleanup-refused: r"; do
+  echo "$terminal" > "$t10_hold/status"
+  echo "t10-holder" > "$KINGPIN_HOME/projects/demo-t10.landing"
+  rm -f "$t10_dir3/landing_sent"
+  "$KP_BIN/kingpin" land t10-land >/dev/null 2>&1 || true
+  [ "$(cat "$KINGPIN_HOME/projects/demo-t10.landing")" = "t10-land" ] && [ -f "$t10_dir3/landing_sent" ] && pass "land takes the lock from a '${terminal%%:*}' holder" || fail "land blocked by a '${terminal%%:*}' holder"
+done
+echo "ready: branch=b review=APPROVE report=none" > "$t10_hold/status"
+echo "t10-holder" > "$KINGPIN_HOME/projects/demo-t10.landing"
+rm -f "$t10_dir3/landing_sent"
+"$KP_BIN/kingpin" land t10-land >/dev/null 2>&1 || true
+[ "$(cat "$KINGPIN_HOME/projects/demo-t10.landing")" = "t10-holder" ] && [ ! -f "$t10_dir3/landing_sent" ] && pass "land still queues behind a live holder" || fail "land overtook a live holder"
+tmux kill-window -t kingpin:t10-land 2>/dev/null || true
+rm -rf "$t10_dir3" "$t10_hold"
+
+# 5. Force cleanup of a dirty worktree succeeds and touches done_cleaned
+t10_dir4="$KINGPIN_HOME/tasks/t10-force"
+mkdir -p "$t10_dir4"
+cat > "$t10_dir4/task.env" << EOF2
+TASK_ID=t10-force
+PROJECT=demo-t10
+PROJECT_PATH=$t10_wt1
+WORKTREE=$t10_wt2
+TMUX_TARGET=kingpin:t10-force
+EOF2
+echo "merged: pr=x" > "$t10_dir4/status"
+echo "dirty" > "$t10_wt2/uncommitted.txt"
+"$KP_BIN/kingpin-done" t10-force >/dev/null 2>&1 && fail "dirty cleanup was not refused" || pass "dirty cleanup refused without --force"
+[ ! -f "$t10_dir4/done_cleaned" ] && pass "no done_cleaned after refusal without --force" || fail "done_cleaned written despite refusal"
+"$KP_BIN/kingpin" done t10-force --force >/dev/null
+[ -f "$t10_dir4/done_cleaned" ] && pass "kingpin-done --force created done_cleaned" || fail "done_cleaned missing after force cleanup"
+rm -rf "$t10_dir4"
+
+tmux kill-window -t kingpin:t10-dirty 2>/dev/null || true
+tmux kill-window -t kingpin:t10-queued 2>/dev/null || true
+rm -f "$KINGPIN_HOME/projects/demo-t10.landing" "$KINGPIN_HOME/projects/demo-t10.landing_queue"
+rm -rf "$t10_dir1" "$t10_dir2" "$t10_wt1" "$t10_wt2" "$t10_remote"
+
+# Test 11: Lavish review dossier auto-opening, live listener, and prompt routing
+echo "=== Test 11: Lavish review dossier auto-opening, live listener, and prompt routing ==="
 cat > "$T/mock-lavish" << EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$T/mock-lavish.log"
@@ -521,10 +699,10 @@ chmod +x "$T/mock-lavish"
 export KINGPIN_LAVISH="$T/mock-lavish"
 
 # 1. Setup task in review mode with report.html
-t10_task="$KINGPIN_HOME/tasks/task-lavish-1"
-mkdir -p "$t10_task"
-echo "<html><body>Review Dossier 1</body></html>" > "$t10_task/report.html"
-cat > "$t10_task/task.env" << EOF
+t11_task="$KINGPIN_HOME/tasks/task-lavish-1"
+mkdir -p "$t11_task"
+echo "<html><body>Review Dossier 1</body></html>" > "$t11_task/report.html"
+cat > "$t11_task/task.env" << EOF
 TASK_ID=task-lavish-1
 PROJECT=demo-auto
 PROJECT_PATH=$T/proj
@@ -534,18 +712,18 @@ ISSUE=401
 TMUX_TARGET=kingpin:task-lavish-1
 EOF
 tmux new-window -d -t kingpin: -n task-lavish-1 cat
-echo "ready: branch=b review=APPROVE report=$t10_task/report.html" >> "$t10_task/status"
+echo "ready: branch=b review=APPROVE report=$t11_task/report.html" >> "$t11_task/status"
 
 # 2. Run kingpin-watch --once to detect ready and auto-arm listener
 "$KP_BIN/kingpin" watch --once >/dev/null
 
 # Assert dossier was opened in lavish
 sleep 0.3
-grep -q "$t10_task/report.html" "$T/mock-lavish.log" 2>/dev/null && pass "mock-lavish opened review dossier" || fail "mock-lavish did not open review dossier"
+grep -q "$t11_task/report.html" "$T/mock-lavish.log" 2>/dev/null && pass "mock-lavish opened review dossier" || fail "mock-lavish did not open review dossier"
 
 # Assert listener.pid was created and process is running
-[ -f "$t10_task/listener.pid" ] && pass "listener.pid created" || fail "listener.pid missing"
-lpid=$(cat "$t10_task/listener.pid" 2>/dev/null || true)
+[ -f "$t11_task/listener.pid" ] && pass "listener.pid created" || fail "listener.pid missing"
+lpid=$(cat "$t11_task/listener.pid" 2>/dev/null || true)
 [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null && pass "listener process is running (pid $lpid)" || fail "listener process not running"
 
 # Assert kingpin list displays listener status
@@ -561,24 +739,24 @@ prompts[1]{prompt}:
 RESP
 
 for i in $(seq 1 30); do
-  if [ -f "$t10_task/landing_sent" ] && grep -q "approved:" "$t10_task/status" 2>/dev/null; then
+  if [ -f "$t11_task/landing_sent" ] && grep -q "approved:" "$t11_task/status" 2>/dev/null; then
     break
   fi
   sleep 0.1
 done
 
-grep -q "approved: by user via lavish dossier" "$t10_task/status" && pass "approved status logged" || fail "approved status missing"
-[ -f "$t10_task/landing_sent" ] && pass "landing triggered by listener" || fail "landing not triggered"
+grep -q "approved: by user via lavish dossier" "$t11_task/status" && pass "approved status logged" || fail "approved status missing"
+[ -f "$t11_task/landing_sent" ] && pass "landing triggered by listener" || fail "landing not triggered"
 sleep 0.1
 pane_out=$(tmux capture-pane -pt kingpin:task-lavish-1 -S -5)
 echo "$pane_out" | grep -q "/issue-flow-done 401" && pass "/issue-flow-done dispatched on approval" || fail "wrong done command: $pane_out"
-grep -q "reply $t10_task/report.html --agent-reply Approval received" "$T/mock-lavish.log" && pass "approval confirmation reply sent to lavish" || fail "approval reply missing"
+grep -q "reply $t11_task/report.html --agent-reply Approval received" "$T/mock-lavish.log" && pass "approval confirmation reply sent to lavish" || fail "approval reply missing"
 
 # 4. Simulate user feedback / Request Changes
-t10_task2="$KINGPIN_HOME/tasks/task-lavish-2"
-mkdir -p "$t10_task2"
-echo "<html><body>Review Dossier 2</body></html>" > "$t10_task2/report.html"
-cat > "$t10_task2/task.env" << EOF
+t11_task2="$KINGPIN_HOME/tasks/task-lavish-2"
+mkdir -p "$t11_task2"
+echo "<html><body>Review Dossier 2</body></html>" > "$t11_task2/report.html"
+cat > "$t11_task2/task.env" << EOF
 TASK_ID=task-lavish-2
 PROJECT=demo-auto
 PROJECT_PATH=$T/proj
@@ -588,7 +766,7 @@ ISSUE=402
 TMUX_TARGET=kingpin:task-lavish-2
 EOF
 tmux new-window -d -t kingpin: -n task-lavish-2 cat
-echo "ready: branch=b review=APPROVE report=$t10_task2/report.html" >> "$t10_task2/status"
+echo "ready: branch=b review=APPROVE report=$t11_task2/report.html" >> "$t11_task2/status"
 
 cat > "$T/mock-lavish-response.txt" << 'RESP'
 session:
@@ -600,16 +778,16 @@ RESP
 
 "$KP_BIN/kingpin" listen task-lavish-2 --once >/dev/null
 
-[ -f "$t10_task2/feedback.md" ] && pass "feedback.md created" || fail "feedback.md missing"
-grep -q "Request Changes: please fix line 42 in foo.sh" "$t10_task2/feedback.md" && pass "feedback text written correctly" || fail "feedback text incorrect"
-grep -q "feedback: Request Changes: please fix line 42 in foo.sh" "$t10_task2/status" && pass "feedback status logged" || fail "feedback status missing"
-grep -q "reply $t10_task2/report.html --agent-reply Feedback received" "$T/mock-lavish.log" && pass "feedback receipt reply sent to lavish" || fail "feedback reply missing"
+[ -f "$t11_task2/feedback.md" ] && pass "feedback.md created" || fail "feedback.md missing"
+grep -q "Request Changes: please fix line 42 in foo.sh" "$t11_task2/feedback.md" && pass "feedback text written correctly" || fail "feedback text incorrect"
+grep -q "feedback: Request Changes: please fix line 42 in foo.sh" "$t11_task2/status" && pass "feedback status logged" || fail "feedback status missing"
+grep -q "reply $t11_task2/report.html --agent-reply Feedback received" "$T/mock-lavish.log" && pass "feedback receipt reply sent to lavish" || fail "feedback reply missing"
 
 # Negative feedback that mentions "approve" is feedback, not an approval
-t10_task3="$KINGPIN_HOME/tasks/task-lavish-3"
-mkdir -p "$t10_task3"
-echo "<html><body>Review Dossier 3</body></html>" > "$t10_task3/report.html"
-cat > "$t10_task3/task.env" << EOF3
+t11_task3="$KINGPIN_HOME/tasks/task-lavish-3"
+mkdir -p "$t11_task3"
+echo "<html><body>Review Dossier 3</body></html>" > "$t11_task3/report.html"
+cat > "$t11_task3/task.env" << EOF3
 TASK_ID=task-lavish-3
 PROJECT=demo-auto
 PROJECT_PATH=$T/proj
@@ -618,7 +796,7 @@ WORKTREE=$T/proj
 ISSUE=403
 TMUX_TARGET=kingpin:task-lavish-3
 EOF3
-echo "ready: branch=b review=APPROVE report=none" >> "$t10_task3/status"
+echo "ready: branch=b review=APPROVE report=none" >> "$t11_task3/status"
 cat > "$T/mock-lavish-response.txt" << 'RESP'
 session:
   status: feedback
@@ -627,15 +805,15 @@ prompts[2]{prompt,tag}:
   "Request Changes: do not approve yet",action
 RESP
 "$KP_BIN/kingpin" listen task-lavish-3 --once >/dev/null
-[ ! -f "$t10_task3/landing_sent" ] && pass "negative feedback mentioning approve did not land" || fail "negative feedback triggered landing"
-! grep -q "^approved:" "$t10_task3/status" && pass "negative feedback not logged as approval" || fail "negative feedback logged as approval"
-grep -q "cannot approve until tests pass" "$t10_task3/feedback.md" && grep -q "do not approve yet" "$t10_task3/feedback.md" && pass "both negative prompts kept as feedback" || fail "negative prompts missing from feedback.md"
-rm -rf "$t10_task3"
+[ ! -f "$t11_task3/landing_sent" ] && pass "negative feedback mentioning approve did not land" || fail "negative feedback triggered landing"
+! grep -q "^approved:" "$t11_task3/status" && pass "negative feedback not logged as approval" || fail "negative feedback logged as approval"
+grep -q "cannot approve until tests pass" "$t11_task3/feedback.md" && grep -q "do not approve yet" "$t11_task3/feedback.md" && pass "both negative prompts kept as feedback" || fail "negative prompts missing from feedback.md"
+rm -rf "$t11_task3"
 
 # Listener notes after the worker's ready: line must not bypass the review gate
-t10_gate="$KINGPIN_HOME/tasks/task-lavish-gate"
-mkdir -p "$t10_gate"
-cat > "$t10_gate/task.env" << EOF4
+t11_gate="$KINGPIN_HOME/tasks/task-lavish-gate"
+mkdir -p "$t11_gate"
+cat > "$t11_gate/task.env" << EOF4
 TASK_ID=task-lavish-gate
 PROJECT=demo-auto
 PROJECT_PATH=$T/proj
@@ -645,20 +823,20 @@ ISSUE=404
 TMUX_TARGET=kingpin:task-lavish-gate
 EOF4
 tmux new-window -d -t kingpin: -n task-lavish-gate cat
-printf '%s\n' "ready: branch=b review=NEEDS CHANGES report=.agents/reviews/r9.md" "feedback: Request Changes: please rename foo" "approved: by user via lavish dossier" > "$t10_gate/status"
+printf '%s\n' "ready: branch=b review=NEEDS CHANGES report=.agents/reviews/r9.md" "feedback: Request Changes: please rename foo" "approved: by user via lavish dossier" > "$t11_gate/status"
 "$KP_BIN/kingpin" land task-lavish-gate >/dev/null
 sleep 0.1
 pane_out=$(tmux capture-pane -pt kingpin:task-lavish-gate -S -5)
 echo "$pane_out" | grep -q "/fix-findings $T/proj/.agents/reviews/r9.md" && pass "feedback/approved notes do not bypass the fix-findings gate" || fail "gate bypassed after listener notes: $pane_out"
-[ ! -f "$t10_gate/landing_sent" ] && pass "no landing dispatched for NEEDS CHANGES after listener notes" || fail "landing dispatched despite NEEDS CHANGES"
+[ ! -f "$t11_gate/landing_sent" ] && pass "no landing dispatched for NEEDS CHANGES after listener notes" || fail "landing dispatched despite NEEDS CHANGES"
 tmux kill-window -t kingpin:task-lavish-gate 2>/dev/null || true
-rm -rf "$t10_gate"
+rm -rf "$t11_gate"
 
 # Repeat Approve while a fix pass is pending does not resend /fix-findings
-t10_rep="$KINGPIN_HOME/tasks/task-lavish-repeat"
-mkdir -p "$t10_rep"
-echo "<html><body>Review Dossier R</body></html>" > "$t10_rep/report.html"
-cat > "$t10_rep/task.env" << EOF5
+t11_rep="$KINGPIN_HOME/tasks/task-lavish-repeat"
+mkdir -p "$t11_rep"
+echo "<html><body>Review Dossier R</body></html>" > "$t11_rep/report.html"
+cat > "$t11_rep/task.env" << EOF5
 TASK_ID=task-lavish-repeat
 PROJECT=demo-repeat
 PROJECT_PATH=$T/proj
@@ -668,7 +846,7 @@ ISSUE=405
 TMUX_TARGET=kingpin:task-lavish-repeat
 EOF5
 tmux new-window -d -t kingpin: -n task-lavish-repeat cat
-echo "ready: branch=b review=NEEDS CHANGES report=.agents/reviews/r5.md" > "$t10_rep/status"
+echo "ready: branch=b review=NEEDS CHANGES report=.agents/reviews/r5.md" > "$t11_rep/status"
 approve_resp() {
   printf '%s\n' "session:" "  status: feedback" "prompts[1]{prompt}:" "  kingpin land task-lavish-repeat" > "$T/mock-lavish-response.txt"
 }
@@ -681,79 +859,74 @@ sleep 0.1
 n2=$(count_fix)
 [ "$n1" -ge 1 ] && [ "$n1" = "$n2" ] && pass "repeat Approve did not resend /fix-findings" || fail "/fix-findings lines: first=$n1 after repeat=$n2"
 grep -q "Approval already received" "$T/mock-lavish.log" && pass "repeat Approve answered with a waiting reply" || fail "waiting reply missing"
-echo "fixed: high=0 report=.agents/reviews/r5.md" >> "$t10_rep/status"
+echo "fixed: high=0 report=.agents/reviews/r5.md" >> "$t11_rep/status"
 approve_resp; "$KP_BIN/kingpin" listen task-lavish-repeat --once >/dev/null
-[ -f "$t10_rep/landing_sent" ] && pass "Approve after the worker's new event lands" || fail "landing not started after fixed:"
+[ -f "$t11_rep/landing_sent" ] && pass "Approve after the worker's new event lands" || fail "landing not started after fixed:"
 tmux kill-window -t kingpin:task-lavish-repeat 2>/dev/null || true
-rm -rf "$t10_rep"
+rm -rf "$t11_rep"
 rm -f "$KINGPIN_HOME/projects/demo-repeat.landing" "$KINGPIN_HOME/projects/demo-repeat.landing_queue"
 
 # Concurrent background launches start exactly one listener
-t10_race="$KINGPIN_HOME/tasks/task-lavish-race"
-mkdir -p "$t10_race"
-echo "<html><body>Review Dossier Q</body></html>" > "$t10_race/report.html"
-cat > "$t10_race/task.env" << EOF6
+t11_race="$KINGPIN_HOME/tasks/task-lavish-race"
+mkdir -p "$t11_race"
+echo "<html><body>Review Dossier Q</body></html>" > "$t11_race/report.html"
+cat > "$t11_race/task.env" << EOF6
 TASK_ID=task-lavish-race
 PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
 EOF6
-echo "ready: branch=b review=APPROVE report=none" > "$t10_race/status"
+echo "ready: branch=b review=APPROVE report=none" > "$t11_race/status"
 for _ in 1 2 3 4; do "$KP_BIN/kingpin" listen task-lavish-race --background & done
 wait
 sleep 0.3
 n=$(pgrep -f "^bash .*/kingpin-listen task-lavish-race$" | wc -l)
 [ "$n" = "1" ] && pass "concurrent launches started one listener" || fail "$n listeners running"
-rpid=$(cat "$t10_race/listener.pid" 2>/dev/null || true)
+rpid=$(cat "$t11_race/listener.pid" 2>/dev/null || true)
 [ -n "$rpid" ] && { kill -- "-$rpid" 2>/dev/null || kill "$rpid" 2>/dev/null || true; }
 sleep 0.2
-[ ! -d "$t10_race/listener.lock" ] && pass "launch lock released" || fail "launch lock left behind"
-rm -rf "$t10_race"
+[ ! -d "$t11_race/listener.lock" ] && pass "launch lock released" || fail "launch lock left behind"
+rm -rf "$t11_race"
 
 # Prompts the parser cannot read are kept in listener.log, not dropped silently
-t10_raw="$KINGPIN_HOME/tasks/task-lavish-raw"
-mkdir -p "$t10_raw"
-echo "<html><body>Review Dossier W</body></html>" > "$t10_raw/report.html"
-cat > "$t10_raw/task.env" << EOF7
+t11_raw="$KINGPIN_HOME/tasks/task-lavish-raw"
+mkdir -p "$t11_raw"
+echo "<html><body>Review Dossier W</body></html>" > "$t11_raw/report.html"
+cat > "$t11_raw/task.env" << EOF7
 TASK_ID=task-lavish-raw
 PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
 EOF7
-echo "ready: branch=b review=APPROVE report=none" > "$t10_raw/status"
+echo "ready: branch=b review=APPROVE report=none" > "$t11_raw/status"
 printf '%s\n' "session:" "  status: feedback" "prompts[1]:" "  - weird: shape" > "$T/mock-lavish-response.txt"
 "$KP_BIN/kingpin" listen task-lavish-raw --once >/dev/null
-grep -q "could not be parsed" "$t10_raw/listener.log" && grep -q "weird: shape" "$t10_raw/listener.log" && pass "unparsed prompts logged raw" || fail "unparsed prompts not logged"
-grep -q "reply $t10_raw/report.html --agent-reply I could not read" "$T/mock-lavish.log" && pass "user told to resend unreadable feedback" || fail "no resend reply"
-! grep -q "^feedback:" "$t10_raw/status" && pass "unreadable prompt did not produce a feedback note" || fail "bogus feedback note"
-rm -rf "$t10_raw"
+grep -q "could not be parsed" "$t11_raw/listener.log" && grep -q "weird: shape" "$t11_raw/listener.log" && pass "unparsed prompts logged raw" || fail "unparsed prompts not logged"
+grep -q "reply $t11_raw/report.html --agent-reply I could not read" "$T/mock-lavish.log" && pass "user told to resend unreadable feedback" || fail "no resend reply"
+! grep -q "^feedback:" "$t11_raw/status" && pass "unreadable prompt did not produce a feedback note" || fail "bogus feedback note"
+rm -rf "$t11_raw"
 
 # Run kingpin-watch to verify feedback event handling
 watch_fb=$("$KP_BIN/kingpin" watch --once 2>&1 || true)
 echo "$watch_fb" | grep -q "received review feedback" && pass "kingpin-watch reported review feedback" || fail "kingpin-watch did not report feedback: $watch_fb"
 
 # 5. Verify cleanup on kingpin-done
-[ -f "$t10_task/listener.pid" ] && pass "task-lavish-1 listener.pid present before done" || fail "listener.pid missing before done"
+[ -f "$t11_task/listener.pid" ] && pass "task-lavish-1 listener.pid present before done" || fail "listener.pid missing before done"
 "$KP_BIN/kingpin" done task-lavish-1 --force >/dev/null
 
-[ ! -f "$t10_task/listener.pid" ] && pass "listener.pid removed by kingpin-done" || fail "listener.pid still present after done"
+[ ! -f "$t11_task/listener.pid" ] && pass "listener.pid removed by kingpin-done" || fail "listener.pid still present after done"
 kill -0 "$lpid" 2>/dev/null && fail "listener was not killed" || pass "listener process killed by kingpin-done"
-grep -q "end $t10_task/report.html" "$T/mock-lavish.log" && pass "mock-lavish end invoked by kingpin-done" || fail "mock-lavish end missing"
+grep -q "end $t11_task/report.html" "$T/mock-lavish.log" && pass "mock-lavish end invoked by kingpin-done" || fail "mock-lavish end missing"
 
 # Teardown test 10 resources
 tmux kill-window -t kingpin:task-lavish-1 2>/dev/null || true
 tmux kill-window -t kingpin:task-lavish-2 2>/dev/null || true
-rm -rf "$t10_task" "$t10_task2"
+rm -rf "$t11_task" "$t11_task2"
 rm -f "$KINGPIN_HOME/projects/demo-auto.landing" "$KINGPIN_HOME/projects/demo-auto.landing_queue"
 unset KINGPIN_LAVISH
 
-for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
-  tmux kill-window -t "$w" 2>/dev/null || true
-done
-tmux kill-session -t kingpin 2>/dev/null || true
-rm -rf "$T"
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"

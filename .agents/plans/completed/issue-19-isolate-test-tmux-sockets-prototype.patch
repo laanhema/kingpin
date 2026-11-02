@@ -1,0 +1,146 @@
+diff --git a/tests/test-acceptance.sh b/tests/test-acceptance.sh
+index 68cc706..5bf3e43 100755
+--- a/tests/test-acceptance.sh
++++ b/tests/test-acceptance.sh
+@@ -19,6 +19,25 @@ FAILED=0
+ KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+ KP_BIN="$KP_ROOT/bin"
+ 
++# Set up isolated private tmux server on a temporary socket
++export TMUX_TMPDIR="$T/tmux-tmp"
++mkdir -p "$TMUX_TMPDIR" "$T/bin"
++TEST_SOCKET="kingpin-test-acceptance-$$"
++REAL_TMUX=$(command -v tmux)
++cat > "$T/bin/tmux" << EOF
++#!/usr/bin/env bash
++exec "$REAL_TMUX" -L "$TEST_SOCKET" "\$@"
++EOF
++chmod +x "$T/bin/tmux"
++export PATH="$T/bin:$PATH"
++
++cleanup() {
++  git -C "$KP_ROOT" checkout bin/kingpin-send >/dev/null 2>&1 || true
++  "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
++  rm -rf "$T"
++}
++trap cleanup EXIT
++
+ # 1. Set up test repo with origin remote
+ git init -q --bare "$T/origin.git"
+ git clone -q "$T/origin.git" "$T/proj" 2>/dev/null
+@@ -70,6 +89,7 @@ chmod +x "$T/fake-claude"
+ export KINGPIN_CLAUDE=$T/fake-claude
+ 
+ tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
++tmux display-message -p '#{socket_path}' | grep -q "$TEST_SOCKET" && pass "test operates on private tmux socket" || fail "test socket not isolated"
+ 
+ # 3. Spawn 3 parallel tasks
+ echo "Spawning 3 parallel tasks..."
+@@ -148,8 +168,7 @@ leased_count=$( (cd "$T/proj" && treehouse status 2>/dev/null | grep -c leased |
+ # Restore original kingpin-send
+ git -C "$KP_ROOT" checkout bin/kingpin-send >/dev/null 2>&1
+ 
+-tmux kill-session -t kingpin 2>/dev/null || true
+-rm -rf "$T"
++"$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
+ 
+ if [ "$FAILED" -eq 0 ]; then
+   echo "ALL ACCEPTANCE TESTS PASSED"
+diff --git a/tests/test-automation.sh b/tests/test-automation.sh
+index 8356223..96c829c 100755
+--- a/tests/test-automation.sh
++++ b/tests/test-automation.sh
+@@ -21,6 +21,24 @@ FAILED=0
+ KP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ KP_BIN="$KP_ROOT/bin"
+ 
++# Set up isolated private tmux server on a temporary socket
++export TMUX_TMPDIR="$T/tmux-tmp"
++mkdir -p "$TMUX_TMPDIR" "$T/bin"
++TEST_SOCKET="kingpin-test-auto-$$"
++REAL_TMUX=$(command -v tmux)
++cat > "$T/bin/tmux" << EOF
++#!/usr/bin/env bash
++exec "$REAL_TMUX" -L "$TEST_SOCKET" "\$@"
++EOF
++chmod +x "$T/bin/tmux"
++export PATH="$T/bin:$PATH"
++
++cleanup() {
++  "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
++  rm -rf "$T"
++}
++trap cleanup EXIT
++
+ # 1. Set up test repo with origin remote
+ git init -q --bare "$T/origin.git"
+ git clone -q "$T/origin.git" "$T/proj" 2>/dev/null
+@@ -38,6 +56,7 @@ tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n hom
+ for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
+   tmux kill-window -t "$w" 2>/dev/null || true
+ done
++tmux display-message -p '#{socket_path}' | grep -q "$TEST_SOCKET" && pass "test operates on private tmux socket" || fail "test socket not isolated"
+ 
+ # Test 1: kingpin init
+ echo "=== Test 1: kingpin init ==="
+@@ -355,11 +374,7 @@ empty_curate_out=$("$KP_BIN/kingpin" curate)
+ echo "$empty_curate_out" | grep -q "no pending skill critiques" && pass "curate reports no pending skill critiques" || fail "curate did not report empty"
+ 
+ 
+-for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
+-  tmux kill-window -t "$w" 2>/dev/null || true
+-done
+-tmux kill-session -t kingpin 2>/dev/null || true
+-rm -rf "$T"
++"$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
+ 
+ if [ "$FAILED" -eq 0 ]; then
+   echo "ALL AUTOMATION TESTS PASSED"
+diff --git a/tests/test-harnesses.sh b/tests/test-harnesses.sh
+index 26fbeba..540db06 100755
+--- a/tests/test-harnesses.sh
++++ b/tests/test-harnesses.sh
+@@ -21,11 +21,30 @@ FAILED=0
+ KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+ KP_BIN="$KP_ROOT/bin"
+ 
++# Set up isolated private tmux server on a temporary socket
++export TMUX_TMPDIR="$T/tmux-tmp"
++mkdir -p "$TMUX_TMPDIR" "$T/bin"
++TEST_SOCKET="kingpin-test-harnesses-$$"
++REAL_TMUX=$(command -v tmux)
++cat > "$T/bin/tmux" << EOF
++#!/usr/bin/env bash
++exec "$REAL_TMUX" -L "$TEST_SOCKET" "\$@"
++EOF
++chmod +x "$T/bin/tmux"
++export PATH="$T/bin:$PATH"
++
++cleanup() {
++  "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
++  rm -rf "$T"
++}
++trap cleanup EXIT
++
+ # Ensure kingpin tmux session exists and has only home window
+ tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
+ for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
+   tmux kill-window -t "$w" 2>/dev/null || true
+ done
++tmux display-message -p '#{socket_path}' | grep -q "$TEST_SOCKET" && pass "test operates on private tmux socket" || fail "test socket not isolated"
+ 
+ # 1. Set up test repo with origin remote
+ git init -q --bare "$T/origin.git"
+@@ -197,11 +216,7 @@ grep -qi "leased worktree" "$KP_ROOT/AGENTS.md" && pass "AGENTS.md scope guard e
+ grep -qi "background code worker" "$KP_ROOT/worker/preamble.md" && pass "worker preamble declares background code worker role" || fail "missing background code worker in preamble"
+ grep -qi "AGENTS.md" "$KP_ROOT/worker/preamble.md" && pass "worker preamble overrides AGENTS.md" || fail "preamble does not override AGENTS.md"
+ 
+-for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
+-  tmux kill-window -t "$w" 2>/dev/null || true
+-done
+-tmux kill-session -t kingpin 2>/dev/null || true
+-rm -rf "$T"
++"$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
+ 
+ if [ "$FAILED" -eq 0 ]; then
+   echo "ALL MULTI-HARNESS TESTS PASSED"
