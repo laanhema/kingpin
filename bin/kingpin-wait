@@ -82,6 +82,10 @@ check_task() {
   local tmux_target=""
   tmux_target=$(sed -n 's/^TMUX_TARGET=//p' "$task_env" 2>/dev/null || true)
   [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
+  # The window ID survives rename and move; older task.env files lack it.
+  local window_id=""
+  window_id=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$task_env" 2>/dev/null || true)
+  [ -n "$window_id" ] && tmux_target=$window_id
 
   # 2. Window liveness check
   local window_alive=0

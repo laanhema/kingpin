@@ -160,6 +160,8 @@ spawn_out_outside=$(TMUX='' "$KP_BIN/kingpin" spawn demo-auto --issue 203 --id t
 echo "$spawn_out_outside" | grep -q "tmux kingpin:task-target-outside" && pass "spawn logged kingpin target when TMUX is empty" || fail "spawn did not log kingpin target"
 grep -q "^TMUX_TARGET=kingpin:task-target-outside$" "$KINGPIN_HOME/tasks/task-target-outside/task.env" && pass "task.env recorded kingpin:task-target-outside" || fail "wrong TMUX_TARGET in task.env"
 tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "task-target-outside" && pass "window spawned in kingpin session" || fail "window missing in kingpin session"
+outside_wid=$(tmux list-windows -t kingpin -F '#{window_id} #{window_name}' | awk '$2=="task-target-outside"{print $1}')
+grep -qx "TMUX_WINDOW_ID=$outside_wid" "$KINGPIN_HOME/tasks/task-target-outside/task.env" && echo "$outside_wid" | grep -q '^@[0-9][0-9]*$' && pass "task.env recorded window ID $outside_wid" || fail "task.env TMUX_WINDOW_ID is not the spawned window's ID ($outside_wid)"
 "$KP_BIN/kingpin" done task-target-outside --force >/dev/null
 ! tmux list-windows -t kingpin -F '#{window_name}' 2>/dev/null | grep -qx "task-target-outside" && pass "kingpin done cleaned up outside window" || fail "window lingering in kingpin session"
 
@@ -174,6 +176,8 @@ spawn_out_inside=$(TMUX="$mock_tmux" "$KP_BIN/kingpin" spawn demo-auto --issue 2
 echo "$spawn_out_inside" | grep -q "tmux kp-test-active:task-target-inside" && pass "spawn logged active session target when TMUX is set" || fail "spawn did not log active session target"
 grep -q "^TMUX_TARGET=kp-test-active:task-target-inside$" "$KINGPIN_HOME/tasks/task-target-inside/task.env" && pass "task.env recorded kp-test-active:task-target-inside" || fail "wrong TMUX_TARGET in task.env"
 tmux list-windows -t kp-test-active -F '#{window_name}' | grep -qx "task-target-inside" && pass "window spawned in active session" || fail "window missing in active session"
+inside_wid=$(tmux list-windows -t kp-test-active -F '#{window_id} #{window_name}' | awk '$2=="task-target-inside"{print $1}')
+grep -qx "TMUX_WINDOW_ID=$inside_wid" "$KINGPIN_HOME/tasks/task-target-inside/task.env" && pass "task.env recorded window ID $inside_wid in active session" || fail "task.env TMUX_WINDOW_ID is not the active-session window's ID ($inside_wid)"
 
 # Test downstream kingpin-send targeting active session window
 send_out=$("$KP_BIN/kingpin" send task-target-inside "echo inside-active-ok")
@@ -1209,6 +1213,71 @@ tmux kill-window -t kingpin:t14-alias 2>/dev/null || true
 "$KP_BIN/kingpin" --help | grep -q "approve" && pass "kingpin --help mentions the approve alias" || fail "--help does not mention approve"
 rm -f "$KINGPIN_HOME/projects/demo-t14.landing" "$KINGPIN_HOME/projects/demo-t14.landing_queue"
 rm -rf "$KINGPIN_HOME/tasks/t14-nits" "$KINGPIN_HOME/tasks/t14-clean" "$KINGPIN_HOME/tasks/t14-nover" "$KINGPIN_HOME/tasks/t14-alias"
+
+# Test 15: workers are tracked by tmux window ID, so renames and moves keep working
+echo "=== Test 15: window ID tracking (rename, move, gone, legacy) ==="
+mk_t15() {
+  local name=$1 cmd=${2:-cat} d wid
+  d="$KINGPIN_HOME/tasks/$name"
+  mkdir -p "$d"
+  wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n "$name" "$cmd")
+  cat > "$d/task.env" << ENVEOF
+TASK_ID=$name
+PROJECT=demo-t15
+HARNESS=claude
+MODE=review
+PROJECT_PATH=$T/proj
+WORKTREE=$T/t15-missing-worktree-$name
+TMUX_TARGET=kingpin:$name
+TMUX_WINDOW_ID=$wid
+ENVEOF
+  : > "$d/status"
+  echo 0 > "$d/seen"
+  printf '%s\n' "$wid"
+}
+
+# Rename + move to another session; the old name target must be dead
+t15_wid=$(mk_t15 t15-move)
+tmux new-session -d -s kp-t15-other -n home
+tmux rename-window -t "$t15_wid" renamed-t15
+tmux move-window -d -s "$t15_wid" -t kp-t15-other:
+! tmux list-panes -t kingpin:t15-move >/dev/null 2>&1 && pass "t15: old name target no longer resolves after rename+move" || fail "t15: old name target still resolves"
+tmux list-windows -t kp-t15-other -F '#{window_id}' | grep -qx "$t15_wid" && pass "t15: window now lives in the other session" || fail "t15: window did not move"
+
+KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin-send" t15-move "moved-ok" > "$T/t15-send.out" 2>&1 && pass "t15: kingpin-send reached the renamed+moved window" || fail "t15: kingpin-send failed: $(cat "$T/t15-send.out")"
+t15_seen=0
+for _ in $(seq 1 50); do
+  tmux capture-pane -pJt "$t15_wid" -S -50 2>/dev/null | grep -qxF "moved-ok" && { t15_seen=1; break; }
+  sleep 0.1
+done
+[ "$t15_seen" -eq 1 ] && pass "t15: text arrived in the moved window's pane" || fail "t15: text did not arrive in the moved window"
+
+t15_wait=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$t15_wait" | grep -q "^t15-move exited" && fail "t15: kingpin-wait reported a live renamed+moved window as exited" || pass "t15: kingpin-wait still sees the renamed+moved window as alive"
+"$KP_BIN/kingpin" ack t15-move
+[ ! -f "$KINGPIN_HOME/tasks/t15-move/seen_exited" ] && pass "t15: kingpin ack did not mark the live window exited" || fail "t15: kingpin ack marked the live window exited"
+
+"$KP_BIN/kingpin-done" t15-move --force >/dev/null 2>&1 || true
+! tmux list-windows -a -F '#{window_id}' | grep -qx "$t15_wid" && pass "t15: kingpin-done closed the renamed+moved window" || fail "t15: kingpin-done left the renamed+moved window alive"
+tmux kill-session -t kp-t15-other 2>/dev/null || true
+
+# Recorded window gone: reads as exited, even though a window with the old name exists again
+t15g_wid=$(mk_t15 t15-gone)
+tmux kill-window -t "$t15g_wid"
+tmux new-window -d -t kingpin: -n t15-gone cat
+t15g_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$t15g_out" | grep -q "^t15-gone exited" && pass "t15: task whose window ID is gone reads as exited" || fail "t15: gone window not reported as exited (got: $t15g_out)"
+"$KP_BIN/kingpin" ack t15-gone
+[ -f "$KINGPIN_HOME/tasks/t15-gone/seen_exited" ] && pass "t15: kingpin ack marks the gone window exited" || fail "t15: seen_exited missing for gone window"
+tmux kill-window -t kingpin:t15-gone 2>/dev/null || true
+
+# Legacy task.env with only TMUX_TARGET still works through the name
+t15l_wid=$(mk_t15 t15-legacy)
+sed -i '/^TMUX_WINDOW_ID=/d' "$KINGPIN_HOME/tasks/t15-legacy/task.env"
+KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin-send" t15-legacy "legacy-ok" >/dev/null 2>&1 && pass "t15: legacy task.env (TMUX_TARGET only) still reaches the window" || fail "t15: legacy task.env send failed"
+"$KP_BIN/kingpin-done" t15-legacy --force >/dev/null 2>&1 || true
+! tmux list-windows -a -F '#{window_id}' | grep -qx "$t15l_wid" && pass "t15: kingpin-done closed the legacy window" || fail "t15: kingpin-done left the legacy window alive"
+rm -rf "$KINGPIN_HOME/tasks/t15-move" "$KINGPIN_HOME/tasks/t15-gone" "$KINGPIN_HOME/tasks/t15-legacy"
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"
