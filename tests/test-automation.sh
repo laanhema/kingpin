@@ -91,7 +91,8 @@ pass "task-auto-1 spawned in auto mode"
 # Mock ready status
 echo "ready: branch=kingpin/task-auto-1 review=APPROVE report=none" >> "$KINGPIN_HOME/tasks/task-auto-1/status"
 
-# Override kingpin-send to simulate worker response
+# Override kingpin-send to simulate worker response (backup keeps uncommitted edits of the real script)
+cp -p "$KP_BIN/kingpin-send" "$T/kingpin-send.orig"
 cat > "$KP_BIN/kingpin-send" << 'S'
 #!/usr/bin/env bash
 id=$1
@@ -106,7 +107,7 @@ chmod +x "$KP_BIN/kingpin-send"
 [ -f "$KINGPIN_HOME/tasks/task-auto-1/landing_sent" ] && pass "kingpin-watch triggered landing" || fail "landing not triggered"
 
 # Restore original kingpin-send
-git -C "$KP_ROOT" checkout bin/kingpin-send >/dev/null 2>&1
+cp -p "$T/kingpin-send.orig" "$KP_BIN/kingpin-send"
 
 # In the leased worktree, commit and push to origin main so merge assertion passes
 wt_path=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/task-auto-1/task.env")
@@ -1100,6 +1101,49 @@ t12_make_task t12-reuse "$t12_slot_a" "merged: pr=r"
 
 rm -rf "$KINGPIN_HOME/archive/t12-reuse" "$KINGPIN_HOME/archive/t12-reuse.2" "$KINGPIN_HOME/tasks/t12-live" "$KINGPIN_HOME/archive/t12-merged" "$KINGPIN_HOME/archive/t12-old" "$t12_repo" "$t12_slot_a" "$t12_slot_b"
 unset KINGPIN_SKILLS_DIR
+
+# Test 13: kingpin-send types text literally and submits it with a separate Enter
+echo "=== Test 13: kingpin-send literal text ==="
+t13_dir="$KINGPIN_HOME/tasks/t13-send"
+mkdir -p "$t13_dir"
+tmux new-window -d -t kingpin: -n t13-send cat
+cat > "$t13_dir/task.env" << EOF
+TASK_ID=t13-send
+PROJECT=demo-auto
+MODE=review
+WORKTREE=$T/proj
+TMUX_TARGET=kingpin:t13-send
+EOF
+
+# Poll the pane (wrapped lines joined) until a line equal to $1 shows up
+pane_has_line() {
+  local want=$1 i
+  for i in $(seq 1 50); do
+    tmux capture-pane -pJt kingpin:t13-send -S -200 2>/dev/null | grep -qxF -- "$want" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin-send" t13-send "Escape" >/dev/null
+pane_has_line "Escape" && pass "kingpin-send delivers 'Escape' as text, not the key" || fail "Escape did not arrive as text"
+KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin-send" t13-send "C-c" >/dev/null
+pane_has_line "C-c" && pass "kingpin-send delivers 'C-c' as text, not Ctrl-C" || fail "C-c did not arrive as text"
+tmux list-panes -t kingpin:t13-send >/dev/null 2>&1 && pass "cat pane survived 'C-c' text" || fail "pane died after C-c"
+
+KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin-send" t13-send "-n literal dash" >/dev/null
+pane_has_line "-n literal dash" && pass "kingpin-send delivers text starting with a dash" || fail "dash-leading text did not arrive"
+
+long_msg=$(printf '%04d' $(seq 1 500))
+[ "${#long_msg}" -eq 2000 ] || fail "test message is ${#long_msg} chars, not 2000"
+KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin-send" t13-send "$long_msg" >/dev/null
+pane_has_line "$long_msg" && pass "2,000-character message arrived intact" || fail "2,000-character message was truncated or altered"
+
+KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin-send" t13-send $'multi-a\nmulti-b' >/dev/null
+if pane_has_line "multi-a" && pane_has_line "multi-b"; then pass "multi-line message: both lines reached the pane"; else fail "multi-line message lost a line"; fi
+
+tmux kill-window -t kingpin:t13-send 2>/dev/null || true
+rm -rf "$t13_dir"
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"

@@ -33,7 +33,7 @@ chmod +x "$T/bin/tmux"
 export PATH="$T/bin:$PATH"
 
 cleanup() {
-  git -C "$KP_ROOT" checkout bin/kingpin-send >/dev/null 2>&1 || true
+  [ -f "$T/kingpin-send.orig" ] && cp -p "$T/kingpin-send.orig" "$KP_BIN/kingpin-send" || true
   "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
   rm -rf "$T"
 }
@@ -112,7 +112,8 @@ done
 grep -q "demo-alpha" "$T/board.html" && grep -q "demo-beta" "$T/board.html" && grep -q "demo-gamma" "$T/board.html" && pass "all 3 tasks present on board" || fail "tasks missing from board"
 
 # 5. Land demo-alpha, demo-beta, demo-gamma
-# Override kingpin-send to write landed_signal for fake-claude
+# Override kingpin-send to write landed_signal for fake-claude (backup keeps uncommitted edits of the real script)
+cp -p "$KP_BIN/kingpin-send" "$T/kingpin-send.orig"
 cat > "$KP_BIN/kingpin-send" <<'S'
 #!/usr/bin/env bash
 id=$1
@@ -167,7 +168,7 @@ leased_count=$( (cd "$T/proj" && treehouse status 2>/dev/null | grep -c leased |
 [ "$leased_count" -eq 0 ] && pass "all treehouse leases returned clean" || fail "lingering leases: $leased_count"
 
 # Restore original kingpin-send
-git -C "$KP_ROOT" checkout bin/kingpin-send >/dev/null 2>&1
+cp -p "$T/kingpin-send.orig" "$KP_BIN/kingpin-send"
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL ACCEPTANCE TESTS PASSED"
