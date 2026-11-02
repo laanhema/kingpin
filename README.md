@@ -105,6 +105,7 @@ kingpin watch
 | `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, advances the queue, and archives the task record to `~/.kingpin/archive/<task-id>`. Refuses, even with `--force`, when another unfinished task records the same worktree. |
 | `kingpin lock` | `kingpin lock [status\|check\|acquire [--harness <name>]\|release\|harness]` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. |
 | `kingpin guard` | `kingpin guard [install\|check\|warn]` | Installs or verifies the orchestrator-only tool deny rules in `.claude/settings.local.json` (untracked, so workers never inherit them); `warn` prints a stderr warning when they are missing; `list` and `wait` run it at startup, and `lock acquire` prints the same warning. |
+| `kingpin report` | `kingpin report diffs [--repo <dir>] [--base <ref>]` / `kingpin report check <report.html>` | Dossier helper for workers. `diffs` prints the HTML for the file-diff section (every committed, uncommitted and untracked change, each with a static fallback and a `@pierre/diffs` call that passes `oldFile`/`newFile`). `check` exits 1 when a dossier would show blank diffs (`patch:` used, `FileDiff` without `oldFile`/`newFile`, or an empty diff container). The worker preamble tells workers to run `check` before reporting `ready:`. |
 | `kingpin curate` | `kingpin curate` | Aggregates critique files from finished worker tasks. |
 
 ---
@@ -168,6 +169,9 @@ Run the full test suite from the repository root:
 ```bash
 # Automation suite: unified CLI, init, watch, and run
 ./tests/test-automation.sh
+
+# Dossier diff helper: generated diffs are renderable, blank-diff reports are rejected
+./tests/test-report.sh
 
 # Multi-harness contract and isolation test
 ./tests/test-harnesses.sh

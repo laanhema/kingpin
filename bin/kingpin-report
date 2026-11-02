@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Dossier diff helper for workers: generate valid @pierre/diffs blocks and check a report.html.
+#
+# Usage:
+#   kingpin-report diffs [--repo <dir>] [--base <ref>]   print the HTML fragment for Section 3
+#   kingpin-report check <report.html>                   fail when a diff would render blank
+set -euo pipefail
+
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+
+case "${1:-}" in
+  diffs|check) exec node "$KP_ROOT/lib/report-diffs.mjs" "$@" ;;
+  -h|--help|"")
+    cat << 'HELP'
+usage: kingpin-report diffs [--repo <dir>] [--base <ref>]
+       kingpin-report check <report.html>
+
+  diffs  Print an HTML fragment: one container per changed file (committed since the
+         merge-base, uncommitted, untracked), each with a static diff fallback and a
+         FileDiff render call that passes oldFile/newFile. Paste it into report.html.
+  check  Exit 1 when report.html would show a blank diff: `patch:` used, FileDiff
+         without oldFile/newFile, no FileDiff at all, or an empty diff container.
+HELP
+    ;;
+  *) echo "kingpin-report: unknown command '$1'" >&2; exit 2 ;;
+esac
