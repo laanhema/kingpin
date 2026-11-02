@@ -50,6 +50,7 @@ check_task() {
   local seen_file="$dir/seen"
   local stopped_file="$dir/stopped"
   local seen_stopped_file="$dir/seen_stopped"
+  local seen_exited_file="$dir/seen_exited"
 
   local status_count=0
   local seen_count=0
@@ -86,7 +87,10 @@ check_task() {
   fi
 
   if [ "$window_alive" -eq 0 ]; then
-    echo "$id exited"
+    if [ ! -f "$seen_exited_file" ]; then
+      echo "$id exited"
+      return 0
+    fi
     return 0
   fi
 
@@ -155,24 +159,30 @@ check_all() {
   [ "$updates" -eq 1 ] && return 0 || return 1
 }
 
-# Immediate check before waiting
-if check_all; then
-  exit 0
-fi
+start_time=$(date +%s)
+while true; do
+  if check_all; then
+    exit 0
+  fi
 
-if [ "$ONCE" -eq 1 ]; then
-  exit 1
-fi
+  if [ "$ONCE" -eq 1 ]; then
+    exit 1
+  fi
 
-# Wait for file system events with inotifywait fallback to sleep
-if command -v inotifywait >/dev/null 2>&1; then
-  inotifywait -q -r -e modify,create,delete,attrib -t "$TIMEOUT" "$tasks_dir" >/dev/null 2>&1 || true
-else
-  sleep "$TIMEOUT"
-fi
+  now=$(date +%s)
+  elapsed=$((now - start_time))
+  if [ "$elapsed" -ge "$TIMEOUT" ]; then
+    exit 1
+  fi
 
-if check_all; then
-  exit 0
-fi
+  remaining=$((TIMEOUT - elapsed))
+  step=2
+  [ "$remaining" -lt "$step" ] && step="$remaining"
+  [ "$step" -le 0 ] && exit 1
 
-exit 1
+  if command -v inotifywait >/dev/null 2>&1; then
+    inotifywait -q -r -e modify,create,delete,attrib -t "$step" "$tasks_dir" >/dev/null 2>&1 || true
+  else
+    sleep "$step"
+  fi
+done

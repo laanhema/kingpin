@@ -167,6 +167,90 @@ spawn_out_fallback=$(TMUX="/tmp/nonexistent-sock,99999,99999" "$KP_BIN/kingpin" 
 grep -q "^TMUX_TARGET=kingpin:task-target-fallback$" "$KINGPIN_HOME/tasks/task-target-fallback/task.env" && pass "fallback resolved a valid TMUX_TARGET" || fail "wrong TMUX_TARGET on fallback"
 "$KP_BIN/kingpin" done task-target-fallback --force >/dev/null
 
+# Test 6: kingpin-wait blocking and kingpin ack single-event delivery
+echo "=== Test 6: kingpin-wait blocking and kingpin ack single-event delivery ==="
+task_w_dir="$KINGPIN_HOME/tasks/test-wait-1"
+mkdir -p "$task_w_dir"
+tmux new-window -d -t kingpin: -n test-wait-1
+cat > "$task_w_dir/task.env" << ENV
+PROJECT=demo-auto
+HARNESS=claude
+MODE=review
+TMUX_TARGET=kingpin:test-wait-1
+ENV
+touch "$task_w_dir/status"
+echo 0 > "$task_w_dir/seen"
+
+set +e
+"$KP_BIN/kingpin" wait --once >/dev/null 2>&1
+initial_exit=$?
+set -e
+[ "$initial_exit" -eq 1 ] && pass "kingpin-wait --once exits 1 when fleet is quiet" || fail "kingpin-wait --once did not exit 1 (got $initial_exit)"
+
+wait_log="$T/wait-test.log"
+"$KP_BIN/kingpin" wait --timeout 10 > "$wait_log" 2>&1 &
+wait_pid=$!
+sleep 0.5
+kill -0 "$wait_pid" 2>/dev/null && pass "kingpin-wait blocks while idle" || fail "kingpin-wait exited prematurely"
+
+t_start=$(date +%s)
+echo "needs-input: test question" >> "$task_w_dir/status"
+set +e
+wait "$wait_pid"
+wait_res=$?
+set -e
+t_end=$(date +%s)
+elapsed=$((t_end - t_start))
+[ "$wait_res" -eq 0 ] && pass "background kingpin-wait exited 0 on status update" || fail "background kingpin-wait failed with exit $wait_res"
+[ "$elapsed" -lt 5 ] && pass "kingpin-wait woke within 5s (${elapsed}s)" || fail "kingpin-wait took ${elapsed}s (>= 5s)"
+grep -q "^test-wait-1 status" "$wait_log" && pass "wait output matched test-wait-1 status" || fail "wait output did not match test-wait-1 status"
+
+out_before_ack=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$out_before_ack" | grep -q "^test-wait-1 status" && pass "event persisted before ack" || fail "event did not persist before ack"
+
+"$KP_BIN/kingpin" ack test-wait-1
+seen_val=$(cat "$task_w_dir/seen" 2>/dev/null | tr -d ' ' || echo 0)
+[ "$seen_val" -eq 1 ] && pass "kingpin ack updated seen to 1" || fail "seen not updated (got $seen_val)"
+
+set +e
+out_after_ack=$("$KP_BIN/kingpin" wait --once 2>/dev/null)
+ack_exit=$?
+set -e
+[ "$ack_exit" -eq 1 ] && [ -z "$out_after_ack" ] && pass "kingpin-wait --once exits 1 with no events after ack" || fail "event printed again after ack"
+
+# Test quiet event
+now_ts=$(date +%s)
+echo "$now_ts" > "$task_w_dir/stopped"
+quiet_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$quiet_out" | grep -q "^test-wait-1 quiet" && pass "kingpin-wait detected quiet event" || fail "quiet event not detected (got: $quiet_out)"
+"$KP_BIN/kingpin" ack test-wait-1
+set +e
+quiet_after_ack=$("$KP_BIN/kingpin" wait --once 2>/dev/null)
+quiet_exit=$?
+set -e
+[ "$quiet_exit" -eq 1 ] && pass "quiet event suppressed after ack" || fail "quiet event repeated after ack"
+
+# Test exited event
+tmux kill-window -t kingpin:test-wait-1 2>/dev/null || true
+sleep 0.2
+exit_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$exit_out" | grep -q "^test-wait-1 exited" && pass "kingpin-wait detected exited event" || fail "exited event not detected (got: $exit_out)"
+"$KP_BIN/kingpin" ack test-wait-1
+[ -f "$task_w_dir/seen_exited" ] && pass "seen_exited touched by kingpin ack" || fail "seen_exited not created"
+set +e
+exit_after_ack=$("$KP_BIN/kingpin" wait --once 2>/dev/null)
+exit_code_after=$?
+set -e
+[ "$exit_code_after" -eq 1 ] && pass "exited event suppressed after ack" || fail "exited event repeated after ack"
+
+# Test ack --all
+echo "merged: done" >> "$task_w_dir/status"
+"$KP_BIN/kingpin" ack --all
+seen_val_all=$(cat "$task_w_dir/seen" 2>/dev/null | tr -d ' ' || echo 0)
+[ "$seen_val_all" -eq 2 ] && pass "kingpin ack --all updated seen to 2" || fail "seen not updated on ack --all"
+
+rm -rf "$task_w_dir"
+
 for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
   tmux kill-window -t "$w" 2>/dev/null || true
 done

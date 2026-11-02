@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Acknowledge task events across the kingpin fleet.
+#
+# Advances seen status line counts, seen_stopped timestamps, and sets seen_exited
+# for specified task IDs or all tasks (--all).
+#
+# Usage: kingpin-ack <task-id>... | --all
+set -euo pipefail
+
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+tasks_dir="$KP_HOME/tasks"
+
+ALL=0
+TARGETS=()
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --all)
+      ALL=1
+      shift
+      ;;
+    -h|--help)
+      echo "usage: kingpin-ack <task-id>... | --all"
+      exit 0
+      ;;
+    -*)
+      echo "kingpin-ack: unknown argument $1" >&2
+      exit 2
+      ;;
+    *)
+      TARGETS+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [ "$ALL" -eq 0 ] && [ ${#TARGETS[@]} -eq 0 ]; then
+  echo "usage: kingpin-ack <task-id>... | --all" >&2
+  exit 2
+fi
+
+ack_task() {
+  local task_dir=$1
+  local id
+  id=$(basename "$task_dir")
+  local task_env="$task_dir/task.env"
+  local status_file="$task_dir/status"
+  local stopped_file="$task_dir/stopped"
+
+  # 1. If status exists, count lines and write to seen
+  if [ -f "$status_file" ]; then
+    wc -l < "$status_file" | tr -d ' ' > "$task_dir/seen"
+  fi
+
+  # 2. If stopped exists, read timestamp and write to seen_stopped
+  if [ -f "$stopped_file" ]; then
+    cat "$stopped_file" 2>/dev/null | tr -d ' ' > "$task_dir/seen_stopped"
+  fi
+
+  # 3. If tmux window is no longer alive, touch seen_exited
+  local tmux_target=""
+  if [ -f "$task_env" ]; then
+    tmux_target=$(sed -n 's/^TMUX_TARGET=//p' "$task_env" 2>/dev/null || true)
+  fi
+  [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
+
+  if ! tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
+    touch "$task_dir/seen_exited"
+  fi
+}
+
+if [ "$ALL" -eq 1 ]; then
+  if [ -d "$tasks_dir" ]; then
+    for dir in "$tasks_dir"/*; do
+      [ -d "$dir" ] || continue
+      ack_task "$dir"
+    done
+  fi
+else
+  for id in "${TARGETS[@]}"; do
+    task_dir="$tasks_dir/$id"
+    if [ ! -d "$task_dir" ]; then
+      echo "kingpin-ack: task $id not found: $task_dir" >&2
+      exit 1
+    fi
+    ack_task "$task_dir"
+  done
+fi
