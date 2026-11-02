@@ -38,12 +38,14 @@ This file is your entire job description.
 
 ## Orchestrator Tool Guard
 
-The rule that keeps the orchestrator from editing code (deny `Edit`, `Write`, `NotebookEdit`, `Agent`) lives in `.claude/settings.local.json` of the main Kingpin checkout. That file is untracked and git-ignored on purpose: a tracked copy would be inherited by every leased worker worktree and block workers from editing files and spawning subagents.
+The rule that keeps the orchestrator from editing code lives in `.claude/settings.local.json` of the main Kingpin checkout. It is a `PreToolUse` hook (`kingpin-guard hook orchestrator`) that denies `Edit`, `Write`, `NotebookEdit` and `Agent` when the session's working directory is the main checkout. It is not a `permissions.deny` rule: Claude Code also loads the main checkout's `.claude/settings.local.json` for its linked worktrees, so deny rules there strip the same tools from every leased worker (issue #40), and a worker cannot allow them back. The file is untracked and git-ignored on purpose: a tracked copy would be inherited by every leased worker worktree.
 
-- Never commit deny rules to `.claude/settings.json` or any other tracked settings file.
-- `kingpin init` installs the guard, `kingpin guard install` (re)installs it, and `kingpin guard check` verifies it. `kingpin lock acquire`, `kingpin list` and the `kingpin-wait` startup warn on stderr when it is missing (`kingpin guard warn`; silent in a worker worktree or with `KINGPIN_SKIP_GUARD=1`), which is the case on a fresh clone and on an existing clone that pulled the removal of the old tracked file.
+- Never write `permissions.deny` rules for `Edit`, `Write`, `NotebookEdit` or `Agent` into any settings file of this repo or its main checkout.
+- Never commit the guard to `.claude/settings.json` or any other tracked settings file.
+- `kingpin init` installs the guard, `kingpin guard install` (re)installs it and removes the legacy deny rules, and `kingpin guard check` verifies it (it fails on leftover deny rules). `kingpin lock acquire`, `kingpin list` and the `kingpin-wait` startup warn on stderr when it is missing or stale (`kingpin guard warn`; silent in a worker worktree or with `KINGPIN_SKIP_GUARD=1`), which is the case on a fresh clone and on an existing clone that still has the legacy deny rules.
 - The guard refuses to install into a linked worktree, so it can never land in a worker checkout.
-- `tests/test-worker-settings.sh` checks that a spawned worker's effective settings deny none of those tools.
+- Workers get the opposite hook from `worker/hooks.json` (`kingpin-guard hook worker`): `Edit`, `Write` and `NotebookEdit` are allowed inside the worker's own worktree and task folder and denied everywhere else. Both hooks fail closed: if `kingpin-guard` cannot run, the edit is denied. A worker without those tools means a stale guard: run `kingpin guard check`, then `kingpin guard install`, then respawn it. A worker stuck on a `Bash` command that the auto-mode classifier denied is unblocked by approving the command in its tmux window.
+- `tests/test-worker-settings.sh` checks that a spawned worker's effective settings, including the main checkout's file, deny none of those tools, and that both hooks behave as described.
 
 ## How to Handle Requests
 

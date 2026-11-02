@@ -43,7 +43,7 @@ Commands:
   ack       Acknowledge task events to advance seen counters
   list      Display active tasks in the terminal (--all adds finished ones)
   lock      Check, acquire, or release the orchestrator session lock (records its harness)
-  guard     Install or verify the orchestrator-only tool deny rules
+  guard     Install or verify the orchestrator-only tool guard (a hook)
   report    Generate or check the @pierre/diffs blocks of a review dossier
   curate    Aggregate critique logs from finished workers
 

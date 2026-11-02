@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Verification test for the orchestrator-only tool guard: the deny rules for Edit,
-# Write, NotebookEdit and Agent live in an untracked file of the main checkout and
-# never reach a leased worker worktree.
+# Verification test for the tool guards: the orchestrator guard is a PreToolUse hook (not deny
+# rules, which Claude Code would also load for leased worker worktrees) in an untracked file of
+# the main checkout, and a worker hook confines edits to the worker's worktree and task folder.
 set -euo pipefail
 
 unset TMUX CLAUDECODE OPENCODE KINGPIN_HARNESS
@@ -77,17 +77,35 @@ echo '{"permissions":{"deny":["Bash(rm -rf *)"],"allow":["Read"]},"model":"x"}' 
 "$KP_BIN/kingpin-guard" install --dir "$T/kp-checkout" >/dev/null && pass "install exits 0" || fail "install failed"
 "$KP_BIN/kingpin-guard" install --dir "$T/kp-checkout" >/dev/null && pass "install is idempotent" || fail "second install failed"
 "$KP_BIN/kingpin-guard" check --dir "$T/kp-checkout" >/dev/null && pass "check passes after install" || fail "check failed after install"
-got=$(denied_in "$T/kp-checkout/.claude/settings.local.json" | sort | tr '\n' ' ')
-[ "$got" = "Agent Edit NotebookEdit Write " ] && pass "orchestrator checkout denies Edit, Write, NotebookEdit, Agent" || fail "denied: $got"
+got=$(denied_in "$T/kp-checkout/.claude/settings.local.json" | tr '\n' ' ')
+[ -z "$got" ] && pass "orchestrator checkout carries no deny rule that workers would inherit" || fail "deny rules leak to workers: $got"
 node -e '
   const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
   const d = c.permissions.deny;
-  process.exit(d.length === 5 && d.includes("Bash(rm -rf *)") && c.model === "x" && c.permissions.allow[0] === "Read" ? 0 : 1);
-' "$T/kp-checkout/.claude/settings.local.json" && pass "install merged into existing settings without duplicates" || fail "merge or dedupe wrong"
+  const e = c.hooks.PreToolUse;
+  process.exit(d.length === 1 && d[0] === "Bash(rm -rf *)" && c.model === "x" && c.permissions.allow[0] === "Read" &&
+    e.length === 1 && e[0].matcher === "Edit|Write|NotebookEdit|Agent" && e[0].hooks.length === 1 ? 0 : 1);
+' "$T/kp-checkout/.claude/settings.local.json" && pass "install merged the hook into existing settings without duplicates" || fail "merge or dedupe wrong"
+# Legacy deny rules (what older versions wrote) reach every worker worktree: check rejects them, install removes them.
+echo '{"permissions":{"deny":["Edit","Write","NotebookEdit","Agent","Bash(rm -rf *)"]},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"true"}]}]}}' > "$T/kp-checkout/.claude/settings.local.json"
+"$KP_BIN/kingpin-guard" check --dir "$T/kp-checkout" >/dev/null 2>&1 && fail "check passed with legacy deny rules" || pass "check rejects legacy deny rules"
+"$KP_BIN/kingpin-guard" install --dir "$T/kp-checkout" >/dev/null && pass "install migrates legacy deny rules" || fail "migration failed"
+"$KP_BIN/kingpin-guard" check --dir "$T/kp-checkout" >/dev/null && pass "check passes after migration" || fail "check failed after migration"
+[ -z "$(denied_in "$T/kp-checkout/.claude/settings.local.json")" ] && pass "migration removed the four deny rules" || fail "legacy deny rules remain"
+node -e '
+  const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+  const e = c.hooks.PreToolUse;
+  process.exit(c.permissions.deny.length === 1 && c.permissions.deny[0] === "Bash(rm -rf *)" &&
+    e.length === 2 && e[0].matcher === "Bash" ? 0 : 1);
+' "$T/kp-checkout/.claude/settings.local.json" && pass "migration kept unrelated deny rules and hooks" || fail "migration lost unrelated settings"
+# The installed command fails closed: $T/kp-checkout has no bin/kingpin-guard, so the hook cannot run and must deny.
+orch_cmd=$(node -e 'const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(c.hooks.PreToolUse.find((e) => e.matcher === "Edit|Write|NotebookEdit|Agent").hooks[0].command)' "$T/kp-checkout/.claude/settings.local.json")
+rc=0; printf '{}' | bash -c "$orch_cmd" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] && pass "installed orchestrator hook denies when the guard script cannot run" || fail "installed orchestrator hook failed open (rc=$rc)"
 git -C "$T/kp-checkout" status --porcelain | grep -q . && fail "guard file dirties the checkout" || pass "guard file leaves the checkout clean"
 echo '{bad' > "$T/kp-checkout/.claude/settings.local.json"
 "$KP_BIN/kingpin-guard" install --dir "$T/kp-checkout" >/dev/null 2>&1 && fail "install overwrote malformed JSON" || pass "install refuses malformed JSON"
-for bad in '[]' 'null' '{"permissions":"x"}' '"str"' '{"permissions":[]}'; do
+for bad in '[]' 'null' '{"permissions":"x"}' '"str"' '{"permissions":[]}' '{"hooks":[]}' '{"hooks":{"PreToolUse":{}}}'; do
   echo "$bad" > "$T/kp-checkout/.claude/settings.local.json"
   err=$("$KP_BIN/kingpin-guard" install --dir "$T/kp-checkout" 2>&1 >/dev/null) && rc=0 || rc=$?
   if [ "$rc" -ne 0 ] && echo "$err" | grep -q "^kingpin-guard:" && ! echo "$err" | grep -q "at \|node:"; then
@@ -134,10 +152,49 @@ wt=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/task-settings/task.env")
 [ ! -e "$wt/.claude/settings.json" ] && pass "worker worktree has no settings.json" || fail "worker worktree has settings.json"
 launch_settings=$(sed -n "s/.*--settings '\([^']*\)'.*/\1/p" "$KINGPIN_HOME/tasks/task-settings/launch.sh")
 [ -f "$launch_settings" ] && pass "launch script passes a --settings file" || fail "no --settings file in launch.sh"
-denied=$(denied_in "$wt/.claude/settings.json" "$wt/.claude/settings.local.json" "$launch_settings" "$wt/.claude/settings.json" | tr '\n' ' ')
+# Claude Code also loads the main checkout's .claude/settings.local.json for its linked worktrees,
+# so that file is part of the worker's effective settings. This is the leak behind issue #40.
+denied=$(denied_in "$wt/.claude/settings.json" "$wt/.claude/settings.local.json" "$T/proj/.claude/settings.local.json" "$launch_settings" | tr '\n' ' ')
 [ -z "$denied" ] && pass "worker's effective settings deny none of Edit, Write, NotebookEdit, Agent" || fail "worker denies: $denied"
+grep -q "export KINGPIN_ROOT='$KP_ROOT'" "$KINGPIN_HOME/tasks/task-settings/launch.sh" && pass "launch script exports KINGPIN_ROOT for the worker hook" || fail "launch script lacks KINGPIN_ROOT"
 "$KP_BIN/kingpin-guard" install --dir "$wt" >/dev/null 2>&1 && fail "guard installed into a worker worktree" || pass "guard refuses a worker worktree"
 [ -z "$(git -C "$wt" status --porcelain)" ] && pass "worker worktree is clean" || fail "worker worktree dirty"
+
+# 3b. Hooks: the orchestrator is denied in the main checkout only, and a worker edits only
+# inside its own worktree and task folder.
+echo "=== Test 3b: guard hooks ==="
+task_folder=$KINGPIN_HOME/tasks/task-settings
+hook() {
+  local mode=$1 tool=$2 cwd=$3 path=${4:-}
+  printf '{"tool_name":"%s","cwd":"%s","tool_input":{"file_path":"%s"}}' "$tool" "$cwd" "$path" \
+    | KINGPIN_TASK_DIR=$task_folder "$KP_BIN/kingpin-guard" hook "$mode" 2>/dev/null
+}
+for tool in Edit Write NotebookEdit Agent; do
+  hook orchestrator "$tool" "$T/proj" >/dev/null && fail "orchestrator hook let $tool through in the main checkout" || pass "orchestrator hook denies $tool in the main checkout"
+  hook orchestrator "$tool" "$wt" >/dev/null && pass "orchestrator hook lets $tool through in a worker worktree" || fail "orchestrator hook denied $tool in a worker worktree"
+done
+hook orchestrator Read "$T/proj" >/dev/null && pass "orchestrator hook has no opinion on Read" || fail "orchestrator hook denied Read"
+
+allowed() { out=$(hook worker "$@") && printf '%s' "$out" | grep -q '"permissionDecision":"allow"'; }
+allowed Edit "$wt" "$wt/lib/x.txt" && pass "worker hook allows an edit inside the worktree" || fail "worker edit inside the worktree not allowed"
+allowed Write "$wt" "new/dir/file.txt" && pass "worker hook allows a relative path inside the worktree" || fail "relative path not allowed"
+allowed Write "$wt" "$task_folder/report.html" && pass "worker hook allows a write into its task folder" || fail "task folder write not allowed"
+ln -s "$T" "$wt/escape"
+for case in "$T/proj/AGENTS.md" "/etc/hosts" "$wt/../outside.txt" "$wt/escape/outside.txt" "$KINGPIN_HOME/tasks/other-task/status"; do
+  hook worker Edit "$wt" "$case" >/dev/null && fail "worker hook let an edit of $case through" || pass "worker hook denies an edit of $case"
+done
+rm -f "$wt/escape"
+printf '{"tool_name":"NotebookEdit","cwd":"%s","tool_input":{"notebook_path":"/etc/n.ipynb"}}' "$wt" | "$KP_BIN/kingpin-guard" hook worker >/dev/null 2>&1 && fail "worker hook let a NotebookEdit outside the worktree through" || pass "worker hook denies a NotebookEdit outside the worktree"
+hook worker Bash "$wt" >/dev/null && pass "worker hook has no opinion on Bash" || fail "worker hook denied Bash"
+# The command that worker/hooks.json really runs, with the environment the launch script sets
+worker_cmd=$(node -e 'const c = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(c.hooks.PreToolUse.find((e) => e.matcher === "Edit|Write|NotebookEdit").hooks[0].command)' "$KP_ROOT/worker/hooks.json")
+run_worker_hook() { printf '{"tool_name":"Write","cwd":"%s","tool_input":{"file_path":"%s"}}' "$wt" "$1" | KINGPIN_ROOT=$KP_ROOT KINGPIN_TASK_DIR=$task_folder bash -c "$worker_cmd" 2>/dev/null; }
+run_worker_hook "$wt/a.txt" | grep -q '"permissionDecision":"allow"' && pass "hooks.json command allows an edit inside the worktree" || fail "hooks.json command did not allow an inside edit"
+run_worker_hook "$T/proj/a.txt" >/dev/null && fail "hooks.json command let an outside edit through" || pass "hooks.json command denies an edit outside the worktree"
+rc=0; printf '{}' | KINGPIN_ROOT="$T/nope" bash -c "$worker_cmd" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] && pass "worker hook denies when kingpin-guard is missing" || fail "worker hook failed open on a missing script (rc=$rc)"
+rc=0; printf '{}' | env -u KINGPIN_ROOT bash -c "$worker_cmd" >/dev/null 2>&1 || rc=$?
+[ "$rc" = 2 ] && pass "worker hook denies when KINGPIN_ROOT is unset" || fail "worker hook failed open without KINGPIN_ROOT (rc=$rc)"
 
 # 4. kingpin init installs the guard; kingpin lock warns when it is missing
 echo "=== Test 4: init and lock wiring ==="
