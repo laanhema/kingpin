@@ -186,6 +186,9 @@ case "$cmd" in
       echo "$target_pid" > "$LOCK_FILE"
       echo "lock: acquired (pid $target_pid)"
     fi
+    # The deny rules are untracked, so a clone that pulled their removal has none.
+    "$(dirname "$0")/kingpin-guard" check >/dev/null 2>&1 \
+      || echo "warning: orchestrator guard is not active; run 'kingpin guard install'" >&2
     ;;
   harness)
     lock_harness

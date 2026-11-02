@@ -6,6 +6,7 @@ unset TMUX CLAUDECODE OPENCODE KINGPIN_HARNESS
 
 T=$(mktemp -d)
 export KINGPIN_HOME=$T/kp
+export KINGPIN_SKIP_GUARD=1
 export TREEHOUSE_ROOT=$T/pool
 export CLAUDE_CONFIG_DIR=$T/cfg
 export GEMINI_CONFIG_DIR=$T/cfg-gemini
