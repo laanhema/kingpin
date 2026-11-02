@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# Continuous fleet supervision loop for Kingpin.
+#
+# Listens for fleet events via kingpin-wait:
+#   1. Re-renders ~/.kingpin/board.html on every event.
+#   2. When a worker in 'auto' mode reports 'ready:', automatically triggers kingpin-land.
+#   3. When a worker reports 'merged:', automatically runs kingpin-done to clean up.
+#   4. In 'review' mode, keeps board.html fresh for captain review and clicks.
+#
+# Usage: kingpin-watch [--once] [--interval <seconds>]
+set -euo pipefail
+
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+KP_BIN="$KP_ROOT/bin"
+
+ONCE=0
+INTERVAL=300
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --once) ONCE=1; shift ;;
+    --interval) INTERVAL=${2:?--interval needs seconds}; shift 2 ;;
+    -h|--help)
+      echo "usage: kingpin-watch [--once] [--interval <seconds>]"
+      exit 0
+      ;;
+    *) echo "kingpin-watch: unknown argument $1" >&2; exit 2 ;;
+  esac
+done
+
+process_task_event() {
+  local id=$1
+  local reason=$2
+  local task_dir="$KP_HOME/tasks/$id"
+  [ -d "$task_dir" ] || return 0
+
+  local env_file="$task_dir/task.env"
+  [ -f "$env_file" ] || return 0
+
+  local mode
+  mode=$(sed -n 's/^MODE=//p' "$env_file" 2>/dev/null || echo "review")
+
+  local status_file="$task_dir/status"
+  local seen_file="$task_dir/seen"
+  local last_status=""
+
+  if [ -f "$status_file" ]; then
+    local status_count
+    status_count=$(wc -l < "$status_file" | tr -d ' ')
+    echo "$status_count" > "$seen_file"
+    last_status=$(tail -n 1 "$status_file" 2>/dev/null || true)
+  fi
+
+  local stopped_file="$task_dir/stopped"
+  local seen_stopped_file="$task_dir/seen_stopped"
+  if [ -f "$stopped_file" ]; then
+    local stop_time
+    stop_time=$(cat "$stopped_file" 2>/dev/null | tr -d ' ' || echo 0)
+    echo "$stop_time" > "$seen_stopped_file"
+  fi
+
+  case "$last_status" in
+    ready:*)
+      if [ "$mode" = "auto" ] && [ ! -f "$task_dir/landing_sent" ]; then
+        echo "[kingpin-watch] $id is ready (auto mode); initiating landing..."
+        touch "$task_dir/landing_sent"
+        "$KP_BIN/kingpin-land" "$id" || true
+      elif [ "$mode" = "review" ]; then
+        echo "[kingpin-watch] $id is ready for review; board updated."
+      fi
+      ;;
+    merged:*)
+      if [ ! -f "$task_dir/done_cleaned" ]; then
+        echo "[kingpin-watch] $id merged; running cleanup..."
+        touch "$task_dir/done_cleaned"
+        "$KP_BIN/kingpin-done" "$id" || true
+      fi
+      ;;
+    failed:*)
+      echo "[kingpin-watch] $id reported failure: $last_status"
+      ;;
+    needs-input:*)
+      echo "[kingpin-watch] $id needs input; review question on board."
+      ;;
+  esac
+}
+
+step_supervision() {
+  local updates
+  updates=$("$KP_BIN/kingpin-wait" --once 2>/dev/null || true)
+
+  if [ -n "$updates" ]; then
+    while IFS=' ' read -r id reason; do
+      [ -n "$id" ] || continue
+      process_task_event "$id" "$reason"
+    done <<< "$updates"
+    "$KP_BIN/kingpin-board" >/dev/null 2>&1 || true
+    return 0
+  fi
+  return 1
+}
+
+# Initial board refresh
+"$KP_BIN/kingpin-board" >/dev/null 2>&1 || true
+
+if [ "$ONCE" -eq 1 ]; then
+  step_supervision || true
+  exit 0
+fi
+
+echo "[kingpin-watch] Watching fleet events (board at $KP_HOME/board.html)..."
+while true; do
+  updates=$("$KP_BIN/kingpin-wait" --timeout "$INTERVAL" 2>/dev/null || true)
+  if [ -n "$updates" ]; then
+    while IFS=' ' read -r id reason; do
+      [ -n "$id" ] || continue
+      process_task_event "$id" "$reason"
+    done <<< "$updates"
+    "$KP_BIN/kingpin-board" >/dev/null 2>&1 || true
+  fi
+done

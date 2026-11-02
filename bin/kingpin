@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# Unified entrypoint for the Kingpin orchestrator fleet.
+#
+# Usage:
+#   kingpin init [name] [path] [--harness <name>] [--setup "<cmd>"]
+#   kingpin spawn <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto]
+#   kingpin run <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto]
+#   kingpin watch [--once] [--interval <seconds>]
+#   kingpin board [--out <path>]
+#   kingpin land <task-id>
+#   kingpin done <task-id> [--force]
+#   kingpin send <task-id> "<keys>"
+#   kingpin list
+#   kingpin lock [check|acquire|release]
+#   kingpin curate
+set -euo pipefail
+
+KP_BIN=$(cd "$(dirname "$0")" && pwd)
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+
+usage() {
+  cat << 'HELP'
+Kingpin — Multi-Worker Fleet Orchestrator
+
+Usage: kingpin <command> [arguments...]
+
+Commands:
+  init      Configure a project (auto-detects git directory if omitted)
+  spawn     Start a worker in a leased worktree on a background tmux window
+  run       Start a worker and follow it to completion / review
+  watch     Run the continuous fleet supervision and auto-landing loop
+  board     Generate or refresh ~/.kingpin/board.html
+  land      Initiate serialized project landing for a ready worker
+  done      Verify merge, release worktree lease, and advance queue
+  send      Send input or approval keys to a worker
+  list      Display active tasks and fleet state in the terminal
+  lock      Check, acquire, or release the orchestrator session lock
+  curate    Aggregate critique logs from finished workers
+
+Run 'kingpin <command> --help' for details on a specific command.
+HELP
+  exit 0
+}
+
+[ $# -ge 1 ] || usage
+
+cmd=$1; shift
+
+case "$cmd" in
+  init)
+    exec "$KP_BIN/kingpin-init" "$@"
+    ;;
+  spawn)
+    exec "$KP_BIN/kingpin-spawn" "$@"
+    ;;
+  watch)
+    exec "$KP_BIN/kingpin-watch" "$@"
+    ;;
+  board)
+    exec "$KP_BIN/kingpin-board" "$@"
+    ;;
+  land)
+    exec "$KP_BIN/kingpin-land" "$@"
+    ;;
+  done)
+    exec "$KP_BIN/kingpin-done" "$@"
+    ;;
+  send)
+    exec "$KP_BIN/kingpin-send" "$@"
+    ;;
+  lock)
+    exec "$KP_BIN/kingpin-lock" "$@"
+    ;;
+  curate)
+    exec "$KP_BIN/kingpin-curate" "$@"
+    ;;
+  list|status)
+    tasks_dir="$KP_HOME/tasks"
+    if [ ! -d "$tasks_dir" ] || [ -z "$(ls -A "$tasks_dir" 2>/dev/null)" ]; then
+      echo "No tasks in fleet."
+      exit 0
+    fi
+    printf "%-22s %-10s %-8s %-12s %s\n" "TASK ID" "PROJECT" "HARNESS" "MODE" "LAST STATUS"
+    printf "%-22s %-10s %-8s %-12s %s\n" "-------" "-------" "-------" "----" "-----------"
+    for d in "$tasks_dir"/*; do
+      [ -d "$d" ] || continue
+      tid=$(basename "$d")
+      env_file="$d/task.env"
+      proj="-" harness="claude" mode="review"
+      if [ -f "$env_file" ]; then
+        proj=$(sed -n 's/^PROJECT=//p' "$env_file" 2>/dev/null || echo "-")
+        harness=$(sed -n 's/^HARNESS=//p' "$env_file" 2>/dev/null || echo "claude")
+        mode=$(sed -n 's/^MODE=//p' "$env_file" 2>/dev/null || echo "review")
+      fi
+      status_file="$d/status"
+      st="(pending)"
+      if [ -f "$status_file" ] && [ -s "$status_file" ]; then
+        st=$(tail -n 1 "$status_file")
+      fi
+      printf "%-22s %-10s %-8s %-12s %s\n" "$tid" "$proj" "$harness" "$mode" "$st"
+    done
+    ;;
+  run)
+    # kingpin run: spawn worker, then follow until complete or ready
+    out=$("$KP_BIN/kingpin-spawn" "$@")
+    echo "$out"
+    # Extract task id from spawn output
+    task_id=$(echo "$out" | sed -n 's/.*spawned \([a-z0-9-]*\) .*/\1/p' || true)
+    [ -n "$task_id" ] || { echo "could not determine task id from spawn output" >&2; exit 1; }
+
+    task_dir="$KP_HOME/tasks/$task_id"
+    mode="review"
+    [ -f "$task_dir/task.env" ] && mode=$(sed -n 's/^MODE=//p' "$task_dir/task.env" 2>/dev/null || echo "review")
+
+    echo "[kingpin run] Monitoring $task_id (mode: $mode)..."
+    while true; do
+      # Step supervision loop
+      "$KP_BIN/kingpin-watch" --once >/dev/null 2>&1 || true
+
+      status_file="$task_dir/status"
+      last_st=""
+      [ -f "$status_file" ] && last_st=$(tail -n 1 "$status_file" 2>/dev/null || true)
+
+      case "$last_st" in
+        merged:*)
+          # Ensure cleanup ran
+          [ -f "$task_dir/done_cleaned" ] || "$KP_BIN/kingpin-done" "$task_id" >/dev/null 2>&1 || true
+          echo "OK: $task_id merged and cleaned up successfully."
+          exit 0
+          ;;
+        ready:*)
+          if [ "$mode" = "auto" ]; then
+            # Waiting for auto-landing and merge
+            sleep 1
+          else
+            echo "OK: $task_id is READY for review."
+            [ -f "$task_dir/report.html" ] && echo "  Report: $task_dir/report.html"
+            echo "  Board:  $KP_HOME/board.html"
+            echo "Run 'kingpin land $task_id' when satisfied, or click Land on the board."
+            exit 0
+          fi
+          ;;
+        failed:*)
+          echo "FAILED: $task_id failed: $last_st" >&2
+          exit 1
+          ;;
+        *)
+          sleep 1
+          ;;
+      esac
+    done
+    ;;
+  -h|--help)
+    usage
+    ;;
+  *)
+    echo "kingpin: unknown command '$cmd'. Run 'kingpin --help' for usage." >&2
+    exit 2
+    ;;
+esac

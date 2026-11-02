@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Initialize or update a project configuration for Kingpin.
+#
+# Usage: kingpin-init [project_name] [repo_path] [--harness <claude|agy|opencode>] [--setup "<cmd>"]
+#
+# If project_name and repo_path are omitted, detects the git repository in the
+# current working directory.
+set -euo pipefail
+
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+
+die() { echo "kingpin-init: $*" >&2; exit 1; }
+
+name='' path='' harness='claude' setup=''
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --harness) harness=${2:?--harness needs a value}; shift 2 ;;
+    --setup) setup=${2:?--setup needs a command}; shift 2 ;;
+    -h|--help)
+      echo "usage: kingpin-init [project_name] [repo_path] [--harness claude|agy|opencode] [--setup \"<cmd>\"]"
+      exit 0
+      ;;
+    -*) die "unknown option: $1" ;;
+    *)
+      if [ -z "$name" ]; then
+        name=$1
+      elif [ -z "$path" ]; then
+        path=$1
+      else
+        die "unexpected argument: $1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+case $harness in
+  claude|agy|opencode) ;;
+  *) die "unsupported harness: $harness (must be claude, agy, or opencode)" ;;
+esac
+
+if [ -z "$path" ]; then
+  if [ -n "$name" ] && [ -d "$name" ] && git -C "$name" rev-parse --git-dir >/dev/null 2>&1; then
+    # First positional was a directory path
+    path=$name
+    name=$(basename "$(git -C "$path" rev-parse --show-toplevel)")
+  else
+    # Auto-detect from current directory
+    path=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    [ -n "$path" ] || die "not in a git repository; specify project_name and repo_path"
+    [ -n "$name" ] || name=$(basename "$path")
+  fi
+fi
+
+[ -d "$path" ] || die "directory does not exist: $path"
+git -C "$path" rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $path"
+abs_path=$(cd "$path" && pwd -P)
+
+mkdir -p "$KP_HOME/projects"
+conf_file="$KP_HOME/projects/$name.env"
+
+cat > "$conf_file" <<EOF
+PROJECT_PATH=$abs_path
+HARNESS=$harness
+SETUP_CMD=$(printf '%q' "$setup")
+EOF
+
+echo "OK: configured project '$name' at $conf_file"
+echo "  PROJECT_PATH: $abs_path"
+echo "  HARNESS:      $harness"
+[ -n "$setup" ] && echo "  SETUP_CMD:    $setup"

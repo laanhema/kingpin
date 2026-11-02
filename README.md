@@ -24,143 +24,80 @@ Optional:
 
 ---
 
-## Setup
+## Quick Start (Two Commands)
 
-### 1. Add Kingpin to your PATH
+Add Kingpin to your `PATH`:
 
 ```bash
 export PATH="/home/lauri/github/kingpin/bin:$PATH"
 ```
 
-### 2. Configure a Project
-
-Create a configuration file at `~/.kingpin/projects/<project>.env`.
-
-For example, `~/.kingpin/projects/my-app.env`:
+### 1. Initialize your project (run once inside any git repository)
 
 ```bash
-# Path to the primary git clone
-PROJECT_PATH=/home/lauri/github/my-app
+cd /path/to/my-repo
+kingpin init
+```
 
-# Default worker harness (claude | agy | opencode)
-HARNESS=claude
+Kingpin detects the git repository and writes `~/.kingpin/projects/my-repo.env` automatically. You can specify a default harness:
 
-# Optional setup command run inside leased worktrees before launch
-SETUP_CMD="npm install"
+```bash
+kingpin init --harness agy
+```
+
+### 2. Run a task to completion in one command
+
+```bash
+# Auto mode: spawns, monitors, auto-lands when green, merges, and cleans up
+kingpin run my-repo --issue 42 --mode auto
+
+# Review mode: spawns, monitors, and stops at ready with your review report link
+kingpin run my-repo --text "refactor authentication service" --harness agy
 ```
 
 ---
 
-## How to Run Kingpin
+## Automated Fleet Supervision (`kingpin watch`)
 
-Kingpin can be run by an AI orchestrator session or directly from your terminal.
-
-### Step 1. Acquire the Orchestrator Lock
-
-Ensure only one orchestrator session modifies the fleet:
+When running multiple workers simultaneously, start the fleet supervisor in the background or in a separate terminal:
 
 ```bash
-kingpin-lock check
+kingpin watch
 ```
 
-### Step 2. Spawn Workers
+`kingpin watch` automates the entire lifecycle:
+- Re-renders `~/.kingpin/board.html` on every fleet event.
+- Automatically triggers `kingpin land` for workers in `auto` mode when they report `ready:`.
+- Automatically triggers `kingpin done` when workers report `merged:`, releasing worktrees back to the treehouse pool.
+- Keeps review reports and question prompts live on the board for interactive review.
 
-Spawn tasks using GitHub issues or free-text requests. Specify `--harness` to override the project default.
+---
 
-```bash
-# Spawn a Claude Code worker on an issue (review mode)
-kingpin-spawn my-app --issue 42
+## CLI Command Reference
 
-# Spawn an Antigravity worker on a text request
-kingpin-spawn my-app --text "refactor authentication middleware" --harness agy
+| Command | Usage | Description |
+|---|---|---|
+| `kingpin init` | `kingpin init [name] [path] [--harness <name>]` | Auto-configures a project from current directory or path. |
+| `kingpin run` | `kingpin run <proj> (--issue <n> \| --text <req>) [--mode auto\|review]` | Single command that spawns, monitors, and completes a task. |
+| `kingpin watch` | `kingpin watch [--once] [--interval <sec>]` | Continuous supervision and auto-landing loop. |
+| `kingpin spawn` | `kingpin spawn <proj> (--issue <n> \| --text <req>) [--harness <name>]` | Starts a worker on a background tmux window. |
+| `kingpin board` | `kingpin board [--out <path>]` | Renders the live fleet status HTML board. |
+| `kingpin list` | `kingpin list` | Displays active fleet tasks and states in the terminal. |
+| `kingpin send` | `kingpin send <task-id> "<keys>"` | Sends input or answers to a worker window. |
+| `kingpin land` | `kingpin land <task-id>` | Serializes project landing and triggers merge. |
+| `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, and advances queue. |
+| `kingpin lock` | `kingpin lock check` | Enforces single active orchestrator session. |
+| `kingpin curate` | `kingpin curate` | Aggregates critique files from finished worker tasks. |
 
-# Spawn an OpenCode worker in auto-merge mode
-kingpin-spawn my-app --issue 10 --harness opencode --mode auto
-```
+---
 
-Each worker receives:
-- A dedicated, leased git worktree managed by `treehouse`.
-- An isolated branch `kingpin/<task-id>`.
-- Pre-registered workspace trust.
-- Injected system instructions and turn-end Stop hooks.
-- A dedicated tmux window inside the `kingpin` session.
+## Live Fleet Board
 
-### Step 3. Monitor the Fleet Board
-
-Generate and update the fleet board:
-
-```bash
-kingpin-board
-```
-
-The board is saved at `~/.kingpin/board.html`. Open it in any browser or serve it with Lavish:
+Serve the dark-mode board with Lavish to inspect diffs and click actions in your browser:
 
 ```bash
 lavish-axi poll ~/.kingpin/board.html
 ```
-
-The board displays:
-- Active tasks, branches, and assigned harnesses.
-- Live task states (running, quiet, needs-input, ready, merged, failed).
-- Expandable terminal previews.
-- Interactive buttons for landing, answering input prompts, or requesting changes.
-
-### Step 4. Watch for Updates
-
-Run the event watcher to listen for status changes, quiet states, or exits:
-
-```bash
-# Wait for the next fleet event (blocking)
-kingpin-wait
-
-# Non-blocking single check
-kingpin-wait --once
-```
-
-Outputs one line per event: `<task-id> <reason>` (e.g. `my-app-42 status` or `my-app-42 quiet`).
-
-### Step 5. Interact with Workers
-
-If a worker reports `needs-input:` or you want to steer it:
-
-```bash
-kingpin-send <task-id> "Use option B and proceed"
-```
-
-### Step 6. Land and Clean Up
-
-When a worker reports `ready:`, its review report is available at `~/.kingpin/tasks/<task-id>/report.html`.
-
-Initiate landing:
-
-```bash
-kingpin-land <task-id>
-```
-
-`kingpin-land` enforces project serialization. If another task is already landing on `my-app`, this task enters `~/.kingpin/projects/my-app.landing_queue` until the active merge completes.
-
-When the worker finishes merging (`merged:`), clean up:
-
-```bash
-kingpin-done <task-id>
-```
-
-`kingpin-done` asserts the branch is merged into `main`, returns the worktree lease to the treehouse pool, deletes the local task branch, and triggers the next queued task.
-
----
-
-## Command Reference
-
-| Command | Usage | Description |
-|---|---|---|
-| `kingpin-spawn` | `kingpin-spawn <proj> (--issue <n> \| --text <req>) [--harness <name>] [--mode review\|auto]` | Leases worktree, configures trust, and launches worker. |
-| `kingpin-wait` | `kingpin-wait [--timeout <sec>] [--once]` | Inotifywait watcher for status changes and qualified quiet workers. |
-| `kingpin-board` | `kingpin-board [--out <path>]` | Renders the fleet status HTML board. |
-| `kingpin-send` | `kingpin-send <task-id> "<keys>"` | Sends input keys to a worker's tmux window. |
-| `kingpin-land` | `kingpin-land <task-id>` | Starts or queues serialized landing for a project. |
-| `kingpin-done` | `kingpin-done <task-id>` | Verifies merge, releases worktree, and advances queue. |
-| `kingpin-lock` | `kingpin-lock check` | Enforces single active orchestrator session. |
-| `kingpin-curate` | `kingpin-curate` | Aggregates critique files from finished worker tasks. |
 
 ---
 
@@ -181,6 +118,9 @@ Worktree configuration directories (`.agents`, `.opencode`) are added to `.git/i
 Run the full test suite from the repository root:
 
 ```bash
+# Automation suite: unified CLI, init, watch, and run
+./tests/test-automation.sh
+
 # Multi-harness contract and isolation test
 ./tests/test-harnesses.sh
 
