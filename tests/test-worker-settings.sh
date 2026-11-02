@@ -4,7 +4,7 @@
 # never reach a leased worker worktree.
 set -euo pipefail
 
-unset TMUX
+unset TMUX CLAUDECODE OPENCODE KINGPIN_HARNESS
 
 T=$(mktemp -d)
 export KINGPIN_HOME=$T/kp

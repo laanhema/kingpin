@@ -14,7 +14,7 @@
 #   kingpin wait [--timeout <seconds>] [--once]
 #   kingpin ack <task-id>... | --all
 #   kingpin list
-#   kingpin lock [check|acquire|release]
+#   kingpin lock [status|check|acquire [--harness <name>]|release|harness]
 #   kingpin guard [install|check|warn]
 #   kingpin curate
 set -euo pipefail
@@ -41,7 +41,7 @@ Commands:
   wait      Wait for fleet task events (blocking or --once)
   ack       Acknowledge task events to advance seen counters
   list      Display active tasks and fleet state in the terminal
-  lock      Check, acquire, or release the orchestrator session lock
+  lock      Check, acquire, or release the orchestrator session lock (records its harness)
   guard     Install or verify the orchestrator-only tool deny rules
   curate    Aggregate critique logs from finished workers
 
@@ -133,6 +133,10 @@ case "$cmd" in
         printf "  %-20s %s%s\n" "↳ Review:" "lavish-axi $d/report.html" "$listen_info"
       fi
     done
+    lock_line=$("$KP_BIN/kingpin-lock" status 2>/dev/null || true)
+    case "$lock_line" in
+      "lock: held"*) printf "\nOrchestrator %s (new workers default to its harness)\n" "$lock_line" ;;
+    esac
     ;;
   run)
     # kingpin run: spawn worker, then follow until complete or ready
