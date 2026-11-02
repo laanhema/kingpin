@@ -69,4 +69,6 @@ EOF
 echo "OK: configured project '$name' at $conf_file"
 echo "  PROJECT_PATH: $abs_path"
 echo "  HARNESS:      $harness"
-[ -n "$setup" ] && echo "  SETUP_CMD:    $setup"
+if [ -n "$setup" ]; then
+  echo "  SETUP_CMD:    $setup"
+fi

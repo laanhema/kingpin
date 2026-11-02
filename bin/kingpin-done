@@ -52,7 +52,9 @@ tmux kill-window -t "$tmux_target" 2>/dev/null || true
 
 # 2. Return treehouse slot
 if [ -d "$WORKTREE" ]; then
-  (cd "$PROJECT_PATH" && treehouse return "$WORKTREE" >/dev/null 2>&1) || true
+  ret_args=()
+  if [ "$FORCE" -eq 1 ]; then ret_args+=(--force); fi
+  (cd "$PROJECT_PATH" && treehouse return "${ret_args[@]}" "$WORKTREE" >/dev/null 2>&1) || true
 fi
 
 # 3. Delete local branch
