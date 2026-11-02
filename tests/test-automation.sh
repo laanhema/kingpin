@@ -18,7 +18,7 @@ pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAILED=1; }
 FAILED=0
 
-KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+KP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KP_BIN="$KP_ROOT/bin"
 
 # 1. Set up test repo with origin remote
@@ -45,6 +45,10 @@ echo "=== Test 1: kingpin init ==="
 [ -f "$KINGPIN_HOME/projects/demo-auto.env" ] && pass "demo-auto.env created" || fail "missing demo-auto.env"
 grep -q "HARNESS=agy" "$KINGPIN_HOME/projects/demo-auto.env" && pass "harness recorded in env" || fail "harness missing in env"
 grep -q "SETUP_CMD=" "$KINGPIN_HOME/projects/demo-auto.env" && pass "setup cmd recorded in env" || fail "setup cmd missing in env"
+
+# init without --setup
+"$KP_BIN/kingpin" init demo-nosetup "$T/proj" --harness agy >/dev/null && pass "init without --setup exited 0" || fail "init without --setup non-zero exit"
+[ -f "$KINGPIN_HOME/projects/demo-nosetup.env" ] && pass "demo-nosetup.env created" || fail "missing demo-nosetup.env"
 
 # Test 2: kingpin list on empty fleet
 echo "=== Test 2: kingpin list ==="
