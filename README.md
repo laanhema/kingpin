@@ -1,5 +1,9 @@
 # Kingpin
 
+<p align="center">
+  <img src="assets/kingpin.jpg" alt="Kingpin" width="700">
+</p>
+
 Kingpin is a multi-worker fleet orchestrator for AI coding agents. It runs tasks in parallel git worktrees, isolates dependencies, prevents git pollution, serializes landing queues, and serves a live dark-mode fleet board.
 
 Kingpin supports **Claude Code**, **Antigravity CLI (agy)**, and **OpenCode**.
