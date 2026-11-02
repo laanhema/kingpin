@@ -53,7 +53,7 @@ def capture_pane_tail(tmux_target: str, lines: int = 15) -> str:
 
 
 def derive_task_state(task_dir: Path, task_env: dict, status_lines: list) -> tuple:
-    tmux_target = task_env.get("TMUX_TARGET", f"kingpin:{task_dir.name}")
+    tmux_target = task_env.get("TMUX_WINDOW_ID") or task_env.get("TMUX_TARGET", f"kingpin:{task_dir.name}")
     alive = is_window_alive(tmux_target)
     last_line = status_lines[-1] if status_lines else ""
 
@@ -121,7 +121,8 @@ def load_tasks() -> list:
             question = question_file.read_text(encoding="utf-8", errors="replace").strip()
 
         report_exists = (entry / "report.html").is_file()
-        tmux_target = env.get("TMUX_TARGET", f"kingpin:{task_id}")
+        tmux_label = env.get("TMUX_TARGET", f"kingpin:{task_id}")
+        tmux_target = env.get("TMUX_WINDOW_ID") or tmux_label
         pane_preview = capture_pane_tail(tmux_target, 12) if state in ("quiet", "failed", "running") else ""
 
         tasks.append({
@@ -136,6 +137,7 @@ def load_tasks() -> list:
             "report_exists": report_exists,
             "pane_preview": pane_preview,
             "tmux_target": tmux_target,
+            "tmux_label": tmux_label,
         })
     return tasks
 
@@ -220,7 +222,7 @@ def render_html(tasks: list) -> str:
             pane_esc = html.escape(t["pane_preview"])
             pane_html = f'''
             <details class="collapse collapse-arrow bg-base-300 mt-3 text-xs">
-              <summary class="collapse-title py-1 text-xs font-semibold opacity-75">Terminal tail ({html.escape(t["tmux_target"])})</summary>
+              <summary class="collapse-title py-1 text-xs font-semibold opacity-75">Terminal tail ({html.escape(t["tmux_label"])})</summary>
               <div class="collapse-content"><pre class="p-2 font-mono overflow-x-auto text-xs">{pane_esc}</pre></div>
             </details>'''
 

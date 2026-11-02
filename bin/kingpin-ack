@@ -63,6 +63,12 @@ ack_task() {
     tmux_target=$(sed -n 's/^TMUX_TARGET=//p' "$task_env" 2>/dev/null || true)
   fi
   [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
+  # The window ID survives rename and move; older task.env files lack it.
+  local window_id=""
+  if [ -f "$task_env" ]; then
+    window_id=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$task_env" 2>/dev/null || true)
+  fi
+  [ -n "$window_id" ] && tmux_target=$window_id
 
   if ! tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
     touch "$task_dir/seen_exited"

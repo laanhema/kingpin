@@ -106,7 +106,8 @@ if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ]; then
 fi
 
 # 1. Close tmux window
-tmux_target=${TMUX_TARGET:-kingpin:$id}
+# The window ID survives rename and move; older task.env files only have the name.
+tmux_target=${TMUX_WINDOW_ID:-${TMUX_TARGET:-kingpin:$id}}
 tmux kill-window -t "$tmux_target" 2>/dev/null || true
 "$KP_BIN/kingpin-ack" "$id" >/dev/null 2>&1 || true
 
