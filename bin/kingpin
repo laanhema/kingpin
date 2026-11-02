@@ -101,6 +101,9 @@ case "$cmd" in
         st=$(tail -n 1 "$status_file")
       fi
       printf "%-22s %-10s %-8s %-12s %s\n" "$tid" "$proj" "$harness" "$mode" "$st"
+      if [ -f "$d/report.html" ]; then
+        printf "  %-20s %s\n" "↳ Review:" "lavish-axi $d/report.html"
+      fi
     done
     ;;
   run)
@@ -137,9 +140,10 @@ case "$cmd" in
             sleep 1
           else
             echo "OK: $task_id is READY for review."
-            [ -f "$task_dir/report.html" ] && echo "  Report: $task_dir/report.html"
-            echo "  Board:  $KP_HOME/board.html"
-            echo "Run 'kingpin land $task_id' when satisfied, or click Land on the board."
+            if [ -f "$task_dir/report.html" ]; then
+              echo "  Review dossier: lavish-axi $task_dir/report.html"
+            fi
+            echo "  To land:        kingpin land $task_id"
             exit 0
           fi
           ;;

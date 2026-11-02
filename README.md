@@ -70,10 +70,9 @@ kingpin watch
 ```
 
 `kingpin watch` automates the entire lifecycle:
-- Re-renders `~/.kingpin/board.html` on every fleet event.
 - Automatically triggers `kingpin land` for workers in `auto` mode when they report `ready:`.
 - Automatically triggers `kingpin done` when workers report `merged:`, releasing worktrees back to the treehouse pool.
-- Keeps review reports and question prompts live on the board for interactive review.
+- Notifies when tasks in `review` mode are ready for inspection or need input.
 
 ---
 
@@ -95,12 +94,40 @@ kingpin watch
 
 ---
 
-## Live Fleet Board
+## Fleet Overview & Visual Review Dossiers
 
-Serve the dark-mode board with Lavish to inspect diffs and click actions in your browser:
+Kingpin is CLI-first for fleet monitoring and visual-first for code review:
+
+### 1. Terminal Fleet Overview (`kingpin list`)
+
+Monitor all active workers, leased worktrees, and current statuses:
 
 ```bash
-lavish-axi poll ~/.kingpin/board.html
+kingpin list
+```
+
+When a task finishes in `review` mode, `kingpin list` displays its review dossier link directly below the task row.
+
+### 2. Task Review Dossiers (`lavish-axi`)
+
+When a worker completes a task, it compiles a visual review dossier (`report.html`) containing problem context, verification tables, independent review verdicts, and syntax-highlighted split code diffs. Open it with Lavish:
+
+```bash
+lavish-axi ~/.kingpin/tasks/<task-id>/report.html
+```
+
+Review the changes and click **Approve & Land** on the dossier or run:
+
+```bash
+kingpin land <task-id>
+```
+
+### 3. Optional Fleet Board (`kingpin board`)
+
+To generate a static HTML overview of all fleet tasks:
+
+```bash
+kingpin board
 ```
 
 ---

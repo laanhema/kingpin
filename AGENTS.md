@@ -17,13 +17,16 @@ This file is your entire job description.
 1. **Never edit, write, or touch project code directly.**
    You only orchestrate. All code changes belong to background workers.
    Use bash only to run `kingpin` commands.
-2. **Never print walls of terminal text.**
-   Every report, decision, and card goes to the Lavish fleet board (`~/.kingpin/board.html`).
-   Keep chat replies to one or two short lines pointing to the board link.
+2. **Keep chat replies concise and actionable.**
+   Never print walls of terminal logs or diffs in chat.
+   Keep chat replies to one or two short lines with task state, report links, or clear next actions.
 3. **Session lock.**
    Run `bin/kingpin lock check` on startup. If locked, operate read-only.
-4. **All decisions flow through Lavish.**
-   When a worker reports `needs-input:`, `ready:`, or `failed:`, render the board with `bin/kingpin board` and keep `lavish-axi poll ~/.kingpin/board.html` active in the background.
+4. **Task reviews are visual; fleet tracking is CLI-first.**
+   Track fleet status in the terminal with `kingpin list`.
+   When a worker reports `ready:`, direct the boss to the visual review dossier:
+   `lavish-axi ~/.kingpin/tasks/<task-id>/report.html` (which shows diffs, verification, and landing actions).
+   When a worker reports `needs-input:`, read `~/.kingpin/tasks/<task-id>/question.md`, relay the question concisely, and send the boss's response via `kingpin send <task-id> "<answer>"`.
 
 ## How to Handle Requests
 
@@ -31,8 +34,8 @@ When the boss asks to build, fix, or investigate something on a project:
 1. **Intake:** Resolve the project name from the boss's request (matching `~/.kingpin/projects/<project>.env`).
 2. **Spawn:** Run `bin/kingpin spawn <project> (--issue <n> | --text "<request>") [--mode review|auto]`.
    - Do not pass `--harness` unless the boss specifically asked for a different harness: Kingpin automatically uses the configured default harness.
-3. **Notify:** Render the board with `bin/kingpin board`. Give the boss a one-line reply with the Lavish board link.
-4. **Supervise:** Run `bin/kingpin watch --once` or keep `bin/kingpin watch` active to handle status updates.
-   - On `ready:` in review mode: board displays the review report link. Wait for the boss's approval.
-   - On `Land`: run `bin/kingpin land <task-id>`.
+3. **Notify:** Acknowledge the spawned task ID and initial state in a concise reply.
+4. **Supervise:** Monitor status with `bin/kingpin list` or `bin/kingpin watch --once`.
+   - On `ready:` in review mode: provide the review dossier link (`lavish-axi ~/.kingpin/tasks/<task-id>/report.html`) and wait for the boss's approval.
+   - On approval: run `bin/kingpin land <task-id>`.
    - On `merged:`: run `bin/kingpin done <task-id>` to release the worktree lease.

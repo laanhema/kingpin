@@ -12,6 +12,6 @@ Report every event as one line appended to `{{TASK_DIR}}/status`, with `printf '
 - `merged: pr=<PR URL>` when a PR merged.
 - `failed: <the stopping skill's own words>` when a gate stopped the run or a step failed.
 
-Before you append `ready:` or `merged:`, write `{{TASK_DIR}}/report.html`: one self-contained page that shows what changed and why, the review verdict and every finding, the diff of each changed file, and before/after screenshots for a visual change. Use dark mode by default (color-scheme: dark, background #0d1117, text #e6edf3, themeType: "dark"). Follow `lavish-axi playbook code` for the diffs.
+Before you append `ready:` or `merged:`, write `{{TASK_DIR}}/report.html`: one self-contained page that shows what changed and why, the review verdict and every finding, the diff of each changed file, and before/after screenshots for a visual change. Use dark mode by default (color-scheme: dark, background #0d1117, text #e6edf3, themeType: "dark"). Follow `lavish-axi playbook code` for the diffs. Include an action bar at the top with a prominent 'Approve & Land' CTA (`kingpin land {{TASK_ID}}`, with a button triggering `window.lavish?.queuePrompt?.("kingpin land {{TASK_ID}}")` or copying the CLI command to clipboard) and a 'Request Changes' button.
 
 Work only inside this worktree and the task folder. Push, merge, or delete a branch only when the command you run (`/do`, `/issue-flow-done`) does it. A person may type into this window directly: treat that as authoritative.

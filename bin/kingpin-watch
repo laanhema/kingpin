@@ -67,7 +67,7 @@ process_task_event() {
         touch "$task_dir/landing_sent"
         "$KP_BIN/kingpin-land" "$id" || true
       elif [ "$mode" = "review" ]; then
-        echo "[kingpin-watch] $id is ready for review; board updated."
+        echo "[kingpin-watch] $id is ready for review (lavish-axi $task_dir/report.html)"
       fi
       ;;
     merged:*)
@@ -81,7 +81,7 @@ process_task_event() {
       echo "[kingpin-watch] $id reported failure: $last_status"
       ;;
     needs-input:*)
-      echo "[kingpin-watch] $id needs input; review question on board."
+      echo "[kingpin-watch] $id needs input (question at $task_dir/question.md)"
       ;;
   esac
 }
@@ -109,7 +109,7 @@ if [ "$ONCE" -eq 1 ]; then
   exit 0
 fi
 
-echo "[kingpin-watch] Watching fleet events (board at $KP_HOME/board.html)..."
+echo "[kingpin-watch] Watching fleet events..."
 while true; do
   updates=$("$KP_BIN/kingpin-wait" --timeout "$INTERVAL" 2>/dev/null || true)
   if [ -n "$updates" ]; then
