@@ -51,7 +51,10 @@ PROJECT_PATH='' SETUP_CMD='' HARNESS=''
 [ -n "$PROJECT_PATH" ] && git -C "$PROJECT_PATH" rev-parse --git-dir >/dev/null 2>&1 \
   || die "PROJECT_PATH in $conf is not a git clone: $PROJECT_PATH"
 
-harness=${harness_cli:-${HARNESS:-claude}}
+global_conf=$KP_HOME/config.env
+DEFAULT_HARNESS=''
+[ -f "$global_conf" ] && DEFAULT_HARNESS=$(sed -n 's/^DEFAULT_HARNESS=//p' "$global_conf" 2>/dev/null || true)
+harness=${harness_cli:-${HARNESS:-${DEFAULT_HARNESS:-claude}}}
 case $harness in
   claude|agy|opencode) ;;
   *) die "unsupported harness: $harness (must be claude, agy, or opencode)" ;;
