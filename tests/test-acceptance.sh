@@ -19,6 +19,25 @@ FAILED=0
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_BIN="$KP_ROOT/bin"
 
+# Set up isolated private tmux server on a temporary socket
+export TMUX_TMPDIR="$T/tmux-tmp"
+mkdir -p "$TMUX_TMPDIR" "$T/bin"
+TEST_SOCKET="kingpin-test-acceptance-$$"
+REAL_TMUX=$(command -v tmux)
+cat > "$T/bin/tmux" << EOF
+#!/usr/bin/env bash
+exec "$REAL_TMUX" -L "$TEST_SOCKET" "\$@"
+EOF
+chmod +x "$T/bin/tmux"
+export PATH="$T/bin:$PATH"
+
+cleanup() {
+  git -C "$KP_ROOT" checkout bin/kingpin-send >/dev/null 2>&1 || true
+  "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
+  rm -rf "$T"
+}
+trap cleanup EXIT
+
 # 1. Set up test repo with origin remote
 git init -q --bare "$T/origin.git"
 git clone -q "$T/origin.git" "$T/proj" 2>/dev/null
@@ -70,6 +89,7 @@ chmod +x "$T/fake-claude"
 export KINGPIN_CLAUDE=$T/fake-claude
 
 tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
+tmux display-message -p '#{socket_path}' | grep -q "$TEST_SOCKET" && pass "test operates on private tmux socket" || fail "test socket not isolated"
 
 # 3. Spawn 3 parallel tasks
 echo "Spawning 3 parallel tasks..."
@@ -147,9 +167,6 @@ leased_count=$( (cd "$T/proj" && treehouse status 2>/dev/null | grep -c leased |
 
 # Restore original kingpin-send
 git -C "$KP_ROOT" checkout bin/kingpin-send >/dev/null 2>&1
-
-tmux kill-session -t kingpin 2>/dev/null || true
-rm -rf "$T"
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL ACCEPTANCE TESTS PASSED"

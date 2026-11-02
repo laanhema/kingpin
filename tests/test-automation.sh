@@ -21,6 +21,24 @@ FAILED=0
 KP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KP_BIN="$KP_ROOT/bin"
 
+# Set up isolated private tmux server on a temporary socket
+export TMUX_TMPDIR="$T/tmux-tmp"
+mkdir -p "$TMUX_TMPDIR" "$T/bin"
+TEST_SOCKET="kingpin-test-auto-$$"
+REAL_TMUX=$(command -v tmux)
+cat > "$T/bin/tmux" << EOF
+#!/usr/bin/env bash
+exec "$REAL_TMUX" -L "$TEST_SOCKET" "\$@"
+EOF
+chmod +x "$T/bin/tmux"
+export PATH="$T/bin:$PATH"
+
+cleanup() {
+  "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
+  rm -rf "$T"
+}
+trap cleanup EXIT
+
 # 1. Set up test repo with origin remote
 git init -q --bare "$T/origin.git"
 git clone -q "$T/origin.git" "$T/proj" 2>/dev/null
@@ -38,6 +56,7 @@ tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n hom
 for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
   tmux kill-window -t "$w" 2>/dev/null || true
 done
+tmux display-message -p '#{socket_path}' | grep -q "$TEST_SOCKET" && pass "test operates on private tmux socket" || fail "test socket not isolated"
 
 # Test 1: kingpin init
 echo "=== Test 1: kingpin init ==="
@@ -649,12 +668,6 @@ tmux kill-window -t kingpin:t10-dirty 2>/dev/null || true
 tmux kill-window -t kingpin:t10-queued 2>/dev/null || true
 rm -f "$KINGPIN_HOME/projects/demo-t10.landing" "$KINGPIN_HOME/projects/demo-t10.landing_queue"
 rm -rf "$t10_dir1" "$t10_dir2" "$t10_wt1" "$t10_wt2" "$t10_remote"
-
-for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
-  tmux kill-window -t "$w" 2>/dev/null || true
-done
-tmux kill-session -t kingpin 2>/dev/null || true
-rm -rf "$T"
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"
