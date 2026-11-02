@@ -100,7 +100,7 @@ kingpin watch
 | `kingpin spawn` | `kingpin spawn <proj> (--issue <n> \| --text <req>) [--harness <name>]` | Starts a worker on a background tmux window. |
 | `kingpin board` | `kingpin board [--out <path>]` | Renders the live fleet status HTML board. |
 | `kingpin list` | `kingpin list` | Displays active fleet tasks and states in the terminal. |
-| `kingpin send` | `kingpin send <task-id> "<keys>"` | Sends input or answers to a worker window. |
+| `kingpin send` | `kingpin send <task-id> "<text>"` | Types the text literally into a worker window, then presses Enter. |
 | `kingpin land` | `kingpin land <task-id>` | Serializes project landing and triggers merge. |
 | `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, and advances queue. |
 | `kingpin lock` | `kingpin lock [status\|check\|acquire [--harness <name>]\|release\|harness]` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. |

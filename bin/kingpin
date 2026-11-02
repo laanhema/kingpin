@@ -9,7 +9,7 @@
 #   kingpin board [--out <path>]
 #   kingpin land <task-id>
 #   kingpin done <task-id> [--force]
-#   kingpin send <task-id> "<keys>"
+#   kingpin send <task-id> "<text>"
 #   kingpin listen <task-id> [--once] [--background]
 #   kingpin wait [--timeout <seconds>] [--once]
 #   kingpin ack <task-id>... | --all
