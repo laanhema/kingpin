@@ -3,6 +3,7 @@
 set -euo pipefail
 
 unset TMUX
+export KINGPIN_SKIP_GUARD=1
 
 T=$(mktemp -d)
 export KINGPIN_HOME=$T/kp

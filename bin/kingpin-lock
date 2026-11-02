@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 # Acquire or inspect the kingpin orchestrator session lock.
-# Usage: kingpin-lock [status|check|acquire|release] [pid]
+# Usage: kingpin-lock [status|check|acquire|release|harness] [--harness claude|agy|opencode] [pid]
+#
+# The lock file holds the session pid on line 1 and, when known, the agent
+# harness of the session (claude, agy or opencode) on line 2. `kingpin spawn`
+# uses that harness as the default worker harness (`kingpin-lock harness`).
+#
+# How `acquire` picks the harness, first match wins:
+#   1. --harness <name> on `acquire`
+#   2. the KINGPIN_HARNESS environment variable
+#   3. the command name (or argv) of the session pid: claude*, agy*, opencode*
+#   4. the calling agent's own environment marker: CLAUDECODE=1 -> claude,
+#      OPENCODE=1 -> opencode
+# Nothing matched (e.g. a codex session): no harness is recorded. The record
+# goes away with `release` and is ignored once the holder pid is dead; the next
+# `acquire` over a stale lock rewrites the whole file.
 set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
@@ -25,6 +39,60 @@ is_harness_pid() {
     return 0
   fi
   return 1
+}
+
+valid_harness() {
+  case "$1" in claude|agy|opencode) return 0 ;; *) return 1 ;; esac
+}
+
+# Harness name for a process, from its command name or argv. Empty if unknown.
+harness_of_pid() {
+  local p=$1 comm args
+  [ -n "$p" ] || return 0
+  comm=$(ps -o comm= -p "$p" 2>/dev/null | tr -d ' ' || true)
+  case "$comm" in
+    claude|claude-*) echo claude; return 0 ;;
+    agy|agy-*) echo agy; return 0 ;;
+    opencode|opencode-*) echo opencode; return 0 ;;
+  esac
+  args=$(ps -o args= -p "$p" 2>/dev/null || true)
+  local pattern='(^|[ /])(claude|agy|opencode)(-[^ ]*)?([ ]|$)'
+  if [[ "$args" =~ $pattern ]]; then
+    echo "${BASH_REMATCH[2]}"
+  fi
+}
+
+# Print the harness of the session: explicit choice, then process, then env.
+detect_harness() {
+  local pid=$1 h=''
+  if [ -n "$harness_flag" ]; then
+    h=$harness_flag
+  elif [ -n "${KINGPIN_HARNESS:-}" ]; then
+    h=$KINGPIN_HARNESS
+  fi
+  if [ -n "$h" ]; then
+    valid_harness "$h" || { echo "error: unsupported harness: $h (must be claude, agy, or opencode)" >&2; return 1; }
+    echo "$h"
+    return 0
+  fi
+  h=$(harness_of_pid "$pid")
+  if [ -z "$h" ]; then
+    if [ "${CLAUDECODE:-}" = "1" ]; then h=claude
+    elif [ "${OPENCODE:-}" = "1" ]; then h=opencode
+    fi
+  fi
+  echo "$h"
+}
+
+# Harness recorded for a live holder; empty when free, stale or not recorded.
+lock_harness() {
+  [ -f "$LOCK_FILE" ] || return 0
+  local pid h
+  pid=$(sed -n 1p "$LOCK_FILE" 2>/dev/null || true)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 0
+  h=$(sed -n 2p "$LOCK_FILE" 2>/dev/null | tr -d ' ' || true)
+  valid_harness "$h" && echo "$h"
+  return 0
 }
 
 resolve_session_pid() {
@@ -55,6 +123,18 @@ resolve_session_pid() {
 }
 
 cmd=${1:-acquire}
+[ $# -eq 0 ] || shift
+
+harness_flag=''
+positional=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    --harness) harness_flag=${2:?--harness needs a value}; shift 2 ;;
+    *) positional+=("$1"); shift ;;
+  esac
+done
+# resolve_session_pid reads the command as $1 and the optional pid as $2.
+set -- "$cmd" ${positional[@]+"${positional[@]}"}
 
 case "$cmd" in
   status)
@@ -62,9 +142,14 @@ case "$cmd" in
       echo "lock: free"
       exit 0
     fi
-    pid=$(head -n 1 "$LOCK_FILE" 2>/dev/null || true)
+    pid=$(sed -n 1p "$LOCK_FILE" 2>/dev/null || true)
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      echo "lock: held by pid $pid"
+      h=$(lock_harness)
+      if [ -n "$h" ]; then
+        echo "lock: held by pid $pid ($h)"
+      else
+        echo "lock: held by pid $pid"
+      fi
     else
       echo "lock: stale"
     fi
@@ -72,7 +157,7 @@ case "$cmd" in
     ;;
   check)
     if [ -f "$LOCK_FILE" ]; then
-      pid=$(head -n 1 "$LOCK_FILE" 2>/dev/null || true)
+      pid=$(sed -n 1p "$LOCK_FILE" 2>/dev/null || true)
       if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
         target_pid=$(resolve_session_pid "$@")
         if [ "$pid" != "$target_pid" ]; then
@@ -87,14 +172,26 @@ case "$cmd" in
   acquire)
     target_pid=$(resolve_session_pid "$@")
     if [ -f "$LOCK_FILE" ]; then
-      pid=$(head -n 1 "$LOCK_FILE" 2>/dev/null || true)
+      pid=$(sed -n 1p "$LOCK_FILE" 2>/dev/null || true)
       if [ -n "$pid" ] && [ "$pid" != "$target_pid" ] && kill -0 "$pid" 2>/dev/null; then
         echo "error: another live kingpin orchestrator session holds the lock (pid $pid)" >&2
         exit 1
       fi
     fi
-    echo "$target_pid" > "$LOCK_FILE"
-    echo "lock: acquired (pid $target_pid)"
+    harness=$(detect_harness "$target_pid") || exit 1
+    if [ -n "$harness" ]; then
+      printf '%s\n%s\n' "$target_pid" "$harness" > "$LOCK_FILE"
+      echo "lock: acquired (pid $target_pid, harness $harness)"
+    else
+      echo "$target_pid" > "$LOCK_FILE"
+      echo "lock: acquired (pid $target_pid)"
+    fi
+    # The deny rules are untracked, so a clone that pulled their removal has none.
+    "$(dirname "$0")/kingpin-guard" check >/dev/null 2>&1 \
+      || echo "warning: orchestrator guard is not active; run 'kingpin guard install'" >&2
+    ;;
+  harness)
+    lock_harness
     ;;
   release)
     rm -f "$LOCK_FILE"

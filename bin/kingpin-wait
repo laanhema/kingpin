@@ -31,6 +31,9 @@ done
 tasks_dir="$KP_HOME/tasks"
 mkdir -p "$tasks_dir"
 
+# Repeat the guard warning once at startup (stderr, non-fatal, silent when active).
+"$(dirname "$0")/kingpin-guard" warn || true
+
 is_terminal_status() {
   local last_line=$1
   case "$last_line" in
