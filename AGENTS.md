@@ -45,7 +45,9 @@ so no harness binary is needed.
   through `kp_test_finish`.
 - Harness-specific files a command writes into a worktree (`.opencode/*`, `.agents/rules/*`,
   `.agents/hooks.json`) are added to that worktree's `.git/info/exclude`, never to the
-  tracked `.gitignore`, so a user's own files in those directories stay visible.
+  tracked `.gitignore`, so a user's own files in those directories stay visible. A config
+  the project already tracks (`.opencode/opencode.json`) cannot be excluded, so the spawn
+  refuses it instead of rewriting it.
 
 ## Harness wiring
 

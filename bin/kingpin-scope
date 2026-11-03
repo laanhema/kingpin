@@ -17,10 +17,13 @@
 #   ignored     a rules file the harness skips (agy without a trigger frontmatter)
 #   global      loaded in every session from the user's config directory
 #
-# `check` exits 1 and names the file when a non-global source carries an
-# orchestrator-contract marker, or when the preamble is not among the sources the
-# harness actually loads. A global hit is a warning: it is the user's own file, and
-# Kingpin cannot keep it out of a worker's context. `check` never edits anything.
+# `check` exits 1 and names the file when a source carries an orchestrator-contract
+# marker, including a *global* file in the user's own config directory: Kingpin cannot
+# edit that file, so the spawn refuses rather than launch a worker that may wake up as
+# the orchestrator (KINGPIN_ALLOW_GLOBAL_CONTRACT=1 downgrades that hit to a warning).
+# It also exits 1 when the preamble is not among the sources the harness actually
+# loads; for Claude Code it arrives through --append-system-prompt-file, so it is
+# never a discovered source and is not checked. `check` never edits anything.
 set -euo pipefail
 
 # The sentences that make a file the orchestrator contract. Each one is a marker
@@ -63,17 +66,57 @@ emit() {
 }
 
 # The `instructions` entries of one OpenCode config document, resolved the way the
-# harness resolves them. A JSONC document with comments is not parsed: it prints a
-# note on stderr and contributes nothing.
+# harness resolves them. OpenCode accepts JSONC (comments and trailing commas) in a
+# project config, so the text is parsed as JSON after comments are stripped; a
+# document that still does not parse prints a note on stderr and contributes nothing.
 opencode_instructions() {
   # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
   node -e '
     const fs = require("fs");
     const [file, root] = [process.argv[1], process.argv[2]];
     const home = process.env.HOME || "";
+    // JSONC: drop // and /* */ comments outside strings, plus a trailing comma.
+    const strip = (s) => {
+      let out = "", i = 0, quote = null, commaAt = -1;
+      while (i < s.length) {
+        const c = s[i], n = s[i + 1];
+        if (quote) {
+          out += c;
+          if (c === "\\") { out += n === undefined ? "" : n; i += 2; continue; }
+          if (c === quote) quote = null;
+          i++;
+          continue;
+        }
+        if (c === "\"") { quote = c; commaAt = -1; out += c; i++; continue; }
+        if (c === "/" && n === "/") { while (i < s.length && s[i] !== "\n") i++; continue; }
+        if (c === "/" && n === "*") {
+          i += 2;
+          while (i < s.length && !(s[i] === "*" && s[i + 1] === "/")) i++;
+          i += 2;
+          continue;
+        }
+        if (c === ",") { commaAt = out.length; out += c; i++; continue; }
+        if (c === "]" || c === "}") {
+          // A comma that is followed only by whitespace and comments is dropped.
+          if (commaAt >= 0) out = out.slice(0, commaAt) + out.slice(commaAt + 1);
+          commaAt = -1;
+          out += c;
+          i++;
+          continue;
+        }
+        if (!/\s/.test(c)) commaAt = -1;
+        out += c;
+        i++;
+      }
+      return out;
+    };
     let cfg;
-    try { cfg = JSON.parse(fs.readFileSync(file, "utf8")); }
-    catch (e) { console.error(`kingpin-scope: cannot parse ${file}: ${e.message}`); process.exit(0); }
+    try {
+      cfg = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (e) {
+      try { cfg = JSON.parse(strip(fs.readFileSync(file, "utf8"))); }
+      catch (e2) { console.error(`kingpin-scope: cannot parse ${file}: ${e2.message}`); process.exit(0); }
+    }
     const list = (cfg && cfg.instructions) || [];
     for (const entry of list) {
       if (typeof entry !== "string" || /^https?:\/\//.test(entry)) continue;
@@ -81,7 +124,7 @@ opencode_instructions() {
         : entry.startsWith("/") ? entry : root + "/" + entry;
       console.log(p);
     }
-  ' "$1" "$2" 2>/dev/null || true
+  ' "$1" "$2" || true
 }
 
 scope_files() {
@@ -89,9 +132,20 @@ scope_files() {
   case $harness in
     claude)
       # Claude Code loads the workspace CLAUDE.md (and whatever it imports, which is
-      # how AGENTS.md arrives here) plus every .claude/rules/*.md of the workspace.
+      # how AGENTS.md arrives here), .claude/CLAUDE.md, every nested CLAUDE.md, every
+      # .claude/rules/*.md of the workspace, and the CLAUDE.md of each ancestor
+      # directory up to the home directory (its help text: "in the project,
+      # including nested directories").
       emit discovery "$worktree/CLAUDE.md"
       emit discovery "$worktree/AGENTS.md"
+      while IFS= read -r f; do
+        [ "$f" = "$worktree/CLAUDE.md" ] || emit discovery "$f"
+      done < <(find "$worktree" -name CLAUDE.md -type f -not -path '*/.git/*' -print 2>/dev/null || true)
+      d=$worktree
+      while case $d in "$HOME"/*) true ;; *) false ;; esac; do
+        d=$(dirname "$d")
+        emit discovery "$d/CLAUDE.md"
+      done
       for f in "$worktree"/.claude/rules/*.md; do emit discovery "$f"; done
       local claude_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
       emit global "$claude_dir/CLAUDE.md"
@@ -127,7 +181,8 @@ scope_files() {
         d=$(dirname "$d")
         emit discovery "$d/AGENTS.md"
       done
-      for f in "$worktree/opencode.json" "$worktree/.opencode/opencode.json"; do
+      for f in "$worktree/opencode.json" "$worktree/opencode.jsonc" \
+               "$worktree/.opencode/opencode.json" "$worktree/.opencode/opencode.jsonc"; do
         [ -f "$f" ] || continue
         while IFS= read -r d; do [ -n "$d" ] && emit configured "$d"; done < <(opencode_instructions "$f" "$worktree")
       done
@@ -158,8 +213,13 @@ while IFS=$'\t' read -r kind path; do
       ;;
     global)
       for marker in "${MARKERS[@]}"; do
-        grep -Fq -- "$marker" "$path" \
-          && echo "kingpin-scope: warning: the global instruction file carries the orchestrator contract: $path" >&2
+        grep -Fq -- "$marker" "$path" || continue
+        if [ "${KINGPIN_ALLOW_GLOBAL_CONTRACT:-}" = 1 ]; then
+          echo "kingpin-scope: warning: the global instruction file carries the orchestrator contract (allowed by KINGPIN_ALLOW_GLOBAL_CONTRACT): $path" >&2
+        else
+          echo "kingpin-scope: the global instruction file is yours and carries the orchestrator contract: $path (remove the contract from it, or set KINGPIN_ALLOW_GLOBAL_CONTRACT=1 to allow it)" >&2
+          rc=1
+        fi
       done
       ;;
     *)

@@ -88,8 +88,27 @@ ensure_excluded() {
   grep -qxF "$rel" "$excl" 2>/dev/null || echo "$rel" >> "$excl"
 }
 
+# The merge below needs plain JSON, and OpenCode also accepts JSONC (comments) in its
+# own config. Kingpin will not rewrite such a file, because that would discard the
+# user's comments, so the install refuses it before it writes anything: a half-written
+# install leaves contract copies that a later `git add -A` would commit.
+check_opencode_config() {
+  [ -f "$opencode_cfg" ] || return 0
+  # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
+  node -e '
+    const file = process.argv[1];
+    try { JSON.parse(require("fs").readFileSync(file, "utf8")); }
+    catch (e) {
+      console.error(`kingpin-guard: ${file} is not plain JSON (OpenCode also accepts JSONC comments, which Kingpin will not rewrite); remove the comments, then rerun`);
+      process.exit(1);
+    }
+  ' "$opencode_cfg"
+}
+
 install_contract() {
   [ -f "$contract_src" ] || { echo "contract: skipped (no orchestrator/contract.md in $dir)"; return 0; }
+  # Everything that can refuse this install runs before the first copy is written.
+  check_opencode_config
   # Kingpin owns these filenames in its own checkout, but never clobbers a file it did
   # not write: a user's own rules file at that path stops the install with its name.
   if [ -f "$agy_contract" ] && ! grep -Fq -- 'kingpin orchestrator contract' "$agy_contract"; then
@@ -97,12 +116,16 @@ install_contract() {
   fi
   mkdir -p "$(dirname "$home_contract")" "$dir/.claude/rules" "$dir/.agents/rules" "$dir/.opencode"
   cp "$contract_src" "$home_contract"
+  # Exclude each in-repo copy as it is written, so a later step that fails cannot leave
+  # an untracked contract copy behind (issue #96 review, M3).
   cp "$contract_src" "$claude_contract"
+  ensure_excluded "$claude_contract"
   # agy skips a rules file without a trigger frontmatter, so it gets one.
   {
     printf -- '---\ntrigger: always_on\ndescription: Kingpin orchestrator contract\n---\n\n'
     cat "$contract_src"
   } > "$agy_contract"
+  ensure_excluded "$agy_contract"
   # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
   node -e '
     const fs = require("fs");
@@ -124,8 +147,6 @@ install_contract() {
     fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + "\n");
     fs.renameSync(tmp, file);
   ' "$opencode_cfg" "$home_contract"
-  ensure_excluded "$claude_contract"
-  ensure_excluded "$agy_contract"
   ensure_excluded "$opencode_cfg"
   echo "contract: installed ($home_contract, $claude_contract, $agy_contract, $opencode_cfg)"
 }
@@ -140,12 +161,31 @@ check_contract() {
   # The agy copy carries a five-line frontmatter block before the contract body.
   [ -f "$agy_contract" ] && tail -n +6 "$agy_contract" | cmp -s - "$contract_src" \
     || { echo "contract: $agy_contract is stale or missing; run 'kingpin guard install'" >&2; rc=1; }
-  if [ -f "$opencode_cfg" ] && node -e '
-    const cfg = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-    process.exit((cfg.instructions || []).includes(process.argv[2]) ? 0 : 1);
-  ' "$opencode_cfg" "$home_contract"; then :; else
+  # A config that is not plain JSON must not spill a Node stack trace from `guard
+  # check` / `list` (issue #96 review, L1): name the file and what to do. `install`
+  # refuses such a file up front; see check_opencode_config.
+  if [ ! -f "$opencode_cfg" ]; then
     echo "contract: $opencode_cfg does not load it; run 'kingpin guard install'" >&2
     rc=1
+  else
+    local oc_rc=0
+    # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
+    node -e '
+      const fs = require("fs");
+      const [file, entry] = [process.argv[1], process.argv[2]];
+      let cfg;
+      try { cfg = JSON.parse(fs.readFileSync(file, "utf8")); }
+      catch (e) {
+        console.error(`contract: ${file} is not valid JSON; remove any comments if it is JSONC, then run \"kingpin guard install\"`);
+        process.exit(2);
+      }
+      process.exit(cfg && Array.isArray(cfg.instructions) && cfg.instructions.includes(entry) ? 0 : 1);
+    ' "$opencode_cfg" "$home_contract" || oc_rc=$?
+    case $oc_rc in
+      0) ;;
+      2) rc=1 ;;
+      *) echo "contract: $opencode_cfg does not load it; run 'kingpin guard install'" >&2; rc=1 ;;
+    esac
   fi
   [ "$rc" = 0 ] && echo "contract: active ($home_contract)"
   return "$rc"
@@ -176,8 +216,15 @@ case "$cmd" in
     check_contract || exit 1
     ;;
   warn)
-    "$0" check --dir "$dir" >/dev/null 2>&1 \
-      || echo "warning: orchestrator guard is not active; run 'kingpin guard install'" >&2
+    # `check` prints "contract: ..." when a contract copy is the problem and "guard: ..."
+    # when the hook itself is, so the warning names the right cause instead of sending
+    # the operator to the wrong one (issue #96 review, L4).
+    out=$("$0" check --dir "$dir" 2>&1 >/dev/null || true)
+    case $out in
+      "") ;;
+      *contract:*) echo "warning: the orchestrator contract is stale or missing; run 'kingpin guard install'" >&2 ;;
+      *) echo "warning: orchestrator guard is not active; run 'kingpin guard install'" >&2 ;;
+    esac
     ;;
   install)
     mkdir -p "$dir/.claude"

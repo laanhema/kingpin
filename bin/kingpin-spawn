@@ -257,14 +257,34 @@ EOF
     # OpenCode V2 reads opencode.json(c) (or .opencode/opencode.json), not
     # .opencode/config.json, which it ignores without a word (verified with
     # opencode 2.2.5: the old file left the worker with no preamble at all).
-    cat > "$worktree/.opencode/opencode.json" << EOF_OC_CFG
-{
-  "\$schema": "https://opencode.ai/config.json",
-  "instructions": [
-    "$task_dir/preamble.md"
-  ]
-}
-EOF_OC_CFG
+    # That path is also a project's normal config, holding its own instructions and
+    # permissions, so it is merged into, never truncated. A file the project tracks
+    # cannot be hidden by .git/info/exclude: rewriting it would start the worker on a
+    # dirty tree and a worker could commit the change, so the spawn refuses instead.
+    if git -C "$worktree" ls-files --error-unmatch .opencode/opencode.json >/dev/null 2>&1; then
+      die "refusing to launch: $worktree/.opencode/opencode.json is tracked by the project; Kingpin must add the preamble to its instructions, so untrack that file (add it to .gitignore) and respawn"
+    fi
+    # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
+    node -e '
+      const fs = require("fs");
+      const [file, entry] = [process.argv[1], process.argv[2]];
+      let cfg = {};
+      if (fs.existsSync(file)) {
+        try { cfg = JSON.parse(fs.readFileSync(file, "utf8")); }
+        catch (e) { console.error(`kingpin-spawn: ${file} is not valid JSON; fix it before spawning`); process.exit(1); }
+      }
+      if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
+        console.error(`kingpin-spawn: ${file} must contain a JSON object`); process.exit(1);
+      }
+      if (cfg.instructions !== undefined && !Array.isArray(cfg.instructions)) {
+        console.error(`kingpin-spawn: "instructions" in ${file} must be a JSON array`); process.exit(1);
+      }
+      cfg.$schema = cfg.$schema || "https://opencode.ai/config.json";
+      cfg.instructions = (cfg.instructions || []).filter((e) => e !== entry).concat(entry);
+      const tmp = `${file}.tmp.${process.pid}`;
+      fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + "\n");
+      fs.renameSync(tmp, file);
+    ' "$worktree/.opencode/opencode.json" "$task_dir/preamble.md"
     cat > "$worktree/.opencode/plugins/package.json" << 'EOF_OC_PKG'
 { "private": true, "type": "module" }
 EOF_OC_PKG
@@ -337,7 +357,8 @@ chmod +x "$task_dir/launch.sh"
 # Refuse a worker whose context would carry the orchestrator contract, and name the
 # file that leaks it (issue #96). The check reads the files the harness really loads,
 # so a harness that silently ignores the preamble fails here instead of waking up as
-# the orchestrator. A warning about a global instruction file is the user's to fix.
+# the orchestrator. A global instruction file in the user's own config directory
+# refuses too, unless KINGPIN_ALLOW_GLOBAL_CONTRACT=1 is set.
 "$KP_ROOT/bin/kingpin-scope" check --harness "$harness" --worktree "$worktree" --preamble "$task_dir/preamble.md" \
   || die "refusing to launch a $harness worker: its instruction context is unsafe (files named above)"
 

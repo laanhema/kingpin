@@ -187,8 +187,13 @@ case "$cmd" in
       echo "lock: acquired (pid $target_pid)"
     fi
     # The guard file is untracked, so a fresh clone has none, and an older clone may still hold deny rules.
-    "$(dirname "$0")/kingpin-guard" check >/dev/null 2>&1 \
-      || echo "warning: orchestrator guard is not active; run 'kingpin guard install'" >&2
+    # `check` says "contract: ..." for a stale contract copy and "guard: ..." for the hook itself.
+    guard_out=$("$(dirname "$0")/kingpin-guard" check 2>&1 >/dev/null || true)
+    case $guard_out in
+      "") ;;
+      *contract:*) echo "warning: the orchestrator contract is stale or missing; run 'kingpin guard install'" >&2 ;;
+      *) echo "warning: orchestrator guard is not active; run 'kingpin guard install'" >&2 ;;
+    esac
     ;;
   harness)
     lock_harness
