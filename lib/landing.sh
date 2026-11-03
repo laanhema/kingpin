@@ -187,6 +187,8 @@ _kp_landing_claim() {
   }
   if ln "$tmp" "$lock" 2>/dev/null; then
     rm -f "$tmp"
+    # The holder file is fleet-visible and used to be written 0644; keep that.
+    chmod 0644 "$lock" 2>/dev/null || true
     return 0
   fi
   rm -f "$tmp"
