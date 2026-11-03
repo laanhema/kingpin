@@ -236,7 +236,7 @@ node -e '
   && pass "spawn merges the preamble into an existing opencode config" || fail "spawn truncated the existing opencode config"
 [ -z "$(git -C "$wt_merge" status --porcelain)" ] && pass "the merged opencode worktree stays clean" || fail "merged opencode worktree dirty"
 
-# A tracked opencode config cannot be hidden by info/exclude, so rewriting it would start
+# A tracked opencode config cannot be hidden by an ignore rule, so rewriting it would start
 # the worker on a dirty tree it could commit: the spawn refuses and names the file.
 git init -q -b main "$T/ocrepo"
 mkdir -p "$T/ocrepo/.opencode"
