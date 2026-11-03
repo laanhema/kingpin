@@ -34,7 +34,7 @@ env_file="$task_dir/task.env"
 # is returned from under it (issue #75). The lock is a file, not a directory:
 # link(2) is atomic and fails when the file exists, and a stale lock is reclaimed
 # by renaming it away and checking it moved the file inspected (the idiom in
-# lib/landing.sh:102-174). It lives outside the task directory, which moves to
+# lib/mutex.sh). It lives outside the task directory, which moves to
 # the archive at the end of a successful cleanup.
 cleanup_lock="$KP_HOME/locks/$id.cleanup"
 
