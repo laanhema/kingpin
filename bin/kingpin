@@ -9,6 +9,7 @@
 #   kingpin land <task-id>        (alias: kingpin approve <task-id>)
 #   kingpin done <task-id> [--force]
 #   kingpin send <task-id> "<text>"
+#   kingpin peek <task-id> [--lines N]
 #   kingpin listen <task-id> [--once] [--background]
 #   kingpin wait [--timeout <seconds>] [--once]
 #   kingpin ack <task-id>... | --all
@@ -36,6 +37,7 @@ Commands:
   land      Land a ready worker; when its review has findings, run the fix pass first (alias: approve)
   done      Verify merge, release worktree lease, and advance queue
   send      Send input or approval keys to a worker
+  peek      Show the last lines of a worker's tmux pane (read-only)
   listen    Maintain background Lavish listener and handle review actions
   wait      Wait for fleet task events (blocking or --once)
   ack       Acknowledge task events to advance seen counters
@@ -78,6 +80,9 @@ case "$cmd" in
     ;;
   send)
     exec "$KP_BIN/kingpin-send" "$@"
+    ;;
+  peek)
+    exec "$KP_BIN/kingpin-peek" "$@"
     ;;
   lock)
     exec "$KP_BIN/kingpin-lock" "$@"

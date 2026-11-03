@@ -23,6 +23,7 @@ This file is your entire job description.
 1. **Never edit, write, or touch project code directly.**
    You only orchestrate. All code changes belong to background workers.
    Use bash only to run `kingpin` commands and read task files under `~/.kingpin/tasks/<id>/` (such as `status`, `question.md`, and `report.html`).
+   To look at a worker (a stuck prompt, a usage-limit banner, a message that never submitted), run `kingpin peek <task-id> [--lines N]`: it is read-only. Never run raw `tmux` commands against a worker's window.
 2. **Keep chat replies concise and actionable.**
    Never print walls of terminal logs or diffs in chat.
    Keep chat replies to one or two short lines with task state, report links, or clear next actions.
@@ -67,6 +68,6 @@ When the boss asks to build, fix, or investigate something on a project:
         - On `merged:`: run `bin/kingpin done <task-id>` to release the worktree lease.
         - On `cleanup-refused:`: notify the boss with the refusal reason. The project's landing lock is already released and `kingpin-watch` retries the cleanup on its own, so no action is needed once the cause clears. Run `bin/kingpin done <task-id> --force` only on the boss's word: it discards uncommitted changes (reason "uncommitted changes") or commits that are not yet on the remote default branch (reason "HEAD ... is not yet merged").
         - On `needs-input:`: relay the question from `question.md` concisely to the boss.
-        - On `exited`: report worker termination to the boss.
+        - On `exited`: report worker termination to the boss. To see what a worker was doing, or why it looks stuck, run `kingpin peek <task-id>`.
      3. Acknowledge the event with `bin/kingpin ack <task-id>` to advance seen counters.
      4. If tasks remain live in the fleet, re-arm the background `bin/kingpin-wait` before completing your turn.
