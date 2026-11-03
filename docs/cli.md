@@ -136,13 +136,27 @@ Use it to see why a worker is stuck (an unsubmitted pasted message, a usage-limi
 
 Run it in the main checkout; it prints the old and new short SHAs plus the commits pulled, or `already up to date`.
 
+### What blocks it
+
+A modified or staged tracked file refuses the sync with `kingpin-sync: working tree is dirty; commit or remove the changes first (nothing was changed)`, and nothing is changed.
+
+An untracked path does not block it, and ignored files do not count either. Handover artifacts belong in `.lavish/`, which is untracked, so a page an open Lavish session is serving survives the fast-forward.
+
+The one exception is an untracked path the incoming commits would overwrite. git refuses that pull before writing anything, and the sync turns that abort into its own line naming every path:
+
+```
+kingpin-sync: the incoming commits would overwrite these untracked paths: collide.txt; move or remove them first (nothing was changed)
+```
+
+Nothing is half-applied: HEAD, the index and every file keep the state they had before the attempt, so moving or removing the named path lets the next sync complete the same fast-forward.
+
 ### What it never does
 
 It never merges, rebases, resets or stashes.
 
 ### Exit codes
 
-Exits 1 with a message on stderr in a linked worktree, on a dirty tree (any `git status --porcelain` output; ignored files do not count), with a detached HEAD or no upstream, or when a fast-forward is not possible; 2 for an argument.
+Exits 1 with a message on stderr on a tracked change, on an untracked path the incoming commits would overwrite (with each path named), in a linked worktree, with a detached HEAD or no upstream, or when a fast-forward is not possible; 2 for an argument.
 
 ## kingpin listen
 

@@ -5,10 +5,13 @@
 #
 # Runs in the repo of the current directory, which must be the main checkout (not
 # a linked worktree). It refuses, with a message on stderr and a non-zero exit,
-# when the working tree is dirty (any `git status --porcelain` output; ignored
-# files do not count), when HEAD is detached or has no upstream, or when the
-# fast-forward is not possible. Otherwise it runs `git pull --ff-only` and prints
-# the old and new short SHAs plus the commits pulled, or `already up to date`.
+# when a tracked file is modified or staged (ignored and untracked files do not
+# count), when HEAD is detached or has no upstream, or when the fast-forward is
+# not possible. An untracked path is not dirty, so a handover page in `.lavish/`
+# does not block the sync; the one exception is an untracked path the incoming
+# commits would overwrite, which git refuses before writing anything, and which
+# the sync reports by name. Otherwise it runs `git pull --ff-only` and prints the
+# old and new short SHAs plus the commits pulled, or `already up to date`.
 # It never merges, rebases, resets or stashes.
 set -euo pipefail
 
@@ -20,7 +23,8 @@ while [ $# -gt 0 ]; do
     -h|--help)
       usage
       echo "  Fast-forwards the main checkout from its upstream with 'git pull --ff-only'." >&2
-      echo "  Refuses in a linked worktree, on a dirty tree, or when a fast-forward is not possible." >&2
+      echo "  Refuses on a tracked change, on an untracked path the incoming commits would overwrite (named)," >&2
+      echo "  in a linked worktree, or when a fast-forward is not possible." >&2
       exit 0
       ;;
     -*)
@@ -50,16 +54,32 @@ branch=$(git symbolic-ref --short -q HEAD || true)
 upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
 [ -n "$upstream" ] || die "branch '$branch' has no upstream; set one with 'git branch --set-upstream-to'"
 
-if [ -n "$(git status --porcelain)" ]; then
+if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   die "working tree is dirty; commit or remove the changes first (nothing was changed)"
 fi
 
 old=$(git rev-parse HEAD)
 
 # --ff-only overrides pull.rebase and merge settings; never prompt for credentials.
+# git also aborts here, before writing anything, when a blob in the incoming tree
+# would overwrite an untracked path, and its message lists those paths one per
+# tab-indented line under one of two headers: files that would be overwritten by
+# merge, and directories that would lose untracked files in them. Both lists can
+# appear in one abort, separated by a blank line. LC_ALL=C keeps that message
+# parseable in a localized environment, and core.quotePath=false keeps a non-ASCII
+# path readable in ours.
 pull_log=$(mktemp)
 trap 'rm -f "$pull_log"' EXIT
-if ! GIT_TERMINAL_PROMPT=0 git pull --ff-only --no-rebase --no-autostash >"$pull_log" 2>&1; then
+if ! LC_ALL=C GIT_TERMINAL_PROMPT=0 git -c core.quotePath=false pull --ff-only --no-rebase --no-autostash >"$pull_log" 2>&1; then
+  collisions=$(awk '
+    /would be overwritten by|would lose untracked files in them/ { in_list = 1; next }
+    in_list && /^\t/ { sub(/^\t/, ""); print; next }
+    in_list { in_list = 0 }
+  ' "$pull_log")
+  if [ -n "$collisions" ]; then
+    collision_list=$(printf '%s\n' "$collisions" | paste -sd ',' - | sed 's/,/, /g')
+    die "the incoming commits would overwrite these untracked paths: $collision_list; move or remove them first (nothing was changed)"
+  fi
   cat "$pull_log" >&2
   die "cannot fast-forward '$branch' from '$upstream' (nothing was changed)"
 fi

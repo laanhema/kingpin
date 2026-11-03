@@ -44,7 +44,7 @@ Commands:
   done      Verify merge, release worktree lease, and advance queue
   send      Send input or approval keys to a worker
   peek      Show the last lines of a worker's tmux pane (read-only)
-  sync      Fast-forward the main checkout from its upstream (ff-only; refuses a dirty tree or a worktree)
+  sync      Fast-forward the main checkout from its upstream (ff-only; refuses a tracked change, an untracked overwrite or a worktree)
   listen    Maintain background Lavish listener and handle review actions
   wait      Wait for fleet task events (blocking or --once)
   ack       Acknowledge task events to advance seen counters
