@@ -49,6 +49,14 @@ seen_count() {
   tr -d ' \n' < "$file"
 }
 
+# seen_is <task-id> <lines>: the cursor reached that line. The supervisor logs a
+# handled line before it advances the cursor (a crash in between replays the line,
+# never loses it), so a test that reads the cursor the instant a log line appears
+# can catch the previous value; wait for the write instead of reading it once.
+seen_is() {
+  [ "$(seen_count "$1")" = "$2" ]
+}
+
 log_has() {
   grep -qF "$1" "$LOG"
 }
@@ -164,13 +172,13 @@ printf 'needs-input: probe question\n' >> "$KINGPIN_HOME/tasks/t-a/status"
 wait_until 75 log_has "[kingpin-watch] t-a needs input" \
   && pass "first event handled" \
   || fail "first event was not handled: $(cat "$LOG")"
-[ "$(seen_count t-a)" = "2" ] && pass "first event acknowledged" || fail "t-a seen=$(seen_count t-a)"
+wait_until 20 seen_is t-a 2 && pass "first event acknowledged" || fail "t-a seen=$(seen_count t-a)"
 
 printf 'failed: probe failure\n' >> "$KINGPIN_HOME/tasks/t-b/status"
 wait_until 75 log_has "[kingpin-watch] t-b reported failure: failed: probe failure" \
   && pass "second event handled after the first, with no re-arm" \
   || fail "second event was not handled: $(cat "$LOG")"
-[ "$(seen_count t-b)" = "2" ] && pass "second event acknowledged" || fail "t-b seen=$(seen_count t-b)"
+wait_until 20 seen_is t-b 2 && pass "second event acknowledged" || fail "t-b seen=$(seen_count t-b)"
 
 [ "$WATCH_PID" = "$first_pid" ] && [ "$(sed -n 1p "$PID_FILE" | tr -d ' ')" = "$first_pid" ] \
   && kill -0 "$first_pid" 2>/dev/null \
@@ -195,7 +203,7 @@ order_second=$(log_line_of "[kingpin-watch] t-order reported failure: failed: ba
 [ -n "$order_first" ] && [ -n "$order_second" ] && [ "$order_first" -lt "$order_second" ] \
   && pass "the batch was dispatched in file order" \
   || fail "batch order wrong (first=$order_first second=$order_second)"
-[ "$(seen_count t-order)" = "3" ] && pass "the whole batch was acknowledged once" || fail "t-order seen=$(seen_count t-order)"
+wait_until 20 seen_is t-order 3 && pass "the whole batch was acknowledged once" || fail "t-order seen=$(seen_count t-order)"
 
 # Test 7c: issue acceptance - merged: followed by an appended feedback: still cleans up
 echo "=== Test 7c: merged: + feedback: runs the cleanup step ==="
@@ -208,7 +216,7 @@ wait_until 75 log_has "[kingpin-watch] t-merged merged; running cleanup..." \
 wait_until 75 log_has "[kingpin-watch] t-merged received review feedback: feedback: Request Changes: after merged" \
   && pass "the listener feedback: note was still reported" \
   || fail "the feedback: note was not reported: $(cat "$LOG")"
-[ "$(seen_count t-merged)" = "3" ] && pass "merged: + feedback: acknowledged" || fail "t-merged seen=$(seen_count t-merged)"
+wait_until 20 seen_is t-merged 3 && pass "merged: + feedback: acknowledged" || fail "t-merged seen=$(seen_count t-merged)"
 
 # Test 7d: issue acceptance - fixed: followed by feedback: during landing still lands
 echo "=== Test 7d: fixed: + feedback: runs the land step ==="
@@ -222,7 +230,7 @@ wait_until 75 log_has "[kingpin-watch] t-fixed reported fix pass; continuing lan
 wait_until 75 log_has "[kingpin-watch] t-fixed received review feedback: feedback: Request Changes: after fixed" \
   && pass "the feedback: after fixed: was still reported" \
   || fail "the feedback: after fixed: was not reported: $(cat "$LOG")"
-[ "$(seen_count t-fixed)" = "3" ] && pass "fixed: + feedback: acknowledged" || fail "t-fixed seen=$(seen_count t-fixed)"
+wait_until 20 seen_is t-fixed 3 && pass "fixed: + feedback: acknowledged" || fail "t-fixed seen=$(seen_count t-fixed)"
 
 # Test 7e: blank and issue: lines advance the cursor without a dispatch
 echo "=== Test 7e: blank and issue: lines are skipped, not dispatched ==="
@@ -234,7 +242,7 @@ wait_until 75 log_has "[kingpin-watch] t-skip is waiting: skipped-note" \
 log_has "[kingpin-watch] t-skip issue:" \
   && fail "an issue: line was dispatched" \
   || pass "issue: lines are not dispatched"
-wait_until 20 test "$(seen_count t-skip)" = "4" \
+wait_until 20 seen_is t-skip 4 \
   && pass "the cursor advanced past the skipped lines" \
   || fail "t-skip seen=$(seen_count t-skip), expected 4"
 
