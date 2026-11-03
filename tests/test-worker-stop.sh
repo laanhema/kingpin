@@ -107,6 +107,11 @@ d=$(mk_task kp102-note-after claude)
 printf 'ready: branch=b review=APPROVE report=r.md\n' > "$d/status"
 echo '<html><body>dossier</body></html>' > "$d/report.html"
 run_claude_stop "$d"
+# The report below is this turn's, written after the stop it follows. Backdate the
+# boundary first (as Test 2b does) so the two writes cannot share one mtime tick:
+# with equal mtimes `-nt` is false, the listener note moves the boundary, and the
+# next stop appends a waiting: line over the report (review H1).
+touch -d '5 seconds ago' "$d/stopped"
 printf 'fixed: high=0 report=r.md\n' >> "$d/status"
 KINGPIN_LAVISH=$T/kp102-lavish "$KP_BIN/kingpin" listen kp102-note-after --once >/dev/null 2>&1
 grep -qx 'feedback: Request Changes: tighten the wording' "$d/status" && pass "the listener appends its note after a report" || fail "no note after a report: $(cat "$d/status")"
