@@ -22,6 +22,8 @@ set -euo pipefail
 
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
+# shellcheck source=../lib/portable.sh
+. "$(dirname "$0")/../lib/portable.sh"
 
 usage() { echo "usage: kingpin-launch-check <task-dir>" >&2; }
 
@@ -52,9 +54,19 @@ if [ -n "$stop" ]; then
   since_what="its last stop"
 else
   created=$(kp_env_get "$env_file" CREATED)
-  # `date -d ""` is midnight, not an error: an empty CREATED must not pass.
-  [ -n "$created" ] || exit 1
-  since=$(date -d "$created" +%s 2>/dev/null) || exit 1
+  # An empty CREATED is what the old GNU-only `date -Iseconds` wrote on macOS, so
+  # task directories already on disk at upgrade time carry it. Report it instead of
+  # leaving the worker at (pending) silently; anything else that does not parse is a
+  # real failure too, reported rather than read as "now" (what BSD `date -j -f`
+  # degrades to). Either way the status file is left untouched.
+  if [ -z "$created" ]; then
+    echo "kingpin-launch-check: CREATED is empty in $env_file (an older GNU-only date wrote it that way); not judging this worker" >&2
+    exit 1
+  fi
+  if ! since=$(kp_epoch_from_iso "$created"); then
+    echo "kingpin-launch-check: cannot parse CREATED='$created' in $env_file (neither date -d nor date -j -f accepted it); not judging this worker" >&2
+    exit 1
+  fi
   since_what="launch"
 fi
 age=$((now - since))
