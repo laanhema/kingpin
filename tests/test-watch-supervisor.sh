@@ -100,14 +100,25 @@ echo "$list_out" | grep -q "Supervisor: running (pid $WATCH_PID, since " \
 # Test 4: a second copy is refused quickly and never disturbs the first copy's claim
 echo "=== Test 4: second supervisor refused ==="
 before=$(cat "$PID_FILE")
+second_err_file="$T/second-supervisor.err"
+"$KP_BIN/kingpin-watch" --interval 1 >/dev/null 2>"$second_err_file" &
+second_pid=$!
+# It must be gone within 0.5 s. The old mkdir mutex was held for the supervisor's
+# whole lifetime, so a duplicate spent 3 s spinning before it refused; polling the
+# process (bash reaps a finished child, so kill -0 fails) needs no sub-second clock.
+second_fast=0
+for _ in $(seq 1 10); do
+  if ! kill -0 "$second_pid" 2>/dev/null; then second_fast=1; break; fi
+  sleep 0.05
+done
+[ "$second_fast" -eq 1 ] \
+  && pass "second supervisor refused within 0.5s (nothing is held while the supervisor runs)" \
+  || fail "second supervisor was still running after 0.5s; the claim is held while the supervisor runs"
+kill -9 "$second_pid" 2>/dev/null || true
 second_rc=0
-SECONDS=0
-second_err=$("$KP_BIN/kingpin-watch" --interval 1 2>&1 >/dev/null) || second_rc=$?
-second_secs=$SECONDS
+wait "$second_pid" 2>/dev/null || second_rc=$?
+second_err=$(cat "$second_err_file" 2>/dev/null || true)
 [ "$second_rc" -eq 1 ] && pass "second supervisor exits 1" || fail "second supervisor exited $second_rc"
-[ "$second_secs" -lt 1 ] \
-  && pass "second supervisor refused in ${second_secs}s (nothing is held while the supervisor runs)" \
-  || fail "second supervisor took ${second_secs}s to refuse; the claim is held while the supervisor runs"
 echo "$second_err" | grep -q "already running (pid $WATCH_PID)" \
   && pass "refusal names the running pid" \
   || fail "refusal did not name the pid: $second_err"
