@@ -468,6 +468,177 @@ echo "$out" | grep -q 'scoped-guard.html:4: grid/flex layout has no shrink guard
 } > "$T/block.html"
 out=$("$KP_BIN/kingpin" report check --prose-only "$T/block.html" 2>&1) && pass "a page built from the documented block passes" || fail "the documented block no longer satisfies the check: $out"
 
+echo "=== kingpin report check: stylesheet parse and palette ==="
+
+# The two-line repro from issue #128: a declaration outside any selector. The browser's recovery
+# swallows the rule that follows it, so the body palette never reaches the page.
+cat > "$T/stray-decl.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  color-scheme: dark;
+  body {
+    margin: 0;
+    background: #0d1117;
+    color: #e6edf3;
+  }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<p>Clean prose.</p>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/stray-decl.html" 2>&1) && fail "check accepted a declaration outside any selector" || pass "check rejects a declaration outside any selector"
+echo "$out" | grep -q 'stray-decl.html:4: declaration outside any selector' && pass "the stray declaration failure names its line" || fail "no file:line for the stray declaration: $out"
+echo "$out" | grep -q 'color-scheme: dark;' && pass "the stray declaration failure quotes the line" || fail "the offending line is not quoted: $out"
+
+# The same page with the declaration moved inside :root passes.
+cat > "$T/stray-fixed.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  :root { color-scheme: dark; }
+  body {
+    margin: 0;
+    background: #0d1117;
+    color: #e6edf3;
+  }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<p>Clean prose.</p>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/stray-fixed.html" >/dev/null 2>&1 && pass "the same page passes with the declaration inside :root" || fail "the fixed two-line repro was rejected"
+
+# The walk is by brace depth, not a search for color-scheme.
+printf '<!DOCTYPE html>\n<html><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  margin: 0;\n  body { margin: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body><p>Clean prose.</p></body></html>\n' > "$T/stray-generic.html"
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/stray-generic.html" 2>&1) && fail "check accepted a bare margin declaration" || pass "check rejects a stray declaration that is not color-scheme"
+echo "$out" | grep -q 'stray-generic.html:4: declaration outside any selector' && pass "the generic stray declaration names its line" || fail "no file:line for the generic stray declaration: $out"
+echo "$out" | grep -q 'margin: 0;' && pass "the generic stray declaration quotes the line" || fail "the generic line is not quoted: $out"
+
+# A declaration with no trailing semicolon still swallows the rule it precedes.
+printf '<!DOCTYPE html>\n<html><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  color-scheme: dark\n  body { margin: 0; background: #0d1117; color: #e6edf3; }\n  code { overflow-wrap: anywhere; }\n</style></head><body><p>Clean prose.</p></body></html>\n' > "$T/stray-no-semicolon.html"
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/stray-no-semicolon.html" 2>&1) && fail "check accepted a stray declaration with no semicolon" || pass "check rejects a stray declaration with no semicolon"
+echo "$out" | grep -q 'stray-no-semicolon.html:4: declaration outside any selector' && pass "the semicolon-less declaration names its line" || fail "no file:line for the semicolon-less declaration: $out"
+
+# An at-statement and an at-rule block at depth 0 are not declarations.
+cat > "$T/at-rules.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; min-width: 0; }
+  body { margin: 0; background: #0d1117; color: #e6edf3; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  code { overflow-wrap: anywhere; }
+  @media (min-width: 600px) {
+    body { font-size: 18px; }
+  }
+</style></head><body><p>Clean prose.</p></body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/at-rules.html" >/dev/null 2>&1 && pass "at-statements and at-rule blocks are not declarations" || fail "an at-rule at depth 0 was rejected"
+
+# Only a live stylesheet is judged. A `<style>` block inside an HTML comment is markup in a comment,
+# like the elements the layout pass ignores.
+cat > "$T/commented-style.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  body { margin: 0; background: #0d1117; color: #e6edf3; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<!--
+<style>
+  color-scheme: dark;
+  body { background: none; }
+</style>
+-->
+<p>Clean prose.</p>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/commented-style.html" >/dev/null 2>&1 && pass "a <style> block inside an HTML comment is not judged" || fail "a commented-out <style> block was parsed as a sheet"
+
+# A `<style>` sequence inside a script string is JavaScript, not a sheet.
+cat > "$T/script-style.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  body { margin: 0; background: #0d1117; color: #e6edf3; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<p>Clean prose.</p>
+<script>const sheet = "<style> color-scheme: dark; </style>";</script>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/script-style.html" >/dev/null 2>&1 && pass "a <style> sequence inside a script body is not judged" || fail "a <style> sequence in a script string was parsed as a sheet"
+
+# A legacy `<style><!-- … --></style>` CDO/CDC wrapper: the CSS parser drops the two tokens and keeps
+# the declarations between them, so the sheet is live and its declarations are read as usual.
+cat > "$T/cdo-wrap.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style><!--
+  * { box-sizing: border-box; min-width: 0; }
+  body { margin: 0; background: #0d1117; color: #e6edf3; }
+  code { overflow-wrap: anywhere; }
+--></style></head><body>
+<p>Clean prose.</p>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/cdo-wrap.html" >/dev/null 2>&1 && pass "a CDO/CDC wrapper is not a declaration" || fail "the CDO/CDC wrapper's own tokens were read as a declaration"
+
+# The wrapped sheet is live, so a declaration outside a selector inside it is still reported, and the
+# wrapper's tokens are not.
+cat > "$T/cdo-wrap-stray.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style><!--
+  * { box-sizing: border-box; min-width: 0; }
+  color-scheme: dark;
+  body { margin: 0; background: #0d1117; color: #e6edf3; }
+  code { overflow-wrap: anywhere; }
+--></style></head><body>
+<p>Clean prose.</p>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/cdo-wrap-stray.html" 2>&1) && fail "check accepted a stray declaration inside a CDO/CDC wrapper" || pass "check still reads the declarations of a wrapped sheet"
+echo "$out" | grep -q 'cdo-wrap-stray.html:4: declaration outside any selector' && pass "the wrapped stray declaration names its line" || fail "no file:line for the wrapped stray declaration: $out"
+echo "$out" | grep -q 'cdo-wrap-stray.html:7:' && fail "the wrapper's closing token was reported as a declaration: $out" || pass "the wrapper's tokens are not declarations"
+
+# A dark claim with no background on body, html or :root leaves a white page.
+cat > "$T/palette-missing.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; min-width: 0; }
+  body { margin: 0; color: #e6edf3; }
+  code { overflow-wrap: anywhere; }
+</style></head><body><p>Clean prose.</p></body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/palette-missing.html" 2>&1) && fail "check accepted a dark claim with no background" || pass "check rejects a dark claim with no background"
+echo "$out" | grep -q 'palette-missing.html:3: color-scheme: dark has no background rule on body, html or :root' && pass "the palette failure names the claim's line" || fail "no file:line for the missing palette: $out"
+
+# Every legitimate way of painting the root or body satisfies the claim.
+palette_pass() {
+  local name=$1 body=$2
+  printf '<!DOCTYPE html>\n<html><head><style>\n%s\n  * { box-sizing: border-box; min-width: 0; }\n  pre { white-space: pre-wrap; overflow-wrap: anywhere; }\n  code { overflow-wrap: anywhere; }\n</style></head>%s</html>\n' "$body" "$3" > "$T/$name.html"
+  "$KP_BIN/kingpin" report check --prose-only "$T/$name.html" >/dev/null 2>&1 && pass "palette: $name passes" || fail "palette: $name was rejected"
+}
+palette_pass "palette-html" '  :root { color-scheme: dark; }
+  html { background: #0d1117; }
+  html { color: #e6edf3; }' '<body><p>Clean prose.</p></body>'
+palette_pass "palette-root" '  :root { color-scheme: dark; background: #0d1117; }
+  body { margin: 0; color: #e6edf3; }' '<body><p>Clean prose.</p></body>'
+palette_pass "palette-var" '  :root { color-scheme: dark; --bg: #0d1117; }
+  body { margin: 0; background: var(--bg); color: #e6edf3; }' '<body><p>Clean prose.</p></body>'
+palette_pass "palette-gradient" '  :root { color-scheme: dark; --ink: #12100c; }
+  body { margin: 0; background: radial-gradient(1200px 700px at 50% -10%, #241f18 0%, transparent 60%), var(--ink); color: #efe6d2; }' '<body><p>Clean prose.</p></body>'
+palette_pass "palette-inline" '  :root { color-scheme: dark; }' '<body style="background: #0d1117; color: #e6edf3"><p>Clean prose.</p></body>'
+palette_pass "palette-class" '  :root { color-scheme: dark; }
+  .page { background: #0d1117; color: #e6edf3; }' '<body class="page"><p>Clean prose.</p></body>'
+
+# A page that makes no dark claim is not asked to paint one.
+printf '<!DOCTYPE html>\n<html><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  body { margin: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body><p>Clean prose.</p></body></html>\n' > "$T/palette-unclaimed.html"
+"$KP_BIN/kingpin" report check --prose-only "$T/palette-unclaimed.html" >/dev/null 2>&1 && pass "a page with no dark claim needs no palette" || fail "a page with no dark claim was rejected"
+
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL REPORT TESTS PASSED"
 else
