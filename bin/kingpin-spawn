@@ -27,6 +27,8 @@ KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$KP_ROOT/lib/status.sh"
+# shellcheck source=../lib/portable.sh
+. "$KP_ROOT/lib/portable.sh"
 # shellcheck source=../lib/exclude.sh
 . "$KP_ROOT/lib/exclude.sh"
 CLAUDE_CMD=${KINGPIN_CLAUDE:-claude}
@@ -218,6 +220,11 @@ target_session=$(resolve_tmux_session)
 # exists before the window does. Removed once the window ID is recorded.
 : > "$task_dir/launching"
 
+# `date -Iseconds` is GNU-only, and a failed command substitution inside the
+# heredoc leaves CREATED empty without failing the spawn, which leaves a worker
+# that died at launch stuck at (pending). Stop instead.
+created=$(kp_now_iso) || die "cannot read the current time (date +%Y-%m-%dT%H:%M:%S%z failed)"
+
 cat > "$task_dir/task.env" <<EOF
 TASK_ID=$id
 PROJECT=$project
@@ -228,7 +235,7 @@ MODE=$mode
 BRANCH=$branch
 WORKTREE=$worktree
 TMUX_TARGET=$target_session:$id
-CREATED=$(date -Iseconds)
+CREATED=$created
 EOF
 
 case "$harness" in

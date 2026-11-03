@@ -5,6 +5,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 kp_test_setup "spawn"
+kp_test_bsd_shims
 kp_test_project
 
 kp_test_stub_lavish
@@ -68,7 +69,7 @@ tmux kill-window -t kingpin:t15-gone 2>/dev/null || true
 
 # Legacy task.env with only TMUX_TARGET still works through the name
 t15l_wid=$(mk_t15 t15-legacy)
-sed -i '/^TMUX_WINDOW_ID=/d' "$KINGPIN_HOME/tasks/t15-legacy/task.env"
+kp_test_sub "$KINGPIN_HOME/tasks/t15-legacy/task.env" '/^TMUX_WINDOW_ID=/d'
 KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin-send" t15-legacy "legacy-ok" >/dev/null 2>&1 && pass "t15: legacy task.env (TMUX_TARGET only) still reaches the window" || fail "t15: legacy task.env send failed"
 "$KP_BIN/kingpin-done" t15-legacy --force >/dev/null 2>&1 || true
 ! tmux list-windows -a -F '#{window_id}' | grep -qx "$t15l_wid" && pass "t15: kingpin-done closed the legacy window" || fail "t15: kingpin-done left the legacy window alive"
@@ -102,6 +103,7 @@ echo "$t17_out" | grep -q "spawned $t17_id " && pass "t17: issue spawn named $t1
 t17_env=$KINGPIN_HOME/tasks/$t17_id/task.env
 grep -qx "BRANCH=kingpin/$t17_id" "$t17_env" && pass "t17: BRANCH is kingpin/$t17_id" || fail "t17: wrong BRANCH"
 grep -qx "TMUX_TARGET=kingpin:$t17_id" "$t17_env" && pass "t17: TMUX_TARGET is kingpin:$t17_id" || fail "t17: wrong TMUX_TARGET"
+grep -qE '^CREATED=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{4}$' "$t17_env" && pass "t17: CREATED is written in a form both date(1)s write" || fail "t17: CREATED is missing or GNU-only: $(grep '^CREATED=' "$t17_env")"
 tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "$t17_id" && pass "t17: tmux window is named $t17_id" || fail "t17: window name wrong"
 t17_wt=$(sed -n 's/^WORKTREE=//p' "$t17_env")
 [ "$(git -C "$t17_wt" branch --show-current)" = "kingpin/$t17_id" ] && pass "t17: worktree is on kingpin/$t17_id" || fail "t17: worktree branch wrong"

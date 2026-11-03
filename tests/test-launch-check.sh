@@ -5,6 +5,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 kp_test_setup "launch-check"
+kp_test_bsd_shims
 kp_test_project
 
 kp_test_stub_lavish
@@ -26,7 +27,7 @@ PROJECT_PATH=$T/proj
 WORKTREE=$T/t22-missing-worktree-$name
 TMUX_TARGET=kingpin:$name
 TMUX_WINDOW_ID=$wid
-CREATED=$(date -Iseconds -d "-$age seconds")
+CREATED=$(kp_test_iso_ago "$age")
 ENVEOF
   : > "$d/status"
   echo 0 > "$d/seen"
@@ -65,6 +66,70 @@ echo "issue: #1 https://example.invalid/1" >> "$KINGPIN_HOME/tasks/t22-reported/
 sleep 0.5
 "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
 [ "$(t22_status_lines t22-reported)" = 1 ] && pass "t22: a worker with a status line gets no failed line" || fail "t22: reported worker status: $(cat "$KINGPIN_HOME/tasks/t22-reported/status")"
+
+# A CREATED that does not parse is reported, not read as "now" (which would hide the death)
+mk_t22 t22-badtime agy 120 'exit 1'
+kp_test_sub "$KINGPIN_HOME/tasks/t22-badtime/task.env" 's|^CREATED=.*|CREATED=not-a-time|'
+set +e
+t22_badrc_out=$("$KP_BIN/kingpin-launch-check" "$KINGPIN_HOME/tasks/t22-badtime" 2>"$T/t22-badtime.err")
+t22_badrc=$?
+set -e
+[ "$t22_badrc" -eq 1 ] && [ ! -s "$KINGPIN_HOME/tasks/t22-badtime/status" ] && pass "t22: an unparseable CREATED records nothing" || fail "t22: unparseable CREATED rc=$t22_badrc out='$t22_badrc_out'"
+grep -q "cannot parse CREATED" "$T/t22-badtime.err" && pass "t22: the unparseable CREATED is named on stderr" || fail "t22: no stderr warning for an unparseable CREATED"
+
+# An empty CREATED is what the old GNU-only date wrote on macOS: name it too
+mk_t22 t22-notime agy 120 'exit 1'
+kp_test_sub "$KINGPIN_HOME/tasks/t22-notime/task.env" 's|^CREATED=.*|CREATED=|'
+set +e
+t22_notime_out=$("$KP_BIN/kingpin-launch-check" "$KINGPIN_HOME/tasks/t22-notime" 2>"$T/t22-notime.err")
+t22_notime_rc=$?
+set -e
+[ "$t22_notime_rc" -eq 1 ] && [ ! -s "$KINGPIN_HOME/tasks/t22-notime/status" ] && [ -z "$t22_notime_out" ] && pass "t22: an empty CREATED records nothing" || fail "t22: empty CREATED rc=$t22_notime_rc out='$t22_notime_out'"
+grep -q "CREATED is empty" "$T/t22-notime.err" && pass "t22: the empty CREATED is named on stderr" || fail "t22: no stderr warning for an empty CREATED"
+
+# BSD `date -j -f` keeps a field it cannot parse (a month of 13 reads as "now")
+# instead of failing. A stub that degrades the same way must not be read as a time.
+mkdir -p "$T/t22-lenient-bin"
+cat > "$T/t22-lenient-bin/date" << 'LENEOF'
+#!/usr/bin/env bash
+# macOS-shaped date for one test: GNU -d is refused, -j -f accepts anything, and
+# -r formats the "now" it degrades to.
+case ${1:-} in
+  -d) exit 1 ;;
+  -j) printf '%s\n' 1735689600 ;;
+  -r) printf '%s\n' 2025-01-01T00:00:00+0000 ;;
+esac
+exit 1
+LENEOF
+chmod +x "$T/t22-lenient-bin/date"
+set +e
+t22_lenient_out=$(PATH="$T/t22-lenient-bin:$PATH" bash -c '. "$1/lib/portable.sh"; kp_epoch_from_iso 2025-13-01T00:00:00+0100' _ "$KP_ROOT")
+t22_lenient_rc=$?
+set -e
+[ "$t22_lenient_rc" -eq 1 ] && [ -z "$t22_lenient_out" ] && pass "t22: a BSD date that keeps an unparsed field is rejected" || fail "t22: an invalid ISO timestamp read as '$t22_lenient_out' (rc=$t22_lenient_rc)"
+rm -rf "$T/t22-lenient-bin"
+
+# A valid instant written in another offset is still valid: the reader's local
+# offset must not make the round-trip look like a lenient parse.
+mkdir -p "$T/t22-offset-bin"
+cat > "$T/t22-offset-bin/date" << 'OFFEOF'
+#!/usr/bin/env bash
+# BSD-shaped date for one test: GNU -d is refused, -j -f parses the value, and
+# -r formats the epoch in this reader's +0200.
+case ${1:-} in
+  -d) exit 1 ;;
+  -j) printf '%s\n' 1735689600 ;;
+  -r) printf '%s\n' 2025-01-01T02:00:00+0200 ;;
+esac
+exit 1
+OFFEOF
+chmod +x "$T/t22-offset-bin/date"
+set +e
+t22_offset_out=$(PATH="$T/t22-offset-bin:$PATH" bash -c '. "$1/lib/portable.sh"; kp_epoch_from_iso 2025-01-01T00:00:00+0000' _ "$KP_ROOT")
+t22_offset_rc=$?
+set -e
+[ "$t22_offset_rc" -eq 0 ] && [ "$t22_offset_out" = 1735689600 ] && pass "t22: a valid instant in another offset is accepted" || fail "t22: foreign offset rejected (out='$t22_offset_out' rc=$t22_offset_rc)"
+rm -rf "$T/t22-offset-bin"
 
 # A stopped worker whose window stays open: failed only after the window has been silent for the grace period
 mk_t22 t22-idle opencode 600 'cat'
@@ -109,7 +174,7 @@ sleep 0.5
 PATH="$T/t22-notmux-bin:$PATH" "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
 [ ! -s "$KINGPIN_HOME/tasks/t22-notmux/status" ] && pass "t22: nothing is recorded when tmux cannot be asked" || fail "t22: failed written without tmux: $(cat "$KINGPIN_HOME/tasks/t22-notmux/status")"
 
-for t in t22-dead t22-young t22-slow t22-reported t22-idle t22-busy t22-justnow t22-wclaude t22-wtasks t22-wagy t22-wopencode t22-paneDead t22-notmux; do
+for t in t22-dead t22-young t22-slow t22-reported t22-badtime t22-notime t22-idle t22-busy t22-justnow t22-wclaude t22-wtasks t22-wagy t22-wopencode t22-paneDead t22-notmux; do
   tmux kill-window -t "$(sed -n 's/^TMUX_WINDOW_ID=//p' "$KINGPIN_HOME/tasks/$t/task.env")" 2>/dev/null || true
   rm -rf "$KINGPIN_HOME/tasks/$t"
 done

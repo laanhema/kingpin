@@ -126,6 +126,128 @@ TREEEOF
   chmod +x "$T/bin/treehouse"
 }
 
+# kp_test_bsd_shims: put BSD-shaped `stat`, `date` and `sed` wrappers in front of
+# PATH, so a Linux CI runner exercises the path macOS takes. They model the BSD
+# forms the scripts must use (`stat -f %m`, `date -r`, `date -j -f`) and refuse
+# the GNU-only ones (`stat -c`/`--format`, `date -I`/`-d`/`--date`, any `sed -i`).
+# Call it right after kp_test_setup; a suite that does not call it keeps the host
+# tools. On a host whose own tools are already BSD the shims stand down: they
+# translate BSD calls into the host's GNU flags, so there they would shadow
+# working tools with failing ones, and the host takes the BSD path anyway.
+kp_test_bsd_shims() {
+  local dir="$T/bsd"
+  # A BSD `date` rejects `-d`, and a BSD `stat` rejects `-c`. Either one means
+  # this host is the platform the shims imitate, so leave its tools in place.
+  [ "$(date -d @0 +%s 2>/dev/null || true)" = 0 ] || return 0
+  stat -c %Y / >/dev/null 2>&1 || return 0
+  mkdir -p "$dir"
+  export KP_TEST_REAL_STAT KP_TEST_REAL_DATE KP_TEST_REAL_SED
+  KP_TEST_REAL_STAT=$(command -v stat)
+  KP_TEST_REAL_DATE=$(command -v date)
+  KP_TEST_REAL_SED=$(command -v sed)
+  cat > "$dir/bsd-shim" << 'SHIM'
+#!/usr/bin/env bash
+# BSD-shaped stat/date/sed for the Kingpin suites: the forms the scripts must use,
+# with the GNU-only flags refused as BSD does. Selected by the name it is called as.
+set -uo pipefail
+name=$(basename "$0")
+case $name in
+  stat)
+    case ${1:-} in
+      -f)
+        fmt=${2:-}
+        shift 2
+        case $fmt in
+          %m) exec "${KP_TEST_REAL_STAT:?}" -c %Y "$@" ;;
+          *) echo "stat: unsupported BSD format: $fmt" >&2; exit 1 ;;
+        esac
+        ;;
+      -c|--format|--format=*|--printf|--printf=*)
+        echo "stat: GNU-only option '$1' (BSD takes -f FORMAT)" >&2
+        exit 1
+        ;;
+    esac
+    echo "stat: illegal option -- ${1#-}" >&2
+    exit 1
+    ;;
+  date)
+    args=()
+    while [ $# -gt 0 ]; do
+      case $1 in
+        -I*|--iso-8601|--iso-8601=*|-d*|--date|--date=*|--rfc-3339|--rfc-3339=*)
+          echo "date: GNU-only option '$1' (BSD takes -r EPOCH or -j -f FORMAT VALUE)" >&2
+          exit 1
+          ;;
+        -r)
+          epoch=${2:?-r needs seconds}
+          shift 2
+          if [ $# -gt 0 ]; then exec "${KP_TEST_REAL_DATE:?}" -d "@$epoch" "$1"; fi
+          exec "${KP_TEST_REAL_DATE:?}" -d "@$epoch"
+          ;;
+        -j)
+          [ "${2:-}" = "-f" ] || { echo "date: unsupported -j form" >&2; exit 1; }
+          value=${4:?-j -f needs a value}
+          shift 4
+          if [ $# -gt 0 ]; then exec "${KP_TEST_REAL_DATE:?}" -d "$value" "$1"; fi
+          exec "${KP_TEST_REAL_DATE:?}" -d "$value"
+          ;;
+        *) args+=("$1"); shift ;;
+      esac
+    done
+    exec "${KP_TEST_REAL_DATE:?}" "${args[@]}"
+    ;;
+  sed)
+    for a in "$@"; do
+      case $a in
+        -[!-]*i*)
+          # BSD sed has no `-i` without a suffix argument, and the suites rewrite
+          # in place through kp_test_sub instead, so every `-i` form is refused,
+          # including a combined cluster such as `-Ei`.
+          echo "sed: GNU-only -i option '$a' (BSD needs an explicit suffix; use kp_test_sub)" >&2
+          exit 1
+          ;;
+      esac
+    done
+    exec "${KP_TEST_REAL_SED:?}" "$@"
+    ;;
+esac
+SHIM
+  chmod +x "$dir/bsd-shim"
+  ln -sf "$dir/bsd-shim" "$dir/stat"
+  ln -sf "$dir/bsd-shim" "$dir/date"
+  ln -sf "$dir/bsd-shim" "$dir/sed"
+  export PATH="$dir:$PATH"
+}
+
+# kp_test_sub <file> <sed-script>: rewrite <file> in place through a temp file.
+# GNU and BSD `sed -i` disagree on the suffix argument, so a suite never uses it.
+kp_test_sub() {
+  local file=${1:?} script=${2:?} tmp
+  tmp=$(mktemp "$file.XXXXXX")
+  sed -e "$script" "$file" > "$tmp"
+  cat "$tmp" > "$file"
+  rm -f "$tmp"
+}
+
+# kp_test_iso_ago <seconds>: an ISO 8601 timestamp that many seconds in the past,
+# in the shape kp_now_iso writes. GNU date first, then BSD date.
+kp_test_iso_ago() {
+  local secs=${1:?} epoch
+  epoch=$(( $(date +%s) - secs ))
+  date -d "@$epoch" +%Y-%m-%dT%H:%M:%S%z 2>/dev/null \
+    || date -r "$epoch" +%Y-%m-%dT%H:%M:%S%z
+}
+
+# kp_test_touch_ago <file> <seconds>: set <file>'s mtime that many seconds in the
+# past. `touch -d` is GNU, `touch -t` is the form both platforms accept.
+kp_test_touch_ago() {
+  local file=${1:?} secs=${2:?} epoch stamp
+  epoch=$(( $(date +%s) - secs ))
+  touch -d "@$epoch" "$file" 2>/dev/null && return 0
+  stamp=$(date -d "@$epoch" +%Y%m%d%H%M.%S 2>/dev/null || date -r "$epoch" +%Y%m%d%H%M.%S)
+  touch -t "$stamp" "$file"
+}
+
 # kp_test_finish <LABEL>
 kp_test_finish() {
   if [ "$FAILED" -eq 0 ]; then

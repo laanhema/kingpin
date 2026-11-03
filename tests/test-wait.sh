@@ -5,7 +5,36 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 kp_test_setup "wait"
+kp_test_bsd_shims
 kp_test_project
+
+# Test 0: the shims are for GNU hosts; on a BSD host they must stand down
+mkdir -p "$T/bsd-host-bin"
+cat > "$T/bsd-host-bin/date" << 'BSDEOF'
+#!/usr/bin/env bash
+# A BSD-shaped date: GNU -d is refused, everything else goes to the real tool.
+case ${1:-} in -d*) exit 1 ;; esac
+exec "$KP_TEST_REAL_DATE" "$@"
+BSDEOF
+chmod +x "$T/bsd-host-bin/date"
+bsd_host_out=$(PATH="$T/bsd-host-bin:$PATH" bash -c '
+  T=$(mktemp -d)
+  . "$1/tests/lib.sh"
+  before=$PATH
+  kp_test_bsd_shims
+  [ "$PATH" = "$before" ] && echo stood-aside || echo shimmed
+' _ "$KP_ROOT")
+[ "$bsd_host_out" = "stood-aside" ] && pass "the BSD shims stand down on a host whose own date is BSD" || fail "the BSD shims shadowed a BSD host's tools ($bsd_host_out)"
+
+# A combined cluster such as `sed -Ei` is GNU-only too; BSD sed refuses it
+mkdir -p "$T/sed-cluster"
+echo a > "$T/sed-cluster/f"
+set +e
+sed -Ei 's/a/A/' "$T/sed-cluster/f" 2>"$T/sed-cluster.err"
+sed_cluster_rc=$?
+set -e
+[ "$sed_cluster_rc" -ne 0 ] && grep -q "kp_test_sub" "$T/sed-cluster.err" && pass "the sed shim refuses a combined -Ei cluster" || fail "sed -Ei slipped through the shim (rc=$sed_cluster_rc)"
+rm -rf "$T/sed-cluster" "$T/sed-cluster.err"
 
 # Test 6: kingpin-wait blocking and kingpin ack single-event delivery
 echo "=== Test 6: kingpin-wait blocking and kingpin ack single-event delivery ==="
@@ -154,8 +183,19 @@ sleep 0.2
 : > "$t45_dir/launching"
 set +e; t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null); t45_rc=$?; set -e
 [ "$t45_rc" -eq 1 ] && [ -z "$t45_out" ] && pass "t45: a launching task is not reported exited" || fail "t45: launching task reported ($t45_out)"
-touch -d '10 minutes ago' "$t45_dir/launching"
+kp_test_touch_ago "$t45_dir/launching" 600
 "$KP_BIN/kingpin" wait --once 2>/dev/null | grep -q "^t45-wait exited" && pass "t45: a stale launching marker no longer hides a gone window" || fail "t45: stale marker hid exited"
+# A stat that reads nothing is reported, never turned into age 0 (a false exited)
+mkdir -p "$T/t45-badstat"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$T/t45-badstat/stat"
+chmod +x "$T/t45-badstat/stat"
+set +e
+t45_out=$(PATH="$T/t45-badstat:$PATH" "$KP_BIN/kingpin" wait --once 2>"$T/t45-stat.err")
+t45_rc=$?
+set -e
+[ "$t45_rc" -eq 1 ] && [ -z "$t45_out" ] && pass "t45: an unreadable mtime does not become age 0" || fail "t45: unreadable mtime reported ($t45_out)"
+grep -q "cannot read the modification time" "$T/t45-stat.err" && pass "t45: the unreadable mtime is named on stderr" || fail "t45: no stderr warning for an unreadable mtime"
+rm -rf "$T/t45-badstat"
 rm -f "$t45_dir/launching"
 "$KP_BIN/kingpin" wait --once 2>/dev/null | grep -q "^t45-wait exited" && pass "t45: a gone window is exited" || fail "t45: gone window not reported"
 rm -rf "$t45_dir"
