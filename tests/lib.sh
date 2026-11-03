@@ -81,8 +81,14 @@ F
 }
 
 kp_test_cleanup() {
-  # test-lifecycle.sh swaps in a fake kingpin-send; put the real one back
-  [ -f "$T/kingpin-send.orig" ] && cp -p "$T/kingpin-send.orig" "$KP_BIN/kingpin-send" || true
+  # A suite that swaps in a fake command leaves its original beside it as
+  # <name>.orig; put every one back (test-lifecycle.sh: kingpin-send,
+  # test-watch-supervisor.sh: kingpin-wait).
+  local f
+  for f in "$T"/kingpin-*.orig; do
+    [ -f "$f" ] || continue
+    cp -p "$f" "$KP_BIN/$(basename "${f%.orig}")" 2>/dev/null || true
+  done
   "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
   rm -rf "$T"
 }
