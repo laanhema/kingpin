@@ -4,41 +4,9 @@
 # the main checkout, and a worker hook confines edits to the worker's worktree and task folder.
 set -euo pipefail
 
-unset TMUX CLAUDECODE OPENCODE KINGPIN_HARNESS
-
-T=$(mktemp -d)
-export KINGPIN_HOME=$T/kp
-export KINGPIN_SKIP_GUARD=1
-export TREEHOUSE_ROOT=$T/pool
-export CLAUDE_CONFIG_DIR=$T/cfg
-
-mkdir -p "$T/cfg" "$KINGPIN_HOME/projects" "$KINGPIN_HOME/tasks"
-echo '{"projects":{}}' > "$T/cfg/.claude.json"
-
-pass() { echo "PASS: $*"; }
-fail() { echo "FAIL: $*"; FAILED=1; }
-FAILED=0
-
-KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-KP_BIN="$KP_ROOT/bin"
-
-# Isolated private tmux server on a temporary socket
-export TMUX_TMPDIR="$T/tmux-tmp"
-mkdir -p "$TMUX_TMPDIR" "$T/bin"
-TEST_SOCKET="kingpin-test-worker-settings-$$"
-REAL_TMUX=$(command -v tmux)
-cat > "$T/bin/tmux" << EOF
-#!/usr/bin/env bash
-exec "$REAL_TMUX" -L "$TEST_SOCKET" "\$@"
-EOF
-chmod +x "$T/bin/tmux"
-export PATH="$T/bin:$PATH"
-
-cleanup() {
-  "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
-  rm -rf "$T"
-}
-trap cleanup EXIT
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
+kp_test_setup "worker-settings"
 
 TOOLS='["Edit","Write","NotebookEdit","Agent"]'
 
@@ -120,17 +88,14 @@ done
 
 # 3. A spawned worker's effective settings allow Edit, Write, NotebookEdit and Agent
 echo "=== Test 3: spawned worker ==="
-git init -q --bare "$T/origin.git"
-git clone -q "$T/origin.git" "$T/proj" 2>/dev/null
+# The project is a copy of this repo's tree (tracked and unignored files), so the guard it
+# installs and the wrapper scripts it runs are the real ones.
 (
-  cd "$T/proj"
-  git checkout -q -b main
-  # The project is a copy of this repo's tree (tracked and unignored files)
+  cd "$T/proj" || exit 1
   (cd "$KP_ROOT" && git ls-files -z --cached --others --exclude-standard | while IFS= read -r -d '' f; do [ -e "$f" ] && printf '%s\0' "$f"; done | tar --null -T - -cf -) | tar -xf -
   git add -A
   git -c user.email=t@t -c user.name=t commit -qm "init"
-  git push -q -u origin main
-  git remote set-head origin main
+  git push -q origin HEAD:main
 )
 "$KP_BIN/kingpin-guard" install --dir "$T/proj" >/dev/null && pass "guard installed in the main project checkout" || fail "guard install in project failed"
 "$KP_BIN/kingpin-guard" check --dir "$T/proj" >/dev/null && pass "main checkout guard is active" || fail "main checkout guard inactive"
@@ -143,7 +108,6 @@ F
 chmod +x "$T/fake-agent"
 export KINGPIN_CLAUDE=$T/fake-agent
 
-tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
 "$KP_BIN/kingpin-spawn" demo --issue 201 --id task-settings --harness claude >/dev/null
 wt=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/task-settings/task.env")
 [ -d "$wt" ] && pass "worker worktree leased" || fail "no worktree"
@@ -283,9 +247,4 @@ echo "$lock_err" | grep -q "guard is not active" && fail "lock warned despite an
 list_err=$("$T/proj/bin/kingpin" list 2>&1 >/dev/null || true)
 [ -z "$list_err" ] && pass "kingpin list is quiet with the guard active" || fail "list warned with an active guard: $list_err"
 
-if [ "$FAILED" -eq 0 ]; then
-  echo "ALL WORKER SETTINGS TESTS PASSED"
-else
-  echo "WORKER SETTINGS TESTS FAILED"
-  exit 1
-fi
+kp_test_finish WORKER-SETTINGS

@@ -18,7 +18,8 @@ each task back as a visual review dossier. This file describes the repository.
 ## Validation
 
 ```bash
-# bash -n, shellcheck, the CI-matrix check, and the tracked .agents artifact check
+# bash -n, shellcheck, node --check over lib/*.mjs, the CI-matrix check, and the tracked
+# .agents artifact check
 ./tests/lint.sh
 
 # One suite at a time (two suites briefly swap bin/kingpin-send)
@@ -40,7 +41,8 @@ CI (`.github/workflows/ci.yml`) runs the lint plus one matrix leg per suite on e
 PR. `./tests/lint.sh` fails when a suite has no leg, so add both together.
 
 `tests/lint.sh` needs shellcheck 0.11.0, the version CI pins
-(`pip install shellcheck-py==0.11.0.1`). Disable a rule only with a
+(`pip install shellcheck-py==0.11.0.1`), and `node` for the `node --check` pass over
+`lib/*.mjs`. Disable a rule only with a
 `# shellcheck disable=SCnnnn # reason` line, or in `.shellcheckrc` with a comment.
 
 The suites need `git`, `tmux`, `node`, `treehouse` and a git identity; they set their

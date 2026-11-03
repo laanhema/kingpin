@@ -2,65 +2,9 @@
 # Verification test for Kingpin multi-harness support (claude, agy, opencode).
 set -euo pipefail
 
-unset TMUX CLAUDECODE OPENCODE KINGPIN_HARNESS
-export KINGPIN_SKIP_GUARD=1
-# CI runners have no global git identity
-export GIT_AUTHOR_NAME=kingpin-test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=kingpin-test GIT_COMMITTER_EMAIL=test@example.com
-
-T=$(mktemp -d)
-export KINGPIN_HOME=$T/kp
-export TREEHOUSE_ROOT=$T/pool
-export CLAUDE_CONFIG_DIR=$T/cfg
-export GEMINI_CONFIG_DIR=$T/cfg-gemini
-
-mkdir -p "$T/cfg" "$T/cfg-gemini" "$KINGPIN_HOME/projects" "$KINGPIN_HOME/tasks"
-echo '{"projects":{}}' > "$T/cfg/.claude.json"
-echo '{"trustedWorkspaces":[]}' > "$T/cfg-gemini/settings.json"
-
-pass() { echo "PASS: $*"; }
-fail() { echo "FAIL: $*"; FAILED=1; }
-FAILED=0
-
-KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-KP_BIN="$KP_ROOT/bin"
-
-# Set up isolated private tmux server on a temporary socket
-export TMUX_TMPDIR="$T/tmux-tmp"
-mkdir -p "$TMUX_TMPDIR" "$T/bin"
-TEST_SOCKET="kingpin-test-harnesses-$$"
-REAL_TMUX=$(command -v tmux)
-cat > "$T/bin/tmux" << EOF
-#!/usr/bin/env bash
-exec "$REAL_TMUX" -L "$TEST_SOCKET" "\$@"
-EOF
-chmod +x "$T/bin/tmux"
-export PATH="$T/bin:$PATH"
-
-cleanup() {
-  "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
-  rm -rf "$T"
-}
-trap cleanup EXIT
-
-# Ensure kingpin tmux session exists and has only home window
-tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
-for w in $(tmux list-windows -t kingpin -F '#{window_id}' 2>/dev/null | tail -n +2 || true); do
-  tmux kill-window -t "$w" 2>/dev/null || true
-done
-tmux display-message -p '#{socket_path}' | grep -q "$TEST_SOCKET" && pass "test operates on private tmux socket" || fail "test socket not isolated"
-
-# 1. Set up test repo with origin remote
-git init -q --bare "$T/origin.git"
-git clone -q "$T/origin.git" "$T/proj" 2>/dev/null
-(
-  cd "$T/proj"
-  git checkout -q -b main
-  echo "initial code" > app.txt
-  git add app.txt
-  git commit -qm "init"
-  git push -q -u origin main
-  git remote set-head origin main
-)
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
+kp_test_setup "harnesses"
 
 printf 'PROJECT_PATH=%q\nSETUP_CMD=%q\n' "$T/proj" "" > "$KINGPIN_HOME/projects/demo.env"
 
@@ -245,9 +189,4 @@ grep -qi "background code worker" "$KP_ROOT/worker/preamble.md" && pass "worker 
 grep -q "kingpin spawn" "$KP_ROOT/worker/preamble.md" && pass "worker preamble forbids orchestration commands" || fail "preamble does not forbid orchestration commands"
 grep -q "you DO edit code" "$KP_ROOT/worker/preamble.md" && pass "worker preamble says the worker may edit code" || fail "preamble does not say a worker may edit code"
 
-if [ "$FAILED" -eq 0 ]; then
-  echo "ALL MULTI-HARNESS TESTS PASSED"
-else
-  echo "MULTI-HARNESS TESTS FAILED"
-  exit 1
-fi
+kp_test_finish MULTI-HARNESS
