@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned: the version the test suites were validated against. Bump deliberately.
+  TREEHOUSE_VERSION: v3.1.1
+  # Pinned: shellcheck 0.11.0, the version `.shellcheckrc` and the code were validated against
+  # (older releases, such as the 0.9.x on runner images, flag extra style hits).
+  SHELLCHECK_PY_VERSION: 0.11.0.1
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck-py ${{ env.SHELLCHECK_PY_VERSION }}
+        run: |
+          python3 -m venv "$RUNNER_TEMP/shellcheck-venv"
+          "$RUNNER_TEMP/shellcheck-venv/bin/pip" install "shellcheck-py==${SHELLCHECK_PY_VERSION}"
+          # Prepended, so it takes precedence over any runner-preinstalled shellcheck.
+          echo "$RUNNER_TEMP/shellcheck-venv/bin" >> "$GITHUB_PATH"
+      - name: Versions
+        run: command -v shellcheck && shellcheck --version
+      - name: bash -n + shellcheck
+        run: ./tests/lint.sh
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [report, worker-settings, harnesses, acceptance, automation]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install treehouse ${{ env.TREEHOUSE_VERSION }}
+        run: |
+          d=$(mktemp -d)
+          f=treehouse-${TREEHOUSE_VERSION}-linux-amd64.tar.gz
+          base=https://github.com/kunchenguid/treehouse/releases/download/${TREEHOUSE_VERSION}
+          curl -fsSL "$base/$f" -o "$d/$f"
+          curl -fsSL "$base/checksums.txt" -o "$d/checksums.txt"
+          (cd "$d" && grep " $f\$" checksums.txt | sha256sum -c -)
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar xzf "$d/$f" -C "$RUNNER_TEMP/bin" treehouse
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Versions
+        run: git --version && tmux -V && node --version && treehouse --version
+      - name: tests/test-${{ matrix.suite }}.sh
+        run: ./tests/test-${{ matrix.suite }}.sh

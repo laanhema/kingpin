@@ -4,6 +4,8 @@ set -euo pipefail
 
 unset TMUX
 export KINGPIN_SKIP_GUARD=1
+# CI runners have no global git identity
+export GIT_AUTHOR_NAME=kingpin-test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=kingpin-test GIT_COMMITTER_EMAIL=test@example.com
 
 T=$(mktemp -d)
 export KINGPIN_HOME=$T/kp

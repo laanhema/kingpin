@@ -37,9 +37,11 @@ for search_dir in "$KP_HOME/tasks" "$KP_HOME/archive"; do
     crit_file="$task_dir/critique"
     if [ -f "$crit_file" ] && [ -s "$crit_file" ]; then
       seen_tasks="$seen_tasks $task_id"
-      echo "--- Task $task_id ---" >> "$input_file"
-      cat "$crit_file" >> "$input_file"
-      echo "" >> "$input_file"
+      {
+        echo "--- Task $task_id ---"
+        cat "$crit_file"
+        echo ""
+      } >> "$input_file"
       echo "$crit_file" >> "$batch_file"
       count=$((count + 1))
     fi

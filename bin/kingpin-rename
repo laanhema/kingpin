@@ -38,6 +38,7 @@ window_id=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$env_file")
 [ -n "$target" ] || target=kingpin:$id
 
 title=''
+# shellcheck disable=SC2086 # GH_TIMEOUT is "timeout N" or empty and must word-split
 [ -d "$project_path" ] && title=$(cd "$project_path" && $GH_TIMEOUT $GH_CMD issue view "$n" --json title -q .title 2>/dev/null || true)
 slug=$(node "$KP_ROOT/lib/slug.mjs" "$title" 2>/dev/null || true)
 [ -n "$slug" ] || slug=${id#kp-}

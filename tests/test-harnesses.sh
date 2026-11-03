@@ -4,6 +4,8 @@ set -euo pipefail
 
 unset TMUX CLAUDECODE OPENCODE KINGPIN_HARNESS
 export KINGPIN_SKIP_GUARD=1
+# CI runners have no global git identity
+export GIT_AUTHOR_NAME=kingpin-test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=kingpin-test GIT_COMMITTER_EMAIL=test@example.com
 
 T=$(mktemp -d)
 export KINGPIN_HOME=$T/kp
@@ -234,7 +236,7 @@ echo "$res" | grep -q "task-agy quiet" && pass "task-agy reported quiet after pa
 echo "=== Test 6: List Harness Column ==="
 list_out=$("$KP_BIN/kingpin" list)
 for h in claude agy opencode; do
-  echo "$list_out" | grep -Eq "[[:space:]]$h[[:space:]]" && pass "list shows $h harness" || fail "$h harness missing from list"
+  echo "$list_out" | grep -Eq "[[:space:]]${h}[[:space:]]" && pass "list shows $h harness" || fail "$h harness missing from list"
 done
 
 # Test 7: Scope guard in AGENTS.md and role separation

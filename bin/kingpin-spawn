@@ -103,6 +103,7 @@ done
 if [ -z "$id" ]; then
   if [ -n "$issue" ]; then
     # A failed gh call or an empty slug degrades to kp-<n>; it never aborts the spawn.
+    # shellcheck disable=SC2086 # GH_TIMEOUT is "timeout N" or empty and must word-split
     title=$(cd "$PROJECT_PATH" && $GH_TIMEOUT $GH_CMD issue view "$issue" --json title -q .title 2>/dev/null || true)
     slug=$(node "$KP_ROOT/lib/slug.mjs" "$title" 2>/dev/null || true)
     id=kp-$issue${slug:+-$slug}

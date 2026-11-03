@@ -7,6 +7,8 @@ unset TMUX CLAUDECODE OPENCODE KINGPIN_HARNESS
 T=$(mktemp -d)
 export KINGPIN_HOME=$T/kp
 export KINGPIN_SKIP_GUARD=1
+# CI runners have no global git identity
+export GIT_AUTHOR_NAME=kingpin-test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=kingpin-test GIT_COMMITTER_EMAIL=test@example.com
 export TREEHOUSE_ROOT=$T/pool
 export CLAUDE_CONFIG_DIR=$T/cfg
 export GEMINI_CONFIG_DIR=$T/cfg-gemini
@@ -163,7 +165,7 @@ grep -q "^TMUX_TARGET=kingpin:task-target-outside$" "$KINGPIN_HOME/tasks/task-ta
 tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "task-target-outside" && pass "window spawned in kingpin session" || fail "window missing in kingpin session"
 outside_wid=$(tmux list-windows -t kingpin -F '#{window_id} #{window_name}' | awk '$2=="task-target-outside"{print $1}')
 grep -qx "TMUX_WINDOW_ID=$outside_wid" "$KINGPIN_HOME/tasks/task-target-outside/task.env" && echo "$outside_wid" | grep -q '^@[0-9][0-9]*$' && pass "task.env recorded window ID $outside_wid" || fail "task.env TMUX_WINDOW_ID is not the spawned window's ID ($outside_wid)"
-"$KP_BIN/kingpin" done task-target-outside --force >/dev/null
+"$KP_BIN/kingpin" "done" task-target-outside --force >/dev/null
 ! tmux list-windows -t kingpin -F '#{window_name}' 2>/dev/null | grep -qx "task-target-outside" && pass "kingpin done cleaned up outside window" || fail "window lingering in kingpin session"
 
 # Case B: Inside tmux (active session targeting)
@@ -184,14 +186,14 @@ grep -qx "TMUX_WINDOW_ID=$inside_wid" "$KINGPIN_HOME/tasks/task-target-inside/ta
 send_out=$("$KP_BIN/kingpin" send task-target-inside "echo inside-active-ok")
 echo "$send_out" | grep -q "OK: sent to kp-test-active:task-target-inside" && pass "kingpin-send targeted active session window" || fail "kingpin-send failed targeting active session"
 
-"$KP_BIN/kingpin" done task-target-inside --force >/dev/null
+"$KP_BIN/kingpin" "done" task-target-inside --force >/dev/null
 ! tmux list-windows -t kp-test-active -F '#{window_name}' 2>/dev/null | grep -qx "task-target-inside" && pass "kingpin done cleaned up active session window" || fail "window lingering in active session"
 tmux kill-session -t kp-test-active 2>/dev/null || true
 
 # Case C: Lookup fallback when TMUX has invalid session id or lookup fails
-spawn_out_fallback=$(TMUX="/tmp/nonexistent-sock,99999,99999" "$KP_BIN/kingpin" spawn demo-auto --issue 205 --id task-target-fallback --mode review)
+TMUX="/tmp/nonexistent-sock,99999,99999" "$KP_BIN/kingpin" spawn demo-auto --issue 205 --id task-target-fallback --mode review >/dev/null
 grep -q "^TMUX_TARGET=kingpin:task-target-fallback$" "$KINGPIN_HOME/tasks/task-target-fallback/task.env" && pass "fallback resolved a valid TMUX_TARGET" || fail "wrong TMUX_TARGET on fallback"
-"$KP_BIN/kingpin" done task-target-fallback --force >/dev/null
+"$KP_BIN/kingpin" "done" task-target-fallback --force >/dev/null
 
 # Test 6: kingpin-wait blocking and kingpin ack single-event delivery
 echo "=== Test 6: kingpin-wait blocking and kingpin ack single-event delivery ==="
@@ -254,7 +256,7 @@ quiet_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
 echo "$quiet_out" | grep -q "^test-wait-1 quiet" && pass "kingpin-wait detected quiet event" || fail "quiet event not detected (got: $quiet_out)"
 "$KP_BIN/kingpin" ack test-wait-1
 set +e
-quiet_after_ack=$("$KP_BIN/kingpin" wait --once 2>/dev/null)
+"$KP_BIN/kingpin" wait --once >/dev/null 2>&1
 quiet_exit=$?
 set -e
 [ "$quiet_exit" -eq 1 ] && pass "quiet event suppressed after ack" || fail "quiet event repeated after ack"
@@ -267,7 +269,7 @@ echo "$exit_out" | grep -q "^test-wait-1 exited" && pass "kingpin-wait detected 
 "$KP_BIN/kingpin" ack test-wait-1
 [ -f "$task_w_dir/seen_exited" ] && pass "seen_exited touched by kingpin ack" || fail "seen_exited not created"
 set +e
-exit_after_ack=$("$KP_BIN/kingpin" wait --once 2>/dev/null)
+"$KP_BIN/kingpin" wait --once >/dev/null 2>&1
 exit_code_after=$?
 set -e
 [ "$exit_code_after" -eq 1 ] && pass "exited event suppressed after ack" || fail "exited event repeated after ack"
@@ -435,7 +437,7 @@ lock_file=$KINGPIN_HOME/orchestrator.lock
 start_holder() {
   local envs=$1; shift
   (
-    # shellcheck disable=SC2086
+    # shellcheck disable=SC2086 # $envs is a list of VAR=value words and must word-split
     env $envs "$KP_BIN/kingpin" lock acquire "$@" >/dev/null 2>&1
     sleep 30
   ) &
@@ -868,7 +870,7 @@ echo "merged: pr=x" > "$t10_dir4/status"
 echo "dirty" > "$t10_wt3/uncommitted.txt"
 "$KP_BIN/kingpin-done" t10-force >/dev/null 2>&1 && fail "dirty cleanup was not refused" || pass "dirty cleanup refused without --force"
 [ ! -f "$t10_dir4/done_cleaned" ] && pass "no done_cleaned after refusal without --force" || fail "done_cleaned written despite refusal"
-"$KP_BIN/kingpin" done t10-force --force >/dev/null
+"$KP_BIN/kingpin" "done" t10-force --force >/dev/null
 [ -f "$KINGPIN_HOME/archive/t10-force/done_cleaned" ] && pass "kingpin-done --force created done_cleaned and archived the task" || fail "done_cleaned missing in archive after force cleanup"
 rm -rf "$t10_dir4" "$KINGPIN_HOME/archive/t10-force" "$KINGPIN_HOME/archive/t10-dirty" "$t10_wt3"
 
@@ -954,7 +956,7 @@ prompts[1]{prompt}:
   kingpin land task-lavish-1
 RESP
 
-for i in $(seq 1 30); do
+for _ in $(seq 1 30); do
   if [ -f "$t11_task/landing_sent" ] && grep -q "approved:" "$t11_task/status" 2>/dev/null; then
     break
   fi
@@ -1130,7 +1132,7 @@ echo "$watch_fb" | grep -q "received review feedback" && pass "kingpin-watch rep
 
 # 5. Verify cleanup on kingpin-done
 [ -f "$t11_task/listener.pid" ] && pass "task-lavish-1 listener.pid present before done" || fail "listener.pid missing before done"
-"$KP_BIN/kingpin" done task-lavish-1 --force >/dev/null
+"$KP_BIN/kingpin" "done" task-lavish-1 --force >/dev/null
 
 [ ! -f "$t11_task/listener.pid" ] && [ ! -f "$KINGPIN_HOME/archive/task-lavish-1/listener.pid" ] && pass "listener.pid removed by kingpin-done" || fail "listener.pid still present after done"
 kill -0 "$lpid" 2>/dev/null && fail "listener was not killed" || pass "listener process killed by kingpin-done"
@@ -1225,8 +1227,8 @@ EOF
 
 # Poll the pane (wrapped lines joined) until a line equal to $1 shows up
 pane_has_line() {
-  local want=$1 i
-  for i in $(seq 1 50); do
+  local want=$1
+  for _ in $(seq 1 50); do
     tmux capture-pane -pJt kingpin:t13-send -S -200 2>/dev/null | grep -qxF -- "$want" && return 0
     sleep 0.1
   done
@@ -1495,13 +1497,13 @@ t17_wt=$(sed -n 's/^WORKTREE=//p' "$t17_env")
 [ "$(git -C "$t17_wt" branch --show-current)" = "kingpin/$t17_id" ] && pass "t17: worktree is on kingpin/$t17_id" || fail "t17: worktree branch wrong"
 [ ! -e "$KINGPIN_HOME/tasks/$t17_id/launching" ] && grep -q '^TMUX_WINDOW_ID=' "$t17_env" && pass "t45: spawn removes the launching marker" || fail "t45: launching marker left behind"
 "$KP_BIN/kingpin" send "$t17_id" "echo t17-ok" | grep -q "OK: sent to kingpin:$t17_id" && pass "t17: kingpin send reaches the slugged window" || fail "t17: kingpin send failed"
-"$KP_BIN/kingpin" done "$t17_id" --force >/dev/null
+"$KP_BIN/kingpin" "done" "$t17_id" --force >/dev/null
 ! tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "$t17_id" && [ ! -d "$KINGPIN_HOME/tasks/$t17_id" ] && pass "t17: kingpin done closed and archived the slugged task" || fail "t17: kingpin done left the task behind"
 
 # gh failing: the spawn degrades to kp-<n>
 touch "$T/t17-gh-fail"
 "$KP_BIN/kingpin" spawn demo-auto --issue 302 --mode review | grep -q "spawned kp-302 " && pass "t17: gh failure falls back to kp-302" || fail "t17: gh failure did not fall back to kp-302"
-"$KP_BIN/kingpin" done kp-302 --force >/dev/null
+"$KP_BIN/kingpin" "done" kp-302 --force >/dev/null
 rm -f "$T/t17-gh-fail"
 
 # Text mode: kp-<slug>, second identical request gets -2
@@ -1526,15 +1528,15 @@ t17_calls=$(wc -l < "$T/t17-gh-calls")
 "$KP_BIN/kingpin-wait" --once >/dev/null || true
 "$KP_BIN/kingpin-rename" "$t17_text" >/dev/null
 [ "$(wc -l < "$T/t17-gh-calls")" = "$t17_calls" ] && [ "$(tmux display-message -p -t "$t17_twid" '#{window_name}')" = "$t17_new" ] && pass "t17: a second rename is a no-op" || fail "t17: second rename was not a no-op"
-"$KP_BIN/kingpin" done "$t17_text" --force >/dev/null
-"$KP_BIN/kingpin" done kp-refactor-authentication-2 --force >/dev/null
+"$KP_BIN/kingpin" "done" "$t17_text" --force >/dev/null
+"$KP_BIN/kingpin" "done" kp-refactor-authentication-2 --force >/dev/null
 ! tmux list-windows -t kingpin -F '#{window_name}' | grep -qE "^kp-(303|refactor)" && pass "t17: kingpin done closed the renamed windows" || fail "t17: windows left behind"
 
 # An explicit --id wins and never calls gh
 rm -f "$T/t17-gh-calls"
 "$KP_BIN/kingpin" spawn demo-auto --issue 304 --id t17-explicit --mode review | grep -q "spawned t17-explicit " && pass "t17: --id overrides the generated ID" || fail "t17: --id ignored"
 [ ! -e "$T/t17-gh-calls" ] && pass "t17: --id spawn made no gh call" || fail "t17: --id spawn called gh"
-"$KP_BIN/kingpin" done t17-explicit --force >/dev/null
+"$KP_BIN/kingpin" "done" t17-explicit --force >/dev/null
 unset KINGPIN_GH
 
 # Test 18: spawned windows keep the name Kingpin gave them
@@ -1563,7 +1565,7 @@ done
 sleep 0.3
 [ -f "$KINGPIN_HOME/tasks/t18-pinned/emitted" ] && pass "t18: worker emitted the rename escape sequence" || fail "t18: worker never emitted the escape sequence"
 [ "$(tmux display-message -p -t "$t18_wid" '#{window_name}')" = "t18-pinned" ] && pass "t18: escape-sequence rename did not change the window name" || fail "t18: window renamed to $(tmux display-message -p -t "$t18_wid" '#{window_name}')"
-"$KP_BIN/kingpin" done t18-pinned --force >/dev/null
+"$KP_BIN/kingpin" "done" t18-pinned --force >/dev/null
 export KINGPIN_AGY=$T/fake-worker
 tmux set-option -gu automatic-rename
 tmux set-option -gu allow-rename
@@ -1649,7 +1651,7 @@ grep -q "^cleanup-refused: .*uncommitted changes" "$KINGPIN_HOME/tasks/t19-appro
 tmux kill-window -t kingpin:t19-approved 2>/dev/null || true
 
 # (c) ack on an archived task is a no-op with a note; an unknown task is still an error
-"$KP_BIN/kingpin" done t19-merged --force >/dev/null 2>&1 || true
+"$KP_BIN/kingpin" "done" t19-merged --force >/dev/null 2>&1 || true
 [ -d "$KINGPIN_HOME/archive/t19-merged" ] && [ ! -d "$KINGPIN_HOME/tasks/t19-merged" ] && pass "t19: done --force archived the task" || fail "t19: task not archived"
 t19_ack_rc=0
 t19_ack=$("$KP_BIN/kingpin" ack t19-merged 2>&1) || t19_ack_rc=$?
@@ -1666,6 +1668,7 @@ unset KINGPIN_LAVISH
 echo "=== Test 20: kingpin peek ==="
 t20_dir="$KINGPIN_HOME/tasks/t20-peek"
 mkdir -p "$t20_dir"
+# shellcheck disable=SC2016 # single quotes are intentional: $i expands in the inner bash -c
 tmux new-window -d -t kingpin: -n t20-peek bash -c 'for i in $(seq 1 40); do echo "line-$i"; echo; done; echo "   "; exec cat'
 t20_wid=$(tmux list-windows -t kingpin -F '#{window_id} #{window_name}' | awk '$2=="t20-peek"{print $1}')
 [ -n "$t20_wid" ] || fail "t20: fake pane window was not created"
@@ -1960,13 +1963,13 @@ sleep 2
 t22_out=$(KINGPIN_STATUS_GRACE=1 "$KP_BIN/kingpin" wait --once 2>/dev/null || true)
 echo "$t22_out" | grep -q "^t22-spawn status" && pass "t22: a spawned worker that exits at once is reported" || fail "t22: spawned dead worker not reported (got: $t22_out)"
 "$KP_BIN/kingpin" list 2>/dev/null | grep '^t22-spawn ' | grep -q "failed: no status: t22-spawn (agy)" && pass "t22: list shows the spawned worker as failed" || fail "t22: list row for t22-spawn: $("$KP_BIN/kingpin" list 2>/dev/null | grep '^t22-spawn ')"
-"$KP_BIN/kingpin" done t22-spawn >/dev/null 2>&1 && [ -d "$KINGPIN_HOME/archive/t22-spawn" ] && pass "t22: kingpin done releases the failed task without --force" || fail "t22: kingpin done refused the dead task"
+"$KP_BIN/kingpin" "done" t22-spawn >/dev/null 2>&1 && [ -d "$KINGPIN_HOME/archive/t22-spawn" ] && pass "t22: kingpin done releases the failed task without --force" || fail "t22: kingpin done refused the dead task"
 
 # kingpin run stops on a worker that died at launch instead of polling forever
 t22_run_rc=0
 t22_run_out=$(KINGPIN_AGY=$T/t22-dead-harness KINGPIN_STATUS_GRACE=1 timeout 60 "$KP_BIN/kingpin" run demo-auto --issue 247 --id t22-run --mode review 2>&1) || t22_run_rc=$?
 [ "$t22_run_rc" -eq 1 ] && echo "$t22_run_out" | grep -q "FAILED: t22-run failed: failed: no status:" && pass "t22: kingpin run exits 1 with the failed line for a worker that died at launch" || fail "t22: kingpin run rc=$t22_run_rc: $t22_run_out"
-"$KP_BIN/kingpin" done t22-run >/dev/null 2>&1 || true
+"$KP_BIN/kingpin" "done" t22-run >/dev/null 2>&1 || true
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"

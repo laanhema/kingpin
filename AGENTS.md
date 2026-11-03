@@ -49,6 +49,10 @@ The rule that keeps the orchestrator from editing code lives in `.claude/setting
 - Workers get the opposite hook from `worker/hooks.json` (`kingpin-guard hook worker`): `Edit`, `Write` and `NotebookEdit` are allowed inside the worker's own worktree and task folder and denied everywhere else. Both hooks fail closed: if `kingpin-guard` cannot run, the edit is denied. A worker without those tools means a stale guard: run `kingpin guard check`, then `kingpin guard install`, then respawn it. A worker stuck on a `Bash` command that the auto-mode classifier denied is unblocked by approving the command in its tmux window.
 - `tests/test-worker-settings.sh` checks that a spawned worker's effective settings, including the main checkout's file, deny none of those tools, and that both hooks behave as described.
 
+## Validation
+
+Lint with `./tests/lint.sh` (`bash -n` plus shellcheck; install the version CI pins, shellcheck 0.11.0, with `pip install shellcheck-py==0.11.0.1` in a venv). The five suites are `tests/test-*.sh`; CI runs both on every PR. Disable a shellcheck rule only with a `# shellcheck disable=SCnnnn # reason` line, or in `.shellcheckrc` with a comment.
+
 ## How to Handle Requests
 
 When the boss asks to build, fix, or investigate something on a project:
