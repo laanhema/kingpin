@@ -115,7 +115,7 @@ kingpin watch
 | `kingpin lock` | `kingpin lock [status\|check\|acquire [--harness <name>]\|release\|harness]` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. |
 | `kingpin guard` | `kingpin guard [install\|check\|warn]` | Installs or verifies the orchestrator-only tool guard, a `PreToolUse` hook in `.claude/settings.local.json` (untracked), and the orchestrator contract described under [Initialize your project](#1-initialize-your-project-run-once-inside-any-git-repository); `install` also removes the deny rules that older versions wrote there, which leaked into workers; `check` names a stale contract copy; `warn` prints a stderr warning when the guard or the contract is missing or stale; `kingpin guard hook <orchestrator\|worker>` is the hook entry point; `list` and `wait` run it at startup, and `lock acquire` prints the same warning. |
 | `kingpin scope` | `kingpin scope files\|check --harness <claude\|agy\|opencode> --worktree <dir> [--preamble <file>]` | Names the instruction files a harness really loads for a worker: `files` prints `<kind>\t<path>` per source (`discovery`, a file the harness finds; `configured`, an `instructions` entry of the worktree's config, JSONC included; `ignored`, a rules file the harness skips; `global`, loaded from the user's config directory). `check` exits 1 naming the file when any source carries the orchestrator contract, including a global file in your own config directory (`KINGPIN_ALLOW_GLOBAL_CONTRACT=1` downgrades that one to a warning), and, for OpenCode and agy, when the preamble is not among the sources the harness loads (Claude Code gets it through `--append-system-prompt-file`, which `check` does not verify); nothing is edited. `kingpin spawn` runs `check` before it opens a window. |
-| `kingpin report` | `kingpin report diffs [--repo <dir>] [--base <ref>]` / `kingpin report check <report.html>` | Dossier helper for workers. `diffs` prints the HTML for the file-diff section (every committed, uncommitted and untracked change, each with a static fallback and a `@pierre/diffs` call that passes `oldFile`/`newFile`). `check` exits 1 when a dossier would show blank diffs (`patch:` used, `FileDiff` without `oldFile`/`newFile`, or an empty diff container). The worker preamble tells workers to run `check` before reporting `ready:`. |
+| `kingpin report` | `kingpin report diffs [--repo <dir>] [--base <ref>]` / `kingpin report check [--prose-only] <report.html>` | Dossier helper for workers. `diffs` prints the HTML for the file-diff section (every committed, uncommitted and untracked change, each with a static fallback and a `@pierre/diffs` call that passes `oldFile`/`newFile`). `check` exits 1 when a dossier would show blank diffs (`patch:` used, `FileDiff` without `oldFile`/`newFile`, or an empty diff container), and runs a prose pass over the page: it fails with `file:line` and the offending line on the mechanical slice of the `unslop` skill (em dash, "testament to", "it's not just", "delve", "seamless", "in order to", "let me know", "I hope this helps"), ignoring code, diff output, script/style bodies and attributes. `<!-- unslop:ignore -->` on a line is the single escape. `--prose-only` checks just the prose, for an artifact with no diff section. The worker preamble and `AGENTS.md` require both the pass and the check before `ready:` and before an orchestrator artifact is served. |
 | `kingpin curate` | `kingpin curate` | Aggregates critique files from finished worker tasks. |
 
 ### Internal helpers
@@ -173,6 +173,25 @@ Review the changes and click **Approve & Land** on the dossier or run:
 ```bash
 kingpin land <task-id>
 ```
+
+### 3. Handover Artifacts (noir dossier template)
+
+Pages handed to the boss for a decision (proposals, plans, comparisons, review summaries) start from the noir dossier template that ships with the repo:
+
+```
+assets/lavish/noir-dossier/
+  template.html   the page: exhibits A-F, inline-SVG diagrams, @pierre/diffs, two working decision forms
+  kingpin.jpg     the banner, the same image as assets/kingpin.jpg, referenced relatively
+  DESIGN.md       the rules the look depends on, beside the file they describe
+```
+
+Copy the folder into the artifact's directory (`.lavish/`), rename the html, swap the content, and keep the chrome. `DESIGN.md` lists the rules (paper on ink, one accent, one display face, exhibit labels, forms for decisions) and the two widths to check, 1180 px and 480 px, with nothing scrolling sideways. Then open it:
+
+```bash
+lavish-axi .lavish/<artifact>.html
+```
+
+Worker review dossiers are not made from this template: `worker/preamble.md` and `kingpin report diffs` own their layout. `tests/test-noir-template.sh` fails when the folder loses one of the three files, when `template.html` points at a file with an absolute path or through `..`, when a diff block loses its static fallback, or when the page stops passing the full `kingpin report check` (renderable diffs and clean prose).
 
 
 ---
@@ -238,6 +257,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-launch-check.sh` | `kingpin-launch-check`: workers that die at launch |
 | `test-status.sh` | `lib/status.sh`, the shared status protocol |
 | `test-report.sh` | `report`: generated diffs are renderable, blank-diff reports are rejected |
+| `test-noir-template.sh` | noir dossier template: the three files ship together, every ref stays inside the folder, the diffs keep static fallbacks, the prose stays clean |
 | `test-harnesses.sh` | Multi-harness contract and isolation |
 | `test-worker-scope.sh` | Worker instruction context: what each harness really loads, the spawn refusal, the installed contract |
 | `test-worker-settings.sh` | Orchestrator tool guard and worker edit boundary |

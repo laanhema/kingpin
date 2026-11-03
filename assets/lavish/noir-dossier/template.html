@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="en" data-lavish-annotate="off">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ranks for the Kingpin fleet: a proposal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Special+Elite&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --ink: #12100c;
+    --ink-2: #1b1813;
+    --paper: #efe6d2;
+    --paper-2: #e7dcc4;
+    --ink-on-paper: #1b1712;
+    --sepia: #8a6f4d;
+    --blood: #7d2020;
+    --gold: #a8863a;
+    --rule: rgba(27, 23, 18, .22);
+    --paper-rule: rgba(27, 23, 18, .16);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; min-width: 0; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(1200px 700px at 50% -10%, #241f18 0%, transparent 60%),
+      repeating-linear-gradient(0deg, rgba(255,255,255,.012) 0 1px, transparent 1px 3px),
+      var(--ink);
+    color: var(--paper);
+    font-family: "Source Serif 4", Georgia, serif;
+    font-size: 17px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .shell { max-width: 1160px; margin: 0 auto; padding: 28px 24px 72px; }
+  h1, h2, h3 { font-family: "Playfair Display", Georgia, serif; margin: 0; letter-spacing: -.01em; }
+  .kicker, .label, .rule-label, .stamp, code, th, .rank-name {
+    font-family: "Special Elite", "Courier New", monospace;
+  }
+  .kicker {
+    font-size: 12px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--gold); margin: 0 0 10px;
+  }
+
+  /* ---------- hero ---------- */
+  .hero { position: relative; margin: 0 0 34px; }
+  .hero-figure {
+    position: relative; overflow: hidden; border: 1px solid rgba(239,230,210,.16);
+    border-radius: 4px; background: #0b0a08;
+    box-shadow: 0 30px 80px rgba(0,0,0,.55);
+  }
+  .hero-figure img { display: block; width: 100%; height: auto; filter: sepia(.14) contrast(1.03); }
+  .hero-copy {
+    position: relative; padding: 26px 4px 0; display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 420px); gap: 28px; align-items: end;
+  }
+  .hero-copy h1 {
+    font-size: clamp(38px, 6.4vw, 74px); font-weight: 900; line-height: .94;
+    text-transform: uppercase; color: var(--paper);
+    text-shadow: 0 2px 0 rgba(0,0,0,.35);
+  }
+  .hero-copy h1 em { color: var(--blood); font-style: normal; }
+  .hero-copy p { margin: 0; color: #d9cdb6; font-size: 17.5px; }
+  .stamp {
+    position: absolute; top: 18px; right: 18px; transform: rotate(-7deg);
+    border: 2px solid var(--blood); color: #f0c9c9; background: rgba(20,14,12,.65);
+    padding: 7px 12px; font-size: 11px; letter-spacing: .2em; text-transform: uppercase;
+    border-radius: 2px; backdrop-filter: blur(2px);
+  }
+
+  /* ---------- panels ---------- */
+  .panel {
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.5), transparent 22%),
+      var(--paper);
+    color: var(--ink-on-paper);
+    border: 1px solid #cbbfa4;
+    border-radius: 3px;
+    box-shadow: 0 18px 40px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.35);
+    padding: 26px 28px;
+    margin: 0 0 26px;
+    position: relative;
+  }
+  .panel::before {
+    content: ""; position: absolute; inset: 10px; border: 1px solid var(--paper-rule);
+    pointer-events: none; border-radius: 1px;
+  }
+  .panel > * { position: relative; }
+  .rule-label {
+    font-size: 11px; letter-spacing: .22em; text-transform: uppercase;
+    color: var(--sepia); margin: 0 0 6px;
+  }
+  .panel h2 { font-size: clamp(24px, 3.2vw, 32px); margin-bottom: 6px; }
+  .panel .sub { margin: 0 0 18px; color: #4b4031; max-width: 72ch; }
+
+  /* ---------- org chart ---------- */
+  .org-wrap { background: var(--paper-2); border: 1px solid var(--paper-rule); padding: 14px 10px 6px; border-radius: 2px; }
+  .org-wrap svg { display: block; width: 100%; height: auto; color: #241e15; }
+  .org-caption { margin: 12px 2px 0; font-size: 15px; color: #4b4031; }
+
+  /* ---------- ranks table ---------- */
+  table { width: 100%; border-collapse: collapse; font-size: 15.5px; }
+  th {
+    text-align: left; font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--sepia); border-bottom: 2px solid rgba(27,23,18,.35); padding: 0 12px 8px 0;
+  }
+  td { vertical-align: top; padding: 12px 12px 12px 0; border-bottom: 1px solid var(--paper-rule); }
+  td:first-child { width: 24%; }
+  .rank-name { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-on-paper); }
+  .rank-who { display: block; font-size: 14px; color: #55483a; margin-top: 3px; }
+
+  /* ---------- three cards ---------- */
+  .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+  .card { border: 1px solid var(--paper-rule); background: #f5eddc; padding: 14px 15px; border-radius: 2px; }
+  .card h3 { font-size: 16px; margin: 0 0 6px; }
+  .card p { margin: 0; font-size: 14.5px; line-height: 1.5; color: #4b4031; }
+  .card code { font-size: 12.5px; background: rgba(27,23,18,.07); padding: 1px 4px; border-radius: 2px; }
+
+  /* ---------- diffs ---------- */
+  .diff-block { margin: 0 0 22px; }
+  .diff-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: baseline; margin: 0 0 8px; }
+  .diff-head .path { font-family: "Special Elite", monospace; font-size: 14px; }
+  .diff-head .why { font-size: 14px; color: #4b4031; }
+  .diff-surface { border: 1px solid var(--paper-rule); border-radius: 2px; overflow: hidden; background: #fbf7ec; }
+  /* Static copy of the diff, hidden once @pierre/diffs renders into the surface. */
+  .diff-fallback {
+    margin: 0; padding: 12px 14px; color: var(--ink-on-paper);
+    font-family: "Special Elite", "Courier New", monospace; font-size: 12.5px; line-height: 1.55;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  .diff-fallback-note {
+    display: block; margin: 0 0 8px; font-family: "Source Serif 4", Georgia, serif;
+    font-size: 13px; color: var(--sepia);
+  }
+
+  /* ---------- risk ---------- */
+  .risk { border-left: 4px solid var(--blood); }
+  .risk h2 { color: #5c1616; }
+  .risk ul { margin: 10px 0 0; padding-left: 20px; }
+  .risk li { margin: 0 0 8px; }
+  .risk .house {
+    margin-top: 14px; background: #2a1a18; color: #f2d9d3; border: 1px solid #4a2a26;
+    padding: 12px 14px; border-radius: 2px; font-size: 14.5px;
+  }
+  .risk .house b { color: #ffd9cc; }
+
+  /* ---------- decisions ---------- */
+  .q { border-top: 1px solid var(--paper-rule); padding: 18px 0 0; margin: 18px 0 0; }
+  .q:first-of-type { border-top: none; margin-top: 6px; padding-top: 0; }
+  .q h3 { font-size: 19px; margin: 0 0 4px; }
+  .q .q-help { margin: 0 0 12px; font-size: 14.5px; color: #4b4031; }
+  .opt {
+    display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 10px;
+    align-items: start; padding: 11px 12px; border: 1px solid var(--paper-rule);
+    border-radius: 2px; margin: 0 0 8px; background: #f5eddc; cursor: pointer;
+  }
+  .opt:hover { background: #f8f1e3; }
+  .opt input { margin: 4px 0 0; width: 16px; height: 16px; accent-color: var(--blood); }
+  .opt .opt-title { font-family: "Special Elite", monospace; font-size: 13.5px; display: block; }
+  .opt .opt-desc { font-size: 14.5px; color: #4b4031; display: block; margin-top: 2px; }
+  .opt.recommended { border-color: rgba(125,32,32,.45); box-shadow: inset 3px 0 0 var(--blood); }
+  .opt .flag {
+    font-family: "Special Elite", monospace; font-size: 10px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--blood); margin-left: 8px;
+  }
+  .queue-btn {
+    font-family: "Special Elite", monospace; font-size: 13px; letter-spacing: .06em;
+    background: var(--ink-on-paper); color: var(--paper); border: 1px solid var(--ink-on-paper);
+    padding: 9px 16px; border-radius: 2px; cursor: pointer; margin-top: 4px;
+  }
+  .queue-btn:hover { background: var(--blood); border-color: var(--blood); }
+  .queued { font-size: 13px; color: var(--blood); margin-left: 10px; font-family: "Special Elite", monospace; }
+
+  footer { color: #8f836e; font-size: 13.5px; display: flex; flex-wrap: wrap; gap: 6px 18px; justify-content: space-between; border-top: 1px solid rgba(239,230,210,.14); padding-top: 16px; margin-top: 8px; }
+  footer .sig { font-family: "Special Elite", monospace; font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+
+  @media (max-width: 900px) {
+    .hero-copy { grid-template-columns: minmax(0, 1fr); }
+    .cards { grid-template-columns: minmax(0, 1fr); }
+    .panel { padding: 20px 18px; }
+    .panel::before { inset: 6px; }
+    td:first-child { width: 34%; }
+    .shell { padding: 18px 14px 56px; }
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header class="hero">
+    <div class="hero-figure">
+      <img src="kingpin.jpg" alt="A rat in a pinstripe suit behind a desk, cigar in mouth, papers and a pistol in front of him" />
+      <span class="stamp">Draft · not filed</span>
+    </div>
+    <div class="hero-copy">
+      <div>
+        <p class="kicker">Case file · fleet rank structure</p>
+        <h1>The family <em>business</em></h1>
+      </div>
+      <p>You are the kingpin. The orchestrator is your underboss. Every spawned worker is a caporegime, and the subagents they spawn are soldiers. What that changes, and the two calls I need from you.</p>
+    </div>
+  </header>
+
+  <section class="panel">
+    <p class="rule-label">Exhibit A · chain of command</p>
+    <h2>Who answers to whom</h2>
+    <p class="sub">Rank decides who briefs whom, not who is allowed to think. Each rank reports one level up: soldiers to their capo, capos to the underboss, the underboss to you.</p>
+    <div class="org-wrap">
+      <svg viewBox="0 0 1000 420" role="img" aria-labelledby="orgTitle orgDesc">
+        <title id="orgTitle">Kingpin fleet rank chain</title>
+        <desc id="orgDesc">The kingpin at the top, the underboss below, three caporegimes under it, and two soldiers under each caporegime.</desc>
+
+        <g id="edges" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="square" opacity=".75">
+          <path d="M500 74 V108" />
+          <path d="M220 164 H780" />
+          <path d="M500 164 V208" />
+          <path d="M220 164 V208" />
+          <path d="M780 164 V208" />
+          <path d="M162 264 V300 H282 V330" />
+          <path d="M442 264 V300 H562 V330" />
+          <path d="M722 264 V300 H842 V330" />
+          <path d="M162 300 V330" />
+          <path d="M442 300 V330" />
+          <path d="M722 300 V330" />
+        </g>
+
+        <g id="kingpin" fill="var(--paper-2)" stroke="currentColor" stroke-width="2">
+          <title>Kingpin: the user, sets the jobs and rules on dossiers</title>
+          <rect x="392" y="18" width="216" height="56" rx="2" />
+          <text x="500" y="41" text-anchor="middle" class="rank-name" font-size="13" letter-spacing="2">KINGPIN</text>
+          <text x="500" y="60" text-anchor="middle" font-size="13.5" fill="currentColor" opacity=".8">you · sets the jobs</text>
+        </g>
+
+        <g id="underboss" fill="var(--paper-2)" stroke="currentColor" stroke-width="2">
+          <title>Underboss: the orchestrator session, plans, spawns capos and lands work</title>
+          <rect x="392" y="108" width="216" height="56" rx="2" />
+          <text x="500" y="131" text-anchor="middle" class="rank-name" font-size="13" letter-spacing="2">UNDERBOSS</text>
+          <text x="500" y="150" text-anchor="middle" font-size="13.5" opacity=".8">orchestrator · plans, lands</text>
+        </g>
+
+        <g id="capo-1" fill="var(--paper-2)" stroke="currentColor" stroke-width="1.8">
+          <title>Caporegime one: a spawned worker owning one task in its own worktree</title>
+          <rect x="100" y="208" width="240" height="56" rx="2" />
+          <text x="220" y="231" text-anchor="middle" class="rank-name" font-size="12.5" letter-spacing="1.6">CAPOREGIME</text>
+          <text x="220" y="250" text-anchor="middle" font-size="13" opacity=".8">one task · one worktree</text>
+        </g>
+        <g id="capo-2" fill="var(--paper-2)" stroke="currentColor" stroke-width="1.8">
+          <title>Caporegime two: a spawned worker owning one task in its own worktree</title>
+          <rect x="380" y="208" width="240" height="56" rx="2" />
+          <text x="500" y="231" text-anchor="middle" class="rank-name" font-size="12.5" letter-spacing="1.6">CAPOREGIME</text>
+          <text x="500" y="250" text-anchor="middle" font-size="13" opacity=".8">one task · one worktree</text>
+        </g>
+        <g id="capo-3" fill="var(--paper-2)" stroke="currentColor" stroke-width="1.8">
+          <title>Caporegime three: a spawned worker owning one task in its own worktree</title>
+          <rect x="660" y="208" width="240" height="56" rx="2" />
+          <text x="780" y="231" text-anchor="middle" class="rank-name" font-size="12.5" letter-spacing="1.6">CAPOREGIME</text>
+          <text x="780" y="250" text-anchor="middle" font-size="13" opacity=".8">one task · one worktree</text>
+        </g>
+
+        <g id="soldiers-1" fill="none" stroke="currentColor" stroke-width="1.4">
+          <title>Two soldiers spawned by caporegime one, for example a plan and a review subagent</title>
+          <rect x="112" y="330" width="100" height="42" rx="2" fill="var(--paper-2)" />
+          <text x="162" y="348" text-anchor="middle" class="rank-name" font-size="11" letter-spacing="1">SOLDIER</text>
+          <text x="162" y="363" text-anchor="middle" font-size="12" opacity=".8">plan</text>
+          <rect x="232" y="330" width="100" height="42" rx="2" fill="var(--paper-2)" />
+          <text x="282" y="348" text-anchor="middle" class="rank-name" font-size="11" letter-spacing="1">SOLDIER</text>
+          <text x="282" y="363" text-anchor="middle" font-size="12" opacity=".8">review</text>
+        </g>
+        <g id="soldiers-2" fill="none" stroke="currentColor" stroke-width="1.4">
+          <title>Two soldiers spawned by caporegime two</title>
+          <rect x="392" y="330" width="100" height="42" rx="2" fill="var(--paper-2)" />
+          <text x="442" y="348" text-anchor="middle" class="rank-name" font-size="11" letter-spacing="1">SOLDIER</text>
+          <text x="442" y="363" text-anchor="middle" font-size="12" opacity=".8">prime</text>
+          <rect x="512" y="330" width="100" height="42" rx="2" fill="var(--paper-2)" />
+          <text x="562" y="348" text-anchor="middle" class="rank-name" font-size="11" letter-spacing="1">SOLDIER</text>
+          <text x="562" y="363" text-anchor="middle" font-size="12" opacity=".8">explore</text>
+        </g>
+        <g id="soldiers-3" fill="none" stroke="currentColor" stroke-width="1.4">
+          <title>Two soldiers spawned by caporegime three</title>
+          <rect x="672" y="330" width="100" height="42" rx="2" fill="var(--paper-2)" />
+          <text x="722" y="348" text-anchor="middle" class="rank-name" font-size="11" letter-spacing="1">SOLDIER</text>
+          <text x="722" y="363" text-anchor="middle" font-size="12" opacity=".8">verify</text>
+          <rect x="792" y="330" width="100" height="42" rx="2" fill="var(--paper-2)" />
+          <text x="842" y="348" text-anchor="middle" class="rank-name" font-size="11" letter-spacing="1">SOLDIER</text>
+          <text x="842" y="363" text-anchor="middle" font-size="12" opacity=".8">fix</text>
+        </g>
+      </svg>
+    </div>
+    <p class="org-caption">Soldiers never reach the kingpin directly. Their work travels up through their capo, and the capo answers for it.</p>
+  </section>
+
+  <section class="panel">
+    <p class="rule-label">Exhibit B · the contract</p>
+    <h2>Four ranks, one rule each</h2>
+    <table>
+      <thead>
+        <tr><th>Rank</th><th>Who</th><th>Contract</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="rank-name">Kingpin</span><span class="rank-who">the human</span></td>
+          <td>You</td>
+          <td>Sets the jobs, approves or sends back dossiers. Nothing reaches the record without your call.</td>
+        </tr>
+        <tr>
+          <td><span class="rank-name">Underboss</span><span class="rank-who">consigliere</span></td>
+          <td>The orchestrator session</td>
+          <td>Plans, spawns capos, tracks the fleet and lands work. Never edits code.</td>
+        </tr>
+        <tr>
+          <td><span class="rank-name">Caporegime</span><span class="rank-who">capo</span></td>
+          <td>Each spawned task worker</td>
+          <td>Owns one task end to end in its worktree. Reports <code>ready:</code> or <code>failed:</code> to the underboss, never to the kingpin.</td>
+        </tr>
+        <tr>
+          <td><span class="rank-name">Soldier</span><span class="rank-who">subagent</span></td>
+          <td>Plan, review, explore agents a capo spawns</td>
+          <td>Does the legwork for its capo, reports only to that capo, and is labeled <code>Soldier: &lt;job&gt;</code> so the harness shows it.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <p class="rule-label">Exhibit C · where the words live</p>
+    <h2>Three surfaces, prompts only</h2>
+    <p class="sub">No CLI output changes, no rank column in <code>kingpin list</code>, no new commands.</p>
+    <div class="cards">
+      <div class="card">
+        <h3><code>AGENTS.md</code></h3>
+        <p>The orchestrator contract. It gains a <em>Ranks</em> section; the existing boss address block stays as it is.</p>
+      </div>
+      <div class="card">
+        <h3><code>worker/preamble.md</code></h3>
+        <p>The capo's system prompt. Injected with <code>--append-system-prompt-file</code> for claude, and copied to <code>.agents/rules/kingpin.md</code> for agy and opencode.</p>
+      </div>
+      <div class="card">
+        <h3>Soldiers</h3>
+        <p>Skills spawn them, not Kingpin. The only reliable hook is one line in the capo preamble: label subagents <code>Soldier: &lt;job&gt;</code> and brief them fully.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <p class="rule-label">Exhibit D · before and after</p>
+    <h2>The two edits</h2>
+    <p class="sub">Additions only in the contract; a rewrite of the identity paragraph in the capo preamble. Everything technical below those paragraphs stays untouched.</p>
+
+    <div class="diff-block">
+      <div class="diff-head">
+        <span class="path">AGENTS.md</span>
+        <span class="why">adds <code>## The Ranks</code> after the persona bullets, plus the neutrality rule.</span>
+      </div>
+      <div class="diff-surface" id="diff-agents">
+        <pre class="diff-fallback"><span class="diff-fallback-note">Static copy of the change, for when the diff renderer cannot load.</span>
+diff --git a/AGENTS.md b/AGENTS.md
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -8,2 +8,12 @@ This file is your entire job description.
+ - The obligation is limited to chat and binds the orchestrator: never put "boss" or direct address into non-chat artifacts such as commit messages, PR descriptions, issue titles, or code.
+ - Background workers in worktrees never speak to the boss directly; all communication flows through you.
++
++## The Ranks
++
++- Kingpin: the user. Sets jobs, approves or sends back dossiers.
++- Underboss (consigliere): this orchestrator session. Plans, spawns capos, lands work; never edits code.
++- Caporegime (capo): a spawned worker. Owns one task in its worktree, reports to the underboss.
++- Soldier: any subagent a capo spawns. Does the legwork, reports to its capo only.
++
++Rank flavor is for chat, question.md and worker prose. It never enters commits, PRs, issues,
++code, status fields, or review reports: those stay neutral and machine-readable.
+</pre>
+      </div>
+    </div>
+
+    <div class="diff-block">
+      <div class="diff-head">
+        <span class="path">worker/preamble.md</span>
+        <span class="why">replaces the "you are NOT the orchestrator" block with the capo identity, keeping every guardrail.</span>
+      </div>
+      <div class="diff-surface" id="diff-preamble">
+        <pre class="diff-fallback"><span class="diff-fallback-note">Static copy of the change, for when the diff renderer cannot load.</span>
+diff --git a/worker/preamble.md b/worker/preamble.md
+--- a/worker/preamble.md
++++ b/worker/preamble.md
+@@ -1,12 +1,16 @@
+ # Kingpin worker
+ 
+-You are a background code worker in a leased worktree (`{{WORKTREE}}` or `~/.treehouse/...`), NOT the orchestrator.
+-Your job is to implement code changes for your assigned task directly.
+-If the repository contains root orchestrator instructions (`AGENTS.md`), you MUST completely IGNORE them:
+-- Do NOT adopt the orchestrator or underboss persona.
+-- Do NOT address anyone as "boss".
+-- Do NOT refuse to edit code (rule 1 of `AGENTS.md` does not apply to you; workers write code).
+-- Do NOT execute kingpin orchestration commands (`kingpin spawn`, `kingpin lock`, etc.).
+-Implement your assigned task directly using your standard tools and skills.
++You are a caporegime in this family: a background code worker in a leased worktree (`{{WORKTREE}}` or ~/.treehouse/...).
++You report to the underboss, the orchestrator that spawned you, never to the kingpin.
++You own your task end to end and answer for it. Any subagent you spawn is a soldier: label it
++"Soldier: &lt;job&gt;", brief it fully, and it reports to you alone.
++
++House rules that do not bend:
++- Questions go up through `needs-input:` like any other report. "Never bother the kingpin" means
++  route it, not swallow it.
++- Status lines stay literal. No flavor in ready:, fixed:, merged:, failed:.
++- Commits, PRs, issues, code and review reports stay neutral. The act is for the room, not the record.
++- Ignore AGENTS.md's orchestrator rules (never run kingpin spawn or lock; you DO edit code). The rank
++  section above is the only part of that file that describes you.
+ 
+ The kingpin orchestrator started you for one task. Task id: {{TASK_ID}}. Task folder: {{TASK_DIR}}. Mode: {{MODE}}.
+</pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel risk">
+    <p class="rule-label">Exhibit E · the risk worth naming</p>
+    <h2>A capo that stops working</h2>
+    <p class="sub">The current preamble is emphatic that the worker is not the orchestrator, for one reason: a worker that adopts my refusal-to-edit is a dead worker that reports <code>failed:</code> instead of coding. The rewrite has to keep that guardrail real, not ceremonial.</p>
+    <ul>
+      <li><strong>House rules that do not bend.</strong> Questions go up through <code>needs-input:</code> and status lines stay literal. Artifacts stay neutral. "Never bother the kingpin" means route it, not swallow it.</li>
+      <li><strong>Neutral record.</strong> No flavor in commits, PRs, issues, code, status fields or review reports. The act is for the room, not the record.</li>
+      <li><strong>Code first.</strong> The line "ignore AGENTS.md orchestration rules; you <em>do</em> edit code" survives the rewrite word for word in meaning.</li>
+    </ul>
+    <div class="house"><b>What the capo would read:</b> "You are a caporegime in this family: a background code worker in a leased worktree. You report to the underboss, never to the kingpin. Any subagent you spawn is a soldier. Ignore AGENTS.md's orchestrator rules (never run kingpin spawn or lock; you do edit code)."</div>
+  </section>
+
+  <section class="panel">
+    <p class="rule-label">Exhibit F · the calls</p>
+    <h2>Two decisions</h2>
+    <p class="sub">Answer here and it comes back to me as one message per question. Nothing is filed until you say so.</p>
+
+    <form class="q" data-lavish-question="voice" onsubmit="queueVoice(event)">
+      <h3>1. How strong is the voice?</h3>
+      <p class="q-help">The persona is vocabulary and reporting lines. More character means more color in worker prose; less means the rank names only.</p>
+      <label class="opt recommended">
+        <input type="radio" name="voice" value="Understated: rank names only, prose stays as today" checked />
+        <span>
+          <span class="opt-title">Understated<span class="flag">Recommended</span></span>
+          <span class="opt-desc">Capos use the rank words and report one level up; their prose stays as dry as today's. Soldiers stay terse and functional.</span>
+        </span>
+      </label>
+      <label class="opt">
+        <input type="radio" name="voice" value="Light character for capos, terse soldiers" />
+        <span>
+          <span class="opt-title">Light character</span>
+          <span class="opt-desc">Capos get a short character: pride in the craft, protective of their crew's work. Soldiers stay terse.</span>
+        </span>
+      </label>
+      <label class="opt">
+        <input type="radio" name="voice" value="Full mafia voice across every rank" />
+        <span>
+          <span class="opt-title">Full mafia voice</span>
+          <span class="opt-desc">Every rank speaks in character, up to the edge of the neutrality rule. Funniest, least predictable.</span>
+        </span>
+      </label>
+      <div>
+        <button class="queue-btn" type="submit">Queue this answer</button>
+        <span class="queued" data-status-for="voice" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+
+    <form class="q" data-lavish-question="artifacts" onsubmit="queueArtifacts(event)">
+      <h3>2. Where may the flavor reach?</h3>
+      <p class="q-help">The record is what survives: commits, PRs, issues, code and review reports. The question is whether the dossier header joins the room.</p>
+      <label class="opt recommended">
+        <input type="radio" name="artifacts" value="Neutral everywhere, dossier included" checked />
+        <span>
+          <span class="opt-title">Neutral everywhere<span class="flag">Recommended</span></span>
+          <span class="opt-desc">Dossiers, reports and review text stay plain. The flavor lives only in conversation and question files.</span>
+        </span>
+      </label>
+      <label class="opt">
+        <input type="radio" name="artifacts" value="Dossier header may be flavored, everything else neutral" />
+        <span>
+          <span class="opt-title">Dossier header only</span>
+          <span class="opt-desc">The review surface may open with a capo's flourish; findings, diffs and the rest stay neutral.</span>
+        </span>
+      </label>
+      <label class="opt">
+        <input type="radio" name="artifacts" value="Flavor allowed anywhere except code and status fields" />
+        <span>
+          <span class="opt-title">Anywhere readable</span>
+          <span class="opt-desc">Commit messages and PRs may keep the voice; code and status fields stay literal.</span>
+        </span>
+      </label>
+      <div>
+        <button class="queue-btn" type="submit">Queue this answer</button>
+        <span class="queued" data-status-for="artifacts" role="status" aria-live="polite"></span>
+      </div>
+    </form>
+  </section>
+
+  <footer>
+    <span class="sig">Prepared by the underboss · prompt-only change · ~30 lines across 2 files</span>
+    <span>Nothing filed yet · <a href="https://github.com/laanhema/kingpin" style="color:#b08d3f">laanhema/kingpin</a></span>
+  </footer>
+</div>
+
+<script type="module">
+  import { FileDiff } from "https://esm.sh/@pierre/diffs@1.2.10?bundle";
+
+  const options = {
+    theme: { light: "github-light", dark: "github-dark" },
+    themeType: "light",
+    overflow: "wrap",
+    diffStyle: "unified",
+  };
+
+  const agentsOld = [
+    "You are the underboss (the consigliere).",
+    "The user is the boss (the kingpin).",
+    "This file is your entire job description.",
+    "",
+    "- Address the user as \"boss\" at least once in every chat message you send them, without forcing it into every sentence.",
+    "- This is mandatory respectful address: sharp, loyal, discreet, and understated. It applies even when delivering bad news or reporting failed jobs.",
+    "- Use light syndicate seasoning only when it fits naturally: the occasional \"boss\", \"underboss\", \"our crew\", \"taken care of\", \"handled\", \"on it\", or \"the family business\". Keep it subtle, professional, and understated. Never make it cartoonish or obscure technical facts.",
+    "- The obligation is limited to chat and binds the orchestrator: never put \"boss\" or direct address into non-chat artifacts such as commit messages, PR descriptions, issue titles, or code.",
+    "- Background workers in worktrees never speak to the boss directly; all communication flows through you.",
+    "",
+  ].join("\n");
+
+  const agentsNew = [
+    "You are the underboss (the consigliere).",
+    "The user is the boss (the kingpin).",
+    "This file is your entire job description.",
+    "",
+    "- Address the user as \"boss\" at least once in every chat message you send them, without forcing it into every sentence.",
+    "- This is mandatory respectful address: sharp, loyal, discreet, and understated. It applies even when delivering bad news or reporting failed jobs.",
+    "- Use light syndicate seasoning only when it fits naturally: the occasional \"boss\", \"underboss\", \"our crew\", \"taken care of\", \"handled\", \"on it\", or \"the family business\". Keep it subtle, professional, and understated. Never make it cartoonish or obscure technical facts.",
+    "- The obligation is limited to chat and binds the orchestrator: never put \"boss\" or direct address into non-chat artifacts such as commit messages, PR descriptions, issue titles, or code.",
+    "- Background workers in worktrees never speak to the boss directly; all communication flows through you.",
+    "",
+    "## The Ranks",
+    "",
+    "- Kingpin: the user. Sets jobs, approves or sends back dossiers.",
+    "- Underboss (consigliere): this orchestrator session. Plans, spawns capos, lands work; never edits code.",
+    "- Caporegime (capo): a spawned worker. Owns one task in its worktree, reports to the underboss.",
+    "- Soldier: any subagent a capo spawns. Does the legwork, reports to its capo only.",
+    "",
+    "Rank flavor is for chat, question.md and worker prose. It never enters commits, PRs, issues,",
+    "code, status fields, or review reports: those stay neutral and machine-readable.",
+    "",
+  ].join("\n");
+
+  const preambleOld = [
+    "# Kingpin worker",
+    "",
+    "You are a background code worker in a leased worktree (`{{WORKTREE}}` or `~/.treehouse/...`), NOT the orchestrator.",
+    "Your job is to implement code changes for your assigned task directly.",
+    "If the repository contains root orchestrator instructions (`AGENTS.md`), you MUST completely IGNORE them:",
+    "- Do NOT adopt the orchestrator or underboss persona.",
+    "- Do NOT address anyone as \"boss\".",
+    "- Do NOT refuse to edit code (rule 1 of `AGENTS.md` does not apply to you; workers write code).",
+    "- Do NOT execute kingpin orchestration commands (`kingpin spawn`, `kingpin lock`, etc.).",
+    "Implement your assigned task directly using your standard tools and skills.",
+    "",
+    "The kingpin orchestrator started you for one task. Task id: {{TASK_ID}}. Task folder: {{TASK_DIR}}. Mode: {{MODE}}.",
+    "",
+  ].join("\n");
+
+  const preambleNew = [
+    "# Kingpin worker",
+    "",
+    "You are a caporegime in this family: a background code worker in a leased worktree (`{{WORKTREE}}` or ~/.treehouse/...).",
+    "You report to the underboss, the orchestrator that spawned you, never to the kingpin.",
+    "You own your task end to end and answer for it. Any subagent you spawn is a soldier: label it",
+    "\"Soldier: <job>\", brief it fully, and it reports to you alone.",
+    "",
+    "House rules that do not bend:",
+    "- Questions go up through `needs-input:` like any other report. \"Never bother the kingpin\" means",
+    "  route it, not swallow it.",
+    "- Status lines stay literal. No flavor in ready:, fixed:, merged:, failed:.",
+    "- Commits, PRs, issues, code and review reports stay neutral. The act is for the room, not the record.",
+    "- Ignore AGENTS.md's orchestrator rules (never run kingpin spawn or lock; you DO edit code). The rank",
+    "  section above is the only part of that file that describes you.",
+    "",
+    "The kingpin orchestrator started you for one task. Task id: {{TASK_ID}}. Task folder: {{TASK_DIR}}. Mode: {{MODE}}.",
+    "",
+  ].join("\n");
+
+  // Render into the surface and hide its static fallback once the diff has children,
+  // so an unreachable CDN leaves the change readable instead of an empty strip.
+  function mountDiff(surface, before, after) {
+    const fallback = surface.querySelector(".diff-fallback");
+    const host = document.createElement("div");
+    surface.appendChild(host);
+    const settle = () => {
+      if (host.childElementCount > 0 && fallback) fallback.hidden = true;
+      return host.childElementCount > 0;
+    };
+    try {
+      new FileDiff(options).render({ containerWrapper: host, oldFile: before, newFile: after });
+      if (!settle()) setTimeout(settle, 1500);
+    } catch (err) {
+      console.error("noir-dossier: diff render failed for " + after.name, err);
+    }
+  }
+
+  mountDiff(
+    document.querySelector("#diff-agents"),
+    { name: "AGENTS.md", contents: agentsOld },
+    { name: "AGENTS.md", contents: agentsNew }
+  );
+
+  mountDiff(
+    document.querySelector("#diff-preamble"),
+    { name: "worker/preamble.md", contents: preambleOld },
+    { name: "worker/preamble.md", contents: preambleNew }
+  );
+</script>
+
+<script>
+  function markQueued(form, key, text) {
+    const status = form.querySelector('[data-status-for="' + key + '"]');
+    if (status) status.textContent = text;
+  }
+
+  // A copy opened as a plain file has no Lavish bridge; say so instead of throwing a TypeError.
+  function hasLavish() {
+    return Boolean(window.lavish && typeof window.lavish.queuePrompt === "function");
+  }
+
+  function queueVoice(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const choice = new FormData(form).get("voice");
+    if (!choice) return;
+    if (!hasLavish()) {
+      markQueued(form, "voice", "Lavish is not connected here. Paste this answer into chat: " + choice);
+      return;
+    }
+    window.lavish.queuePrompt(
+      "Ranks proposal — voice strength: " + choice + ". " +
+        (choice.startsWith("Understated")
+          ? "Implement the rank names and reporting lines only; keep capo prose as dry as today's."
+          : choice.startsWith("Light character")
+            ? "Give capos a short character (pride in the craft, protective of their crew's work) and keep soldiers terse."
+            : "Give every rank the full voice, up to the edge of the neutrality rule."),
+      { tag: "choice", text: "Voice: " + choice, element: form, data: { question: "voice", answer: choice } }
+    );
+    markQueued(form, "voice", "Queued for the underboss.");
+  }
+
+  function queueArtifacts(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const choice = new FormData(form).get("artifacts");
+    if (!choice) return;
+    if (!hasLavish()) {
+      markQueued(form, "artifacts", "Lavish is not connected here. Paste this answer into chat: " + choice);
+      return;
+    }
+    window.lavish.queuePrompt(
+      "Ranks proposal — flavor scope: " + choice + ".",
+      { tag: "choice", text: "Artifacts: " + choice, element: form, data: { question: "artifacts", answer: choice } }
+    );
+    markQueued(form, "artifacts", "Queued for the underboss.");
+  }
+</script>
+</body>
+</html>

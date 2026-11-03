@@ -25,6 +25,16 @@ each task back as a visual review dossier. This file describes the repository.
 ./tests/test-<suite>.sh
 ```
 
+## Lavish Artifacts
+
+Every page we hand over is prose first: a worker's `report.html` dossier, and a plan or comparison page you open with `lavish-axi`, gets an unslop pass before it is served.
+
+- Start a handover artifact from the noir dossier template, not a blank page: copy `assets/lavish/noir-dossier/template.html` and its `kingpin.jpg` into the artifact's folder (`.lavish/`), swap the content, and keep the chrome. `assets/lavish/noir-dossier/DESIGN.md` sits beside the page and records the rules the look depends on; `tests/test-noir-template.sh` fails when the folder loses a file, when a `src`/`href` is absolute or climbs out of the folder, when a diff block loses its static fallback, or when the page stops passing `check`. This template is for the pages you hand the boss, not for worker review dossiers, which keep their own layout.
+- Run the `unslop` skill over the page, then `bin/kingpin-report check <file>`. A page with no diff section takes `--prose-only`.
+- `check` fails with `<file>:<line>:` and the offending line for the mechanical tells: em dash, "testament to", "it's not just", "delve", "seamless", "in order to", "let me know", "I hope this helps". Fix the line, or put `<!-- unslop:ignore -->` on it when the word is genuinely wanted.
+- Code blocks, diff output, script and style bodies and HTML attributes are ignored, and style judgement stays with the skill: title-case display headings or a deliberate noir voice in a hand-built page are not slop.
+- `worker/preamble.md` carries the same requirement for workers, and `bin/kingpin-watch` warns when a dossier fails the check.
+
 CI (`.github/workflows/ci.yml`) runs the lint plus one matrix leg per suite on every
 PR. `./tests/lint.sh` fails when a suite has no leg, so add both together.
 
