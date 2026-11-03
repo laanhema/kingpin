@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
-# Continuous fleet supervision loop for Kingpin.
+# Continuous fleet supervision loop for Kingpin: the fleet's one supervisor.
 #
 # Listens for fleet events via kingpin-wait:
 #   1. When a worker in 'auto' mode reports 'ready:', automatically triggers kingpin-land.
 #   2. When a worker reports 'merged:', automatically runs kingpin-done to clean up.
+#
+# One supervisor per fleet: it claims $KINGPIN_HOME/supervisor.pid (pid on line 1,
+# start epoch on line 2) and refuses to start a second copy while that pid is live,
+# naming it. A stale file (dead pid, or a pid that is not a kingpin-watch) is
+# reclaimed. The pidfile is the lock: it is hard-linked into place, so link(2) lets
+# exactly one claimer win and nothing is held while the supervisor runs (flock is
+# Linux-only, so it is not used). `--once`, the one-shot pass that `kingpin run`
+# and the tests use, returns before the guard and touches no pidfile.
 #
 # Usage: kingpin-watch [--once] [--interval <seconds>]
 set -euo pipefail
@@ -14,6 +22,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_ROOT/lib/status.sh"
 # shellcheck source=../lib/landing.sh
 . "$KP_ROOT/lib/landing.sh"
+# shellcheck source=../lib/supervisor.sh
+. "$KP_ROOT/lib/supervisor.sh"
 KP_BIN="$KP_ROOT/bin"
 
 ONCE=0
@@ -24,12 +34,89 @@ while [ $# -gt 0 ]; do
     --once) ONCE=1; shift ;;
     --interval) INTERVAL=${2:?--interval needs seconds}; shift 2 ;;
     -h|--help)
-      echo "usage: kingpin-watch [--once] [--interval <seconds>]"
+      cat <<'USAGE'
+usage: kingpin-watch [--once] [--interval <seconds>]
+
+Loops as the fleet's supervisor: dispatches landing, fix passes, cleanup and
+review listeners. Refuses to start a second copy (it names the running pid) and
+reclaims a stale $KINGPIN_HOME/supervisor.pid. --once runs one pass, without
+claiming the pidfile. `kingpin list` shows whether a supervisor is running.
+USAGE
       exit 0
       ;;
     *) echo "kingpin-watch: unknown argument $1" >&2; exit 2 ;;
   esac
 done
+
+SUPERVISOR_PID_FILE="$KP_HOME/supervisor.pid"
+CLAIM_TMP="$SUPERVISOR_PID_FILE.claim.$$"
+
+# Remove the pidfile only when it still names this process. Runs on a normal exit,
+# on a signal, and when a second copy is refused. Another supervisor's pidfile is
+# never touched: the file is that supervisor's claim on the slot.
+release_supervisor() {
+  if [ -f "$SUPERVISOR_PID_FILE" ] \
+     && [ "$(sed -n 1p "$SUPERVISOR_PID_FILE" 2>/dev/null | tr -d ' ' || true)" = "$$" ]; then
+    rm -f "$SUPERVISOR_PID_FILE"
+  fi
+  rm -f "$CLAIM_TMP"
+  [ -z "${EVENTS_FILE:-}" ] || rm -f "$EVENTS_FILE"
+}
+
+# Claim the supervisor slot, or refuse. The pidfile is the lock: it is written to a
+# private file and hard-linked into place, so exactly one claimer wins and no
+# contender ever sees a pidfile without its pid inside. A pidfile whose pid is dead,
+# or is not a kingpin-watch process, is stale: it is renamed away and the claim
+# retried. The rename is checked against the pid that was inspected, so two
+# reclaimers cannot delete each other's fresh claim. Nothing stays held while the
+# supervisor runs, so a refused second copy cannot disturb the first copy's claim.
+claim_supervisor() {
+  local tries=0 pid seen moved stale
+  mkdir -p "$KP_HOME"
+  trap release_supervisor EXIT
+  trap 'exit 0' INT TERM
+  while [ "$tries" -lt 120 ]; do
+    tries=$((tries + 1))
+    if ! printf '%s\n%s\n' "$$" "$(date +%s)" > "$CLAIM_TMP" 2>/dev/null; then
+      sleep 0.05
+      continue
+    fi
+    chmod 644 "$CLAIM_TMP" 2>/dev/null || true
+    if ln "$CLAIM_TMP" "$SUPERVISOR_PID_FILE" 2>/dev/null; then
+      rm -f "$CLAIM_TMP"
+      return 0
+    fi
+    rm -f "$CLAIM_TMP"
+
+    pid=$(kp_supervisor_pid "$KP_HOME")
+    if [ -n "$pid" ] && [ "$pid" != "$$" ]; then
+      echo "kingpin-watch: a fleet supervisor is already running (pid $pid); use 'kingpin list' to see it" >&2
+      exit 1
+    fi
+
+    # Stale. Reclaim only the file this pass inspected, and hand a fresh claim that
+    # appeared after the read back untouched.
+    seen=''
+    [ -f "$SUPERVISOR_PID_FILE" ] \
+      && seen=$(sed -n 1p "$SUPERVISOR_PID_FILE" 2>/dev/null | tr -d ' ' || true)
+    stale="$SUPERVISOR_PID_FILE.stale.$$"
+    rm -f "$stale"
+    if mv "$SUPERVISOR_PID_FILE" "$stale" 2>/dev/null; then
+      moved=''
+      [ -f "$stale" ] && moved=$(sed -n 1p "$stale" 2>/dev/null | tr -d ' ' || true)
+      if [ "$moved" = "$seen" ]; then
+        rm -f "$stale"
+      elif [ -e "$SUPERVISOR_PID_FILE" ]; then
+        rm -f "$stale"
+      else
+        mv "$stale" "$SUPERVISOR_PID_FILE" 2>/dev/null || rm -f "$stale"
+      fi
+    fi
+    sleep 0.05
+  done
+  echo "kingpin-watch: cannot claim $SUPERVISOR_PID_FILE" >&2
+  exit 1
+}
 
 process_task_event() {
   local id=$1
@@ -153,9 +240,29 @@ if [ "$ONCE" -eq 1 ]; then
   exit 0
 fi
 
-echo "[kingpin-watch] Watching fleet events..."
+claim_supervisor
+echo "[kingpin-watch] Watching fleet events (pid $$)..."
+
+# Run each wait in the background and `wait` on it: a trap runs only after the
+# current foreground command finishes, so a plain foreground wait would defer a
+# `kill` for up to --interval (300 s by default). `wait` is interruptible.
+WAIT_CHILD=''
+EVENTS_FILE=''
+stop_waiter() {
+  [ -z "$WAIT_CHILD" ] || kill "$WAIT_CHILD" 2>/dev/null || true
+  exit 0
+}
+trap stop_waiter INT TERM
+
 while true; do
-  updates=$("$KP_BIN/kingpin-wait" --timeout "$INTERVAL" 2>/dev/null || true)
+  EVENTS_FILE=$(mktemp "$KP_HOME/watch-events.XXXXXX")
+  "$KP_BIN/kingpin-wait" --timeout "$INTERVAL" >"$EVENTS_FILE" 2>/dev/null &
+  WAIT_CHILD=$!
+  wait "$WAIT_CHILD" || true
+  WAIT_CHILD=''
+  updates=$(cat "$EVENTS_FILE" 2>/dev/null || true)
+  rm -f "$EVENTS_FILE"
+  EVENTS_FILE=''
   if [ -n "$updates" ]; then
     while IFS=' ' read -r id reason; do
       [ -n "$id" ] || continue

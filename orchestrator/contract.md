@@ -34,8 +34,8 @@ This file is your entire job description.
    When a worker reports `ready:` in review mode, run `bin/kingpin listen <task-id> --background` (idempotent; `kingpin-watch` does it automatically). It opens the visual review dossier (`lavish-axi ~/.kingpin/tasks/<task-id>/report.html`) in the browser and keeps a background `lavish-axi poll` listener running, so the dossier shows connected and its `Approve & Land` and `Request Changes` buttons reach Kingpin. Then direct the boss to the dossier:
    `lavish-axi ~/.kingpin/tasks/<task-id>/report.html` (which shows diffs, verification, and landing actions).
    When a worker reports `needs-input:`, read `~/.kingpin/tasks/<task-id>/question.md`, relay the question concisely, and send the boss's response via `kingpin send <task-id> "<answer>"`.
-5. **Background event wait.**
-   Whenever tasks are live in the fleet, keep exactly one background `bin/kingpin-wait` (or `bin/kingpin wait`) running. Never run two at once. It exits 0 both when it prints events and when its timeout passes with no events (then it prints nothing, so an empty exit just means re-arm it); `--once` with no events exits 1; bad arguments exit 2 and an unusable fleet directory exits 1, each with a `kingpin-wait:` message on stderr.
+5. **Fleet supervisor.**
+   Run `bin/kingpin watch` once per fleet, in the background (`bin/kingpin watch >> ~/.kingpin/supervisor.log 2>&1 &`, or your harness's background-run facility), and leave it running for the session. It loops over fleet events and dispatches them itself: auto-mode landing, the landing that continues after `fixed:`, `kingpin done` after `merged:`, dossier listeners for review tasks, and landing queues whose holder is gone. Never run one per turn or per task. A second copy is refused with the running pid named, so a duplicate start is harmless but never needed. Do not use a bare `bin/kingpin wait` as the supervisor: `wait` is the one-shot primitive underneath `watch` (it prints `<task-id> <reason>` and exits; `--once` with no events exits 1; bad arguments exit 2; an unusable fleet directory exits 1). `bin/kingpin list` prints `Supervisor: running (pid N, since HH:MM)` or `Supervisor: none - run kingpin watch`, and `bin/kingpin lock acquire` warns on stderr when none is running. After a session restart, read that line and start the supervisor again if it says none.
 
 ## Orchestrator Tool Guard
 
@@ -55,21 +55,16 @@ When the boss asks to build, fix, or investigate something on a project:
 1. **Intake:** Resolve the project name from the boss's request (matching `~/.kingpin/projects/<project>.env`).
 2. **Spawn:** Run `bin/kingpin spawn <project> (--issue <n> | --text "<request>") [--mode review|auto]`.
    - Do not pass `--harness` unless the boss specifically asked for a different harness: Kingpin picks the default itself, in this order: the project's `HARNESS` (only if set), the harness recorded when this session acquired the lock (`bin/kingpin lock status` shows it), `DEFAULT_HARNESS` in `~/.kingpin/config.env`, then `claude`.
-   - If no background `bin/kingpin-wait` is running, arm one in the background so worker events wake you.
+   - If `bin/kingpin list` reports `Supervisor: none`, start the supervisor as rule 5 describes. It runs until it is stopped, so no per-turn step is needed.
 3. **Notify:** Acknowledge the spawned task ID and initial state in a concise reply.
-4. **Supervise:** React to worker events or check status with `bin/kingpin list`.
-   - When a background `bin/kingpin-wait` exits and returns `<task-id> <reason>` lines (an exit with no output is a plain timeout, not a failure: re-arm it if tasks remain live):
-     1. Inspect `~/.kingpin/tasks/<task-id>/status` (or `question.md`/`report.html` as appropriate).
-     2. Handle or relay the event to the boss:
-        - On `ready:` in review mode: if `landing_in_progress` is set, run `bin/kingpin land <task-id>` to continue landing; otherwise arm the listener as in rule 4 and give the boss the dossier link while waiting for approval.
-        - On `approved:`: the dossier listener already ran `kingpin land` for this approval; do not run it again. Confirm with `bin/kingpin list`.
-        - On `feedback:`: read `~/.kingpin/tasks/<task-id>/feedback.md` (newest entry last), relay it concisely to the boss, and send the boss's decision to the worker via `kingpin send <task-id> "<text>"`.
-        - On `fixed:`: run `bin/kingpin land <task-id>` to continue landing. (`bin/kingpin approve` is an alias of `land`. When the review has findings, `land` first sends `/fix-findings` and its output says so; it only lands on the run after `fixed:`.)
-        - On approval: run `bin/kingpin land <task-id>`.
-        - On `merged:`: run `bin/kingpin done <task-id>` to release the worktree lease.
-        - On `cleanup-refused:`: notify the boss with the refusal reason. The project's landing lock is already released and `kingpin-watch` retries the cleanup on its own, so no action is needed once the cause clears. Run `bin/kingpin done <task-id> --force` only on the boss's word: it discards uncommitted changes (reason "uncommitted changes") or commits that are not yet on the remote default branch (reason "HEAD ... is not yet merged").
-        - On `needs-input:`: relay the question from `question.md` concisely to the boss.
-        - On `exited`: report worker termination to the boss. To see what a worker was doing, or why it looks stuck, run `kingpin peek <task-id>`.
-        - On `failed:`: relay the reason to the boss. A `failed: no status:` line means the worker stopped without reporting anything (a harness that died at launch): run `kingpin peek <task-id>` if the window is still open, and `bin/kingpin done <task-id>` releases its worktree once the boss agrees.
-     3. Acknowledge the event with `bin/kingpin ack <task-id>` to advance seen counters.
-     4. If tasks remain live in the fleet, re-arm the background `bin/kingpin-wait` before completing your turn.
+4. **Supervise:** the supervisor moves tasks along on its own, so the fleet changes between turns. Start a turn with `bin/kingpin list`: it shows each task's newest status and whether the supervisor is running. Read `~/.kingpin/tasks/<task-id>/status` (or `question.md`/`report.html`) when a task needs detail, and relay to the boss what needs a human:
+   - On `ready:` in review mode: if `landing_in_progress` is set, the supervisor continues the landing; if it is not running, run `bin/kingpin land <task-id>` yourself. Otherwise make sure the listener is attached as in rule 4 and give the boss the dossier link while waiting for approval.
+   - On `approved:`: the dossier listener already ran `kingpin land` for this approval; do not run it again. Confirm with `bin/kingpin list`.
+   - On `feedback:`: read `~/.kingpin/tasks/<task-id>/feedback.md` (newest entry last), relay it concisely to the boss, and send the boss's decision to the worker via `kingpin send <task-id> "<text>"`.
+   - On `fixed:`: the supervisor continues landing. If it is not running, run `bin/kingpin land <task-id>` yourself. (`bin/kingpin approve` is an alias of `land`. When the review has findings, `land` first sends `/fix-findings` and its output says so; it only lands on the run after `fixed:`.)
+   - On `merged:`: the supervisor runs `kingpin done` and archives the task; confirm with `bin/kingpin list`.
+   - On `cleanup-refused:`: notify the boss with the refusal reason. The project's landing lock is already released and `kingpin-watch` retries the cleanup on its own, so no action is needed once the cause clears. Run `bin/kingpin done <task-id> --force` only on the boss's word: it discards uncommitted changes (reason "uncommitted changes") or commits that are not yet on the remote default branch (reason "HEAD ... is not yet merged").
+   - On `needs-input:`: relay the question from `question.md` concisely to the boss.
+   - On `exited`: report worker termination to the boss. To see what a worker was doing, or why it looks stuck, run `kingpin peek <task-id>`.
+   - On `failed:`: relay the reason to the boss. A `failed: no status:` line means the worker stopped without reporting anything (a harness that died at launch): run `kingpin peek <task-id>` if the window is still open, and `bin/kingpin done <task-id>` releases its worktree once the boss agrees.
+   Then run `bin/kingpin ack <task-id>` for an event you have relayed, so a later `bin/kingpin wait` reports only newer ones.
