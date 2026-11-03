@@ -204,6 +204,50 @@ cat > "$T/inherited-wrap.html" <<'HTML'
 HTML
 "$KP_BIN/kingpin" report check --prose-only "$T/inherited-wrap.html" >/dev/null 2>&1 && pass "a wrap rule on p reaches the inline code inside it" || fail "an inherited overflow-wrap was not seen"
 
+# Inheritance follows the real markup: a `p` rule does not reach a code element in a div. This page
+# measured 3128/1280 in Chrome while the old selector-shape matcher printed OK.
+long=$(printf 'a%.0s' $(seq 1 400))
+cat > "$T/p-wrap-outside-code.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  p { overflow-wrap: anywhere; }
+</style></head><body>
+<div><code>${long}</code></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/p-wrap-outside-code.html" 2>&1) && fail "check lent a p wrap rule to code outside a p" || pass "a wrap rule on p does not reach code in a div"
+echo "$out" | grep -q 'p-wrap-outside-code.html:6: <code> has no wrap rule' && pass "the unreachable code failure names its line" || fail "no file:line for the unreachable code: $out"
+
+# A child guard belongs to the container's real children: `p { min-width: 0 }` does not guard divs.
+# This page measured 2879/1280 in Chrome while the old selector-shape matcher printed OK.
+cat > "$T/grid2-p-guard.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  code { overflow-wrap: anywhere; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; }
+  p { min-width: 0; }
+</style></head><body>
+<div class="grid2"><div>${long}</div><div>right</div></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/grid2-p-guard.html" 2>&1) && fail "check lent a p min-width rule to a grid of divs" || pass "a min-width rule on p does not guard a grid of divs"
+echo "$out" | grep -q 'grid2-p-guard.html:4: grid/flex layout has no shrink guard' && pass "the unguarded grid failure names its rule line" || fail "no file:line for the unguarded grid: $out"
+
+# A `p` wrap rule does not reach a table's cells either, so a fixed table still needs its own rule.
+cat > "$T/table-fixed-p-wrap.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  p { overflow-wrap: anywhere; }
+  table { width: 100%; max-width: 100%; table-layout: fixed; }
+</style></head><body>
+<table><tbody><tr><td>${long}</td><td>b</td></tr></tbody></table>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/table-fixed-p-wrap.html" 2>&1) && fail "check lent a p wrap rule to a table's cells" || pass "a wrap rule on p does not reach a table's cells"
+echo "$out" | grep -q 'table-fixed-p-wrap.html:7: <table> has no wrap rule' && pass "the unreachable cell wrap failure names the table" || fail "no file:line for the table: $out"
+
 # A layout guard is judged per layout rule: an unrelated min-width rule does not cover this grid.
 cat > "$T/grid-unrelated-guard.html" <<'HTML'
 <!DOCTYPE html>
