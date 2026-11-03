@@ -28,11 +28,17 @@
 #     a file, not a directory. The sequence lives in lib/mutex.sh.
 #
 # The lane is free when it has no holder, or when the holder can no longer land:
-# its task dir is gone, or its last worker event is terminal (merged:, failed:,
-# cleanup-refused:). A queued id is landable only when its task dir and task.env
-# still exist, it was not already cleaned up or dispatched, and its last worker
-# event is not terminal; anything else is dropped from the queue and named on
-# stderr, because a silent swallow is what made the lane wedge.
+# its task dir is gone, its last worker event is terminal (merged:, failed:,
+# cleanup-refused:), or it reported again after the landing was sent. The send
+# time is the landing_sent marker's mtime: a holder whose status file is newer
+# than that marker and whose newest line is a ready:, fixed:, needs-input:,
+# feedback: or waiting: event is not landing (it answered a question or reported
+# again), so a drain releases it, names it on stderr and clears its landing_sent
+# marker: the landing never started, so the task must be landable again from the
+# queue or the dossier. A queued id is landable only when its task dir and
+# task.env still exist, it was not already cleaned up or dispatched, and its last
+# worker event is not terminal; anything else is dropped from the queue and named
+# on stderr, because a silent swallow is what made the lane wedge.
 #
 # Every function takes <kp-home> first, so a caller can point it at a scratch
 # fleet. The mutex is per project, and no function calls another that takes it:
@@ -64,16 +70,50 @@ kp_landing_holder() {
   head -n 1 "$lock" 2>/dev/null || true
 }
 
+# _kp_landing_holder_stale_reason <kp-home> <holder>
+# Prints one line naming why a holder is no longer landing, and exits 0, when the
+# holder took the lane and its worker then wrote a landing-over event: the task
+# dir is live, landing_sent exists, the status file is newer than that marker,
+# and its newest line is a ready:, fixed:, needs-input:, feedback: or waiting:
+# event. Prints nothing and exits 1 for a holder that is still landing (its
+# status has nothing newer than the send), for a lane taken by hand (no
+# landing_sent), and for an approved: note or an issue: line, which do not end a
+# landing. The drain prints the reason; the live check only asks whether it
+# exists.
+_kp_landing_holder_stale_reason() {
+  local home=${1:-} holder=${2:-} dir marker status newest
+  [ -n "$home" ] && [ -n "$holder" ] || return 1
+  dir="$home/tasks/$holder"
+  kp_task_is_live "$dir" || return 1
+  marker="$dir/landing_sent"
+  status="$dir/status"
+  [ -f "$marker" ] || return 1
+  [ -f "$status" ] || return 1
+  [ "$status" -nt "$marker" ] || return 1
+  newest=$(kp_status_newest "$status")
+  case "$newest" in
+    ready:*|fixed:*|needs-input:*|feedback:*|waiting:*)
+      printf 'a new %s: line arrived after the landing was sent\n' "${newest%%:*}"
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 # kp_landing_holder_live <kp-home> <holder>
-# Exit 0 only when the holder's task dir is a live record and its last worker
-# event is not terminal. An empty holder, a missing task dir, the link
-# kingpin-done leaves for an archived task, and a finished task all mean the
-# lane is free: exit 1.
+# Exit 0 only when the holder's task dir is a live record, its last worker event
+# is not terminal, and it has not reported again since the landing was sent. The
+# send time is the landing_sent marker's mtime: a holder whose status file is
+# newer and whose newest line is a ready:, fixed:, needs-input:, feedback: or
+# waiting: event is not landing, whatever its status says. An empty holder, a
+# missing task dir, the link kingpin-done leaves for an archived task, a finished
+# task, and a stale holder all mean the lane is free: exit 1.
 kp_landing_holder_live() {
   local home=${1:-} holder=${2:-}
   [ -n "$home" ] && [ -n "$holder" ] || return 1
   kp_task_is_live "$home/tasks/$holder" || return 1
-  ! kp_status_is_terminal "$(kp_status_last "$home/tasks/$holder/status")"
+  kp_status_is_terminal "$(kp_status_last "$home/tasks/$holder/status")" && return 1
+  ! _kp_landing_holder_stale_reason "$home" "$holder" >/dev/null
 }
 
 # kp_landing_task_landable <kp-home> <task>
@@ -275,16 +315,39 @@ kp_landing_pop() {
 }
 
 # kp_landing_drain <kp-home> <project> <kp-bin>
-# While the lane has no live holder: pop the next landable id and run
-# `"<kp-bin>/kingpin-land" <id>`; a land that fails is reported and dropped (it
-# was already popped, and requeueing would spin on the same entry forever).
-# Returns when the lane is held or the queue has no landable id. Always 0.
+# While the lane has no live holder: a holder that reported again after its
+# landing was sent is stale, so name it and the reason on stderr, release the
+# lane and clear the released task's landing_sent marker (its landing never
+# started, so it can land again from the queue or the dossier); a release that
+# fails is named on stderr and retried on the next pass. Then pop the next
+# landable id and run `"<kp-bin>/kingpin-land" <id>`; a land that fails is
+# reported and dropped (it was already popped, and requeueing would spin on the
+# same entry forever). Returns when the lane is held or the queue has no landable
+# id. Always 0.
 kp_landing_drain() {
-  local home=${1:?} project=${2:?} kp_bin=${3:?} holder id
+  local home=${1:?} project=${2:?} kp_bin=${3:?} holder id reason release_rc
   while true; do
     holder=$(kp_landing_holder "$home" "$project")
-    if [ -n "$holder" ] && kp_landing_holder_live "$home" "$holder"; then
-      return 0
+    if [ -n "$holder" ]; then
+      if kp_landing_holder_live "$home" "$holder"; then
+        return 0
+      fi
+      if reason=$(_kp_landing_holder_stale_reason "$home" "$holder"); then
+        printf 'kingpin-landing: releasing stale landing holder %s for project %s: %s\n' \
+          "$holder" "$project" "$reason" >&2
+        release_rc=0
+        kp_landing_release "$home" "$project" "$holder" || release_rc=$?
+        if [ "$release_rc" -ne 0 ]; then
+          printf 'kingpin-landing: the stale holder %s was not released for project %s (release exited %s); a later pass retries it\n' \
+            "$holder" "$project" "$release_rc" >&2
+        else
+          # The task reported after its send, so this landing never started.
+          # Clearing the marker is what a failed send does too (bin/kingpin-land):
+          # a kept marker makes the queue drop the task as "already dispatched"
+          # and the dossier answer "already landing".
+          rm -f "$home/tasks/$holder/landing_sent"
+        fi
+      fi
     fi
     id=$(kp_landing_pop "$home" "$project") || return 0
     [ -n "$id" ] || return 0
