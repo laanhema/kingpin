@@ -13,9 +13,10 @@
 # A worker has stopped when its tmux window is gone or its panes are dead, or when
 # its Stop hook has fired (the `stopped` file) and its window has been silent for
 # the grace period without showing a working marker. The Stop hook also fires while
-# background agents run, so a pane that shows the markers kingpin-wait's `quiet`
-# check skips (keep the two lists in step) is still working. The grace period counts
-# from the last Stop, or from CREATED when the worker never stopped.
+# background agents run, so a pane that shows a working marker is still working;
+# that marker list is shared with the Stop hook and kingpin-wait in lib/status.sh
+# (kp_pane_shows_working). The grace period counts from the last Stop, or from
+# CREATED when the worker never stopped.
 # KINGPIN_STATUS_GRACE sets it in seconds (default 30).
 set -euo pipefail
 
@@ -80,19 +81,12 @@ if panes=$(tmux list-panes -t "$tmux_target" -F '#{pane_dead}' 2>/dev/null); the
     [[ $activity =~ ^[0-9]+$ ]] || exit 1
     [ $((now - activity)) -ge "$grace" ] || exit 1
     # The Stop hook fires while background agents still run: a pane that shows a
-    # working marker is not dead. These are the markers `quiet` skips in kingpin-wait.
+    # working marker is not dead. The marker list lives in lib/status.sh, shared
+    # with the Stop hook and kingpin-wait's `quiet` check.
     pane_tail=$(tmux capture-pane -pt "$tmux_target" -S -30 2>/dev/null || true)
-    case "$harness" in
-      claude)
-        grep -qE 'Waiting for [0-9]+ background agent|Background agent' <<< "$pane_tail" && exit 1
-        ;;
-      agy|opencode)
-        marker='esc[[:space:]]+to[[:space:]]+cancel'
-        [ "$harness" = opencode ] && marker="$marker|Interrupt"
-        pane_bottom=$(printf '%s\n' "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 || true)
-        grep -qiE "$marker" <<< "$pane_bottom" && exit 1
-        ;;
-    esac
+    if kp_pane_shows_working "$pane_tail" "$harness"; then
+      exit 1
+    fi
     cause="stopped and went silent"
     hint="; kingpin peek $id shows why"
   else

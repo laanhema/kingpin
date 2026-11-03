@@ -1,0 +1,4 @@
+session:
+  status: feedback
+prompts[1]:
+  prompt: recovered text from a shape the parser does not claim

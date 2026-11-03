@@ -1,0 +1,15 @@
+session:
+  file: /home/lauri/.kingpin/tasks/demo/report.html
+  status: feedback
+prompts[1]:
+  - uid: "1"
+    prompt: same issue here
+    selector: "table > tbody > tr:nth-of-type(2) > td:nth-of-type(2) > span"
+    tag: span
+    text: PASS
+    target:
+      type: table-cell
+      selector: "div > table > tbody > tr:nth-of-type(2) > td:nth-of-type(2)"
+      rowLabel: Lint
+      columnLabel: Result
+      text: PASS

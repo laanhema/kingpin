@@ -44,6 +44,24 @@ export KINGPIN_LAVISH="$T/mock-lavish"
 # resp_file <task-dir>: where to queue this task's next poll answer.
 resp_file() { printf '%s/mock-lavish-response-%s.txt\n' "$T" "$(basename "$1")"; }
 
+# parked_file <task-dir>: the task's parked poll response, if one was written.
+# Each event gets its own capture, so the name is not fixed.
+parked_file() {
+  local f
+  for f in "$1"/unparsed-poll-*.txt; do
+    if [ -e "$f" ]; then printf '%s\n' "$f"; return 0; fi
+  done
+}
+
+# Parser fixtures, and the decoded prompt text of one parse. The parser falls back to
+# its text scan whenever LAVISH_AXI_BIN names no decoder, which is what these use.
+FIX="$KP_ROOT/tests/fixtures/lavish"
+parsed_prompts() {
+  LAVISH_AXI_BIN="${2:-}" node "$KP_ROOT/lib/lavish-prompts.mjs" kp-107 < "$1" \
+    | awk -F'\t' '$1 == "feedback" || $1 == "approve" { print $2 }' \
+    | while IFS= read -r b64; do printf '%s' "$b64" | base64 -d; printf '\n'; done
+}
+
 # 1. Setup task in review mode with report.html
 t11_task="$KINGPIN_HOME/tasks/task-lavish-1"
 mkdir -p "$t11_task"
@@ -289,6 +307,87 @@ sleep 0.2
 [ ! -d "$t11_race/listener.lock" ] && pass "launch lock released" || fail "launch lock left behind"
 rm -rf "$t11_race"
 
+# The parser's fallback reads the compact table and both expanded prompt shapes.
+# Output goes to a file: `grep -q` exits on the first match, and the resulting
+# SIGPIPE in the decoder pipeline would trip `set -o pipefail`.
+parsed_prompts "$FIX/compact-with-header.txt" > "$T/prompts.out"
+n=$(wc -l < "$T/prompts.out")
+[ "$n" = "2" ] && grep -Fxq "please widen the verdict table cell" "$T/prompts.out" && grep -Fxq "Request Changes: rename the helper" "$T/prompts.out" && pass "parser: compact table keeps its prompts" || fail "parser: compact table lost prompts ($n)"
+
+parsed_prompts "$FIX/expanded-with-target.txt" > "$T/prompts.out"
+n=$(wc -l < "$T/prompts.out")
+[ "$n" = "1" ] && grep -Fxq "same issue here" "$T/prompts.out" && pass "parser: expanded prompt with target: is one prompt" || fail "parser: expanded prompt with target: yielded $n prompts"
+
+parsed_prompts "$FIX/expanded-empty-uid.txt" > "$T/prompts.out"
+n=$(wc -l < "$T/prompts.out")
+[ "$n" = "1" ] && grep -Fxq "the freeform message that carries no element target" "$T/prompts.out" && pass "parser: expanded prompt with empty uid parses" || fail "parser: expanded prompt with empty uid yielded $n prompts"
+
+# An expanded item with element text but no prompt: is not the reviewer's message
+parsed_prompts "$FIX/expanded-text-no-prompt.txt" > "$T/prompts.out"
+n=$(wc -l < "$T/prompts.out")
+[ "$n" = "0" ] && pass "parser: expanded item with text: but no prompt: is not feedback" || fail "parser: expanded text leaked $n feedback line(s)"
+
+# The exact response captured from kp-102, dom_snapshot: and all
+parsed_prompts "$FIX/poll-kp-102-response.txt" > "$T/prompts.out"
+n=$(wc -l < "$T/prompts.out")
+[ "$n" = "2" ] && grep -Fxq "same issue here" "$T/prompts.out" && grep -Fxq "the text doesnt fit into the box make sure this doesnt happen anymore in future. tell the orchestrator to file an issue or do whatever it gets fixed okay?" "$T/prompts.out" && pass "parser: kp-102 capture keeps both prompts" || fail "parser: kp-102 capture yielded $n prompts"
+
+# A decoder that throws still leaves the fallback in charge
+mkdir -p "$T/lavish-stub/bin" "$T/lavish-stub/node_modules/@toon-format/toon/dist"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$T/lavish-stub/bin/lavish-axi"
+chmod +x "$T/lavish-stub/bin/lavish-axi"
+printf 'export function decode() { throw new Error("decoder exploded"); }\n' > "$T/lavish-stub/node_modules/@toon-format/toon/dist/index.mjs"
+parsed_prompts "$FIX/poll-kp-102-response.txt" "$T/lavish-stub/bin/lavish-axi" > "$T/prompts.out"
+n=$(wc -l < "$T/prompts.out")
+[ "$n" = "2" ] && pass "parser: a decoder that throws still delivers both prompts" || fail "parser: throwing decoder yielded $n prompts"
+
+# The listener delivers the kp-102 capture end to end, without asking for a resend
+t11_kp102="$KINGPIN_HOME/tasks/task-lavish-kp102"
+mkdir -p "$t11_kp102"
+echo "<html><body>Review Dossier K</body></html>" > "$t11_kp102/report.html"
+cat > "$t11_kp102/task.env" << EOF10
+TASK_ID=task-lavish-kp102
+PROJECT=demo-auto
+PROJECT_PATH=$T/proj
+MODE=review
+WORKTREE=$T/proj
+EOF10
+echo "ready: branch=b review=APPROVE report=none" > "$t11_kp102/status"
+cp "$FIX/poll-kp-102-response.txt" "$(resp_file "$t11_kp102")"
+"$KP_BIN/kingpin" listen task-lavish-kp102 --once >/dev/null
+grep -Fq "same issue here" "$t11_kp102/feedback.md" && grep -Fq "the text doesnt fit into the box" "$t11_kp102/feedback.md" && pass "listener: kp-102 capture delivered both prompts" || fail "listener: kp-102 capture lost prompts"
+grep -q "^feedback: same issue here" "$t11_kp102/status" && pass "listener: kp-102 feedback note written" || fail "listener: kp-102 feedback note missing"
+! grep -Fq "reply $t11_kp102/report.html --agent-reply I could not read" "$T/mock-lavish.log" && pass "listener: kp-102 reviewer not asked to resend" || fail "listener: kp-102 reviewer asked to resend"
+[ -z "$(parked_file "$t11_kp102")" ] && pass "listener: kp-102 response needed no parking" || fail "listener: kp-102 response was parked"
+rm -rf "$t11_kp102"
+
+# An unknown prompt shape is recovered from its prompt: values instead of retyped
+t11_rec="$KINGPIN_HOME/tasks/task-lavish-recover"
+mkdir -p "$t11_rec"
+echo "<html><body>Review Dossier V</body></html>" > "$t11_rec/report.html"
+cat > "$t11_rec/task.env" << EOF11
+TASK_ID=task-lavish-recover
+PROJECT=demo-auto
+PROJECT_PATH=$T/proj
+MODE=review
+WORKTREE=$T/proj
+EOF11
+echo "ready: branch=b review=APPROVE report=none" > "$t11_rec/status"
+cp "$FIX/unknown-shape.txt" "$(resp_file "$t11_rec")"
+"$KP_BIN/kingpin" listen task-lavish-recover --once >/dev/null
+grep -Fq "recovered text from a shape the parser does not claim" "$t11_rec/feedback.md" && pass "listener: unknown shape recovered from prompt: value" || fail "listener: unknown shape lost its prompt text"
+grep -q "^feedback: recovered text from a shape" "$t11_rec/status" && pass "listener: recovered feedback noted for the orchestrator" || fail "listener: recovered feedback not noted"
+rec_parked=$(parked_file "$t11_rec")
+[ -n "$rec_parked" ] && grep -Fq "prompt: recovered text from a shape the parser does not claim" "$rec_parked" && pass "listener: unparsed response parked in the task dir" || fail "listener: unparsed response not parked"
+! grep -Fq "reply $t11_rec/report.html --agent-reply I could not read" "$T/mock-lavish.log" && pass "listener: recovered reviewer not asked to resend" || fail "listener: recovered reviewer asked to resend"
+# One message gets one Conversation entry: the recovered prompt's own receipt is
+# suppressed and the recovery receipt names the capture it kept.
+n=$(grep -c "reply $t11_rec/report.html " "$T/mock-lavish.log" || true)
+[ "$n" = "1" ] && pass "listener: recovered poll sends exactly one reply" || fail "listener: recovered poll sent $n replies"
+grep -Fq "reply $t11_rec/report.html --agent-reply Feedback received and forwarded." "$T/mock-lavish.log" && pass "listener: recovery receipt says the message was forwarded" || fail "listener: recovery receipt missing or changed"
+grep -Fq "$rec_parked" "$T/mock-lavish.log" && pass "listener: recovery receipt names the parked file" || fail "listener: recovery receipt does not name the parked file"
+rm -rf "$t11_rec"
+
 # Prompts the parser cannot read are kept in listener.log, not dropped silently
 t11_raw="$KINGPIN_HOME/tasks/task-lavish-raw"
 mkdir -p "$t11_raw"
@@ -304,9 +403,55 @@ echo "ready: branch=b review=APPROVE report=none" > "$t11_raw/status"
 printf '%s\n' "session:" "  status: feedback" "prompts[1]:" "  - weird: shape" > "$(resp_file "$t11_raw")"
 "$KP_BIN/kingpin" listen task-lavish-raw --once >/dev/null
 grep -q "could not be parsed" "$t11_raw/listener.log" && grep -q "weird: shape" "$t11_raw/listener.log" && pass "unparsed prompts logged raw" || fail "unparsed prompts not logged"
+raw_parked=$(parked_file "$t11_raw")
+[ -n "$raw_parked" ] && grep -Fq "weird: shape" "$raw_parked" && pass "unparsed response parked in the task dir" || fail "unparsed response not parked"
 grep -q "reply $t11_raw/report.html --agent-reply I could not read" "$T/mock-lavish.log" && pass "user told to resend unreadable feedback" || fail "no resend reply"
-! grep -q "^feedback:" "$t11_raw/status" && pass "unreadable prompt did not produce a feedback note" || fail "bogus feedback note"
+[ ! -f "$t11_raw/feedback.md" ] && pass "unreadable prompt did not produce a feedback entry" || fail "bogus feedback entry"
+[ -n "$raw_parked" ] && grep -Fq "raw response parked at $raw_parked" "$t11_raw/status" && pass "orchestrator told where the raw response is parked" || fail "no parked-response note naming the capture"
 rm -rf "$t11_raw"
+
+# A prompts section nested under another key is parked and recovered, not dropped
+t11_nested="$KINGPIN_HOME/tasks/task-lavish-nested"
+mkdir -p "$t11_nested"
+echo "<html><body>Review Dossier N</body></html>" > "$t11_nested/report.html"
+cat > "$t11_nested/task.env" << EOF12
+TASK_ID=task-lavish-nested
+PROJECT=demo-auto
+PROJECT_PATH=$T/proj
+MODE=review
+WORKTREE=$T/proj
+EOF12
+echo "ready: branch=b review=APPROVE report=none" > "$t11_nested/status"
+cp "$FIX/nested-prompts.txt" "$(resp_file "$t11_nested")"
+"$KP_BIN/kingpin" listen task-lavish-nested --once >/dev/null
+nested_parked=$(parked_file "$t11_nested")
+[ -n "$nested_parked" ] && pass "listener: nested prompts section parked in the task dir" || fail "listener: nested prompts section dropped with no park"
+grep -Fq "nested prompts section is recovered" "$t11_nested/feedback.md" && pass "listener: nested prompts section recovered from prompt: value" || fail "listener: nested prompts section lost its text"
+! grep -Fq "reply $t11_nested/report.html --agent-reply I could not read" "$T/mock-lavish.log" && pass "listener: nested reviewer not asked to resend" || fail "listener: nested reviewer asked to resend"
+rm -rf "$t11_nested"
+
+# Each unparseable poll gets its own capture, so a later one cannot overwrite the
+# response an earlier feedback: note still points at.
+t11_park="$KINGPIN_HOME/tasks/task-lavish-park"
+mkdir -p "$t11_park"
+echo "<html><body>Review Dossier P</body></html>" > "$t11_park/report.html"
+cat > "$t11_park/task.env" << EOF13
+TASK_ID=task-lavish-park
+PROJECT=demo-auto
+PROJECT_PATH=$T/proj
+MODE=review
+WORKTREE=$T/proj
+EOF13
+echo "ready: branch=b review=APPROVE report=none" > "$t11_park/status"
+printf '%s\n' "session:" "  status: feedback" "prompts[1]:" "  - weird: first response" > "$(resp_file "$t11_park")"
+"$KP_BIN/kingpin" listen task-lavish-park --once >/dev/null
+first_park=$(sed -n 's/^feedback: could not read the poll response; raw response parked at //p' "$t11_park/status" | tail -n 1)
+printf '%s\n' "session:" "  status: feedback" "prompts[1]:" "  - weird: second response" > "$(resp_file "$t11_park")"
+"$KP_BIN/kingpin" listen task-lavish-park --once >/dev/null
+second_park=$(sed -n 's/^feedback: could not read the poll response; raw response parked at //p' "$t11_park/status" | tail -n 1)
+[ -n "$first_park" ] && [ -n "$second_park" ] && [ "$first_park" != "$second_park" ] && pass "listener: each unparseable poll parks its own file" || fail "listener: parked file reused ($first_park / $second_park)"
+grep -Fq "first response" "$first_park" 2>/dev/null && grep -Fq "second response" "$second_park" 2>/dev/null && pass "listener: earlier capture still holds its own response" || fail "listener: earlier parked response was overwritten"
+rm -rf "$t11_park"
 
 # Run kingpin-watch to verify feedback event handling
 watch_fb=$("$KP_BIN/kingpin" watch --once 2>&1 || true)

@@ -1,0 +1,6 @@
+session:
+  status: feedback
+  prompts[1]:
+    - uid: "1"
+      prompt: nested prompts section is recovered
+      tag: action
