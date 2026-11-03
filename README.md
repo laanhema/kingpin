@@ -72,7 +72,7 @@ Without `--harness`, no `HARNESS` is written and the project follows the default
 4. `DEFAULT_HARNESS` in `~/.kingpin/config.env`
 5. `claude`
 
-`kingpin lock acquire` finds the harness in this order: `--harness <name>` on `acquire`, the `KINGPIN_HARNESS` environment variable, the command name of the session process (`claude`, `agy`, `opencode`), then the calling agent's own marker (`CLAUDECODE=1`, `OPENCODE=1`). A session that matches none records nothing. The record is dropped by `kingpin lock release` and ignored once the holder process is gone. Project files written by older versions of `kingpin init` contain `HARNESS=claude`, which counts as set; delete that line to let the lock holder decide.
+`kingpin lock acquire` finds the harness in this order: `--harness <name>` on `acquire`, the `KINGPIN_HARNESS` environment variable, the command name of the session process (`claude`, `agy`, `opencode`), then the calling agent's own marker (`CLAUDECODE=1`, `OPENCODE=1`). A session that matches none records nothing. `acquire` and `release` are serialized by a sibling `orchestrator.lock.mutex`, so sessions that start together get one `lock: acquired` and the rest exit 1 naming the holder, and the lock file is renamed into place whole, so `status`, `check` and `harness` never read a half-written file. `kingpin lock release` drops only the calling session's record and refuses, naming the holder, while another live session holds the lock; the record is ignored once the holder process is gone. Project files written by older versions of `kingpin init` contain `HARNESS=claude`, which counts as set; delete that line to let the lock holder decide.
 
 ### 2. Run a task to completion in one command
 
@@ -259,7 +259,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-lifecycle.sh` | `init`, `list`, `watch` auto-lifecycle, `run`, tmux session targeting |
 | `test-wait.sh` | `wait` and `ack`: blocking, wake filtering, exit codes |
 | `test-watch-supervisor.sh` | `watch`: single supervisor with a pidfile, stale reclaim, `list` line, `lock acquire` warning, events handled across turns |
-| `test-lock.sh` | `lock`: lifecycle, collisions, stale locks, recorded harness |
+| `test-lock.sh` | `lock`: lifecycle, collisions, stale locks, recorded harness, parallel acquire race, atomic publish, release ownership |
 | `test-curate.sh` | `curate` |
 | `test-land.sh` | `land`: review-gate verdicts, fix pass, re-review, output wording |
 | `test-landing-lane.sh` | land lane: dead worker window, dead queue entry, concurrent lands, append-after-release |

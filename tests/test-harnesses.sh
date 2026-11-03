@@ -205,7 +205,7 @@ printf 'DEFAULT_HARNESS=opencode\n' > "$KINGPIN_HOME/config.env"
 "$KP_BIN/kingpin-spawn" demo --issue 114 --id task-lock-global >/dev/null
 [ "$(harness_of task-lock-global)" = "agy" ] && pass "lock holder beats DEFAULT_HARNESS" || fail "lock vs global: $(harness_of task-lock-global)"
 
-"$KP_BIN/kingpin-lock" release >/dev/null
+KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin-lock" release >/dev/null
 "$KP_BIN/kingpin-spawn" demo --issue 115 --id task-global-default >/dev/null
 [ "$(harness_of task-global-default)" = "opencode" ] && pass "DEFAULT_HARNESS applies once the lock is released" || fail "global default: $(harness_of task-global-default)"
 

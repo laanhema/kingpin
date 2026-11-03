@@ -154,13 +154,13 @@ acquire_err=$(KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin" lock acquire 2>&1 >/dev/null
 echo "$acquire_err" | grep -q "no fleet supervisor is running" \
   && fail "acquire warned while a supervisor was running: $acquire_err" \
   || pass "acquire stays quiet while a supervisor runs"
-"$KP_BIN/kingpin" lock release >/dev/null
+KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin" lock release >/dev/null
 stop_supervisor
 acquire_err=$(KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin" lock acquire 2>&1 >/dev/null || true)
 echo "$acquire_err" | grep -q "no fleet supervisor is running; run 'kingpin watch'" \
   && pass "acquire warns when no supervisor is running" \
   || fail "acquire did not warn: $acquire_err"
-"$KP_BIN/kingpin" lock release >/dev/null
+KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin" lock release >/dev/null
 
 # Test 7: two events, one watch process, no re-arm anywhere
 echo "=== Test 7: two events handled by one supervisor ==="

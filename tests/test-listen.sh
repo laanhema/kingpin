@@ -98,7 +98,7 @@ echo "$list_out" | grep -q "listening: pid $lpid" && pass "kingpin list displays
 KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin" lock acquire --harness agy >/dev/null
 list_out=$("$KP_BIN/kingpin" list)
 echo "$list_out" | grep -q "Orchestrator lock: held by pid $$ (agy)" && pass "kingpin list shows lock holder harness" || fail "kingpin list missing lock harness: $list_out"
-"$KP_BIN/kingpin" lock release >/dev/null
+KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin" lock release >/dev/null
 list_out=$("$KP_BIN/kingpin" list)
 ! echo "$list_out" | grep -q "Orchestrator lock" && pass "kingpin list hides the lock line when free" || fail "kingpin list shows lock line when free"
 

@@ -6,6 +6,19 @@
 # harness of the session (claude, agy or opencode) on line 2. `kingpin spawn`
 # uses that harness as the default worker harness (`kingpin-lock harness`).
 #
+# `acquire` and `release` are serialized by a sibling mutex,
+# `$KINGPIN_HOME/orchestrator.lock.mutex`, so the check and the write cannot
+# interleave: N sessions that start together get one `lock: acquired` and N-1
+# refusals. The mutex is the shared helper in `lib/mutex.sh`, the same one the
+# landing lane uses: the owner pid on line 1, created by hard-linking a prepared
+# file into place, reclaimed only when its owner is dead or the file is over a
+# minute old, and released only by its owner. `flock` is not used because it is
+# not available on macOS by default. The lock file itself is published with
+# `mktemp` in the same directory plus `mv`, never truncated in place, so
+# `status`, `check`, `harness` and `lock_harness` can read it without the mutex
+# and still never see a half-written pid or harness line. `release` refuses to
+# free a lock whose live owner is another pid.
+#
 # How `acquire` picks the harness, first match wins:
 #   1. --harness <name> on `acquire`
 #   2. the KINGPIN_HARNESS environment variable
@@ -19,9 +32,14 @@ set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 LOCK_FILE="$KP_HOME/orchestrator.lock"
+MUTEX_FILE="$LOCK_FILE.mutex"
 # shellcheck source=../lib/supervisor.sh
 . "$(dirname "$0")/../lib/supervisor.sh"
+# shellcheck source=../lib/mutex.sh
+. "$(dirname "$0")/../lib/mutex.sh"
 mkdir -p "$KP_HOME"
+
+die() { echo "kingpin-lock: $*" >&2; exit 1; }
 
 is_harness_pid() {
   local p=$1
@@ -94,6 +112,34 @@ lock_harness() {
   [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || return 0
   h=$(sed -n 2p "$LOCK_FILE" 2>/dev/null | tr -d ' ' || true)
   valid_harness "$h" && echo "$h"
+  return 0
+}
+
+# Take the orchestrator lock mutex through the shared helper (lib/mutex.sh). On
+# failure the helper leaves the last-read owner pid in kp_mutex_owner, and the
+# refusal names it: a session that is blocked sees who is blocking it. The wait
+# is about 9 s of 250 short retries, so a refusal arrives that long after the
+# mutex was taken.
+take_mutex() {
+  kp_mutex_acquire "$MUTEX_FILE" && return 0
+  die "could not take the orchestrator lock mutex (held by pid ${kp_mutex_owner:-unknown} for more than 8 s)"
+}
+
+# Publish the lock file atomically: write pid (and the optional harness on line 2)
+# to a temp file in the same directory, then rename it into place. A reader sees
+# either the old file or the new one, never a truncated pid or harness. The caller
+# holds the mutex.
+kp_lock_write() {
+  local pid=${1:?} harness=${2:-} tmp
+  tmp=$(mktemp "${LOCK_FILE}.tmp.XXXXXX" 2>/dev/null) || return 1
+  if [ -n "$harness" ]; then
+    printf '%s\n%s\n' "$pid" "$harness" > "$tmp" || { rm -f "$tmp"; return 1; }
+  else
+    printf '%s\n' "$pid" > "$tmp" || { rm -f "$tmp"; return 1; }
+  fi
+  # The lock file is fleet-visible and used to be written 0644; keep that.
+  chmod 0644 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$LOCK_FILE" || { rm -f "$tmp"; return 1; }
   return 0
 }
 
@@ -173,19 +219,21 @@ case "$cmd" in
     ;;
   acquire)
     target_pid=$(resolve_session_pid "$@")
+    take_mutex
     if [ -f "$LOCK_FILE" ]; then
       pid=$(sed -n 1p "$LOCK_FILE" 2>/dev/null || true)
       if [ -n "$pid" ] && [ "$pid" != "$target_pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kp_mutex_release "$MUTEX_FILE"
         echo "error: another live kingpin orchestrator session holds the lock (pid $pid)" >&2
         exit 1
       fi
     fi
-    harness=$(detect_harness "$target_pid") || exit 1
+    harness=$(detect_harness "$target_pid") || { kp_mutex_release "$MUTEX_FILE"; exit 1; }
+    kp_lock_write "$target_pid" "$harness" || { kp_mutex_release "$MUTEX_FILE"; die "could not write $LOCK_FILE"; }
+    kp_mutex_release "$MUTEX_FILE"
     if [ -n "$harness" ]; then
-      printf '%s\n%s\n' "$target_pid" "$harness" > "$LOCK_FILE"
       echo "lock: acquired (pid $target_pid, harness $harness)"
     else
-      echo "$target_pid" > "$LOCK_FILE"
       echo "lock: acquired (pid $target_pid)"
     fi
     # The guard file is untracked, so a fresh clone has none, and an older clone may still hold deny rules.
@@ -206,7 +254,18 @@ case "$cmd" in
     lock_harness
     ;;
   release)
+    target_pid=$(resolve_session_pid "$@")
+    take_mutex
+    if [ -f "$LOCK_FILE" ]; then
+      pid=$(sed -n 1p "$LOCK_FILE" 2>/dev/null || true)
+      if [ -n "$pid" ] && [ "$pid" != "$target_pid" ] && kill -0 "$pid" 2>/dev/null; then
+        kp_mutex_release "$MUTEX_FILE"
+        echo "error: another live kingpin orchestrator session holds the lock (pid $pid)" >&2
+        exit 1
+      fi
+    fi
     rm -f "$LOCK_FILE"
+    kp_mutex_release "$MUTEX_FILE"
     echo "lock: released"
     ;;
   *)
