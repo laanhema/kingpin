@@ -63,15 +63,18 @@ old=$(git rev-parse HEAD)
 # --ff-only overrides pull.rebase and merge settings; never prompt for credentials.
 # git also aborts here, before writing anything, when a blob in the incoming tree
 # would overwrite an untracked path, and its message lists those paths one per
-# tab-indented line. LC_ALL=C keeps that message parseable in a localized
-# environment, and core.quotePath=false keeps a non-ASCII path readable in ours.
+# tab-indented line under one of two headers: files that would be overwritten by
+# merge, and directories that would lose untracked files in them. Both lists can
+# appear in one abort, separated by a blank line. LC_ALL=C keeps that message
+# parseable in a localized environment, and core.quotePath=false keeps a non-ASCII
+# path readable in ours.
 pull_log=$(mktemp)
 trap 'rm -f "$pull_log"' EXIT
 if ! LC_ALL=C GIT_TERMINAL_PROMPT=0 git -c core.quotePath=false pull --ff-only --no-rebase --no-autostash >"$pull_log" 2>&1; then
   collisions=$(awk '
-    /would be overwritten by/ { in_list = 1; next }
+    /would be overwritten by|would lose untracked files in them/ { in_list = 1; next }
     in_list && /^\t/ { sub(/^\t/, ""); print; next }
-    in_list { exit }
+    in_list { in_list = 0 }
   ' "$pull_log")
   if [ -n "$collisions" ]; then
     collision_list=$(printf '%s\n' "$collisions" | paste -sd ',' - | sed 's/,/, /g')

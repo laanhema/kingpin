@@ -97,7 +97,9 @@ fi
 echo local > "$t21/main/collide.txt"
 t21_head=$(git -C "$t21/main" rev-parse HEAD)
 t21_sync "$t21/main"
-if [ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "collide.txt" \
+if [ "$t21_rc" -ne 0 ] \
+   && echo "$t21_err" | grep -qF 'kingpin-sync: the incoming commits would overwrite these untracked paths: collide.txt; move or remove them first (nothing was changed)' \
+   && ! echo "$t21_err" | grep -q "would be overwritten by merge" \
    && ! echo "$t21_err" | grep -q "dirty" \
    && [ "$(cat "$t21/main/collide.txt")" = "local" ] \
    && ! grep -q "incoming line" "$t21/main/f.txt" \
@@ -113,6 +115,35 @@ if [ "$t21_rc" -eq 0 ] && grep -q "incoming line" "$t21/main/f.txt"; then
   pass "t21: the same sync completes after the untracked collision is removed"
 else
   fail "t21: collision cleanup: rc=$t21_rc out=$t21_out err=$t21_err"
+fi
+
+# A second collision shape: git prints one header per kind of loss, so a directory
+# that would be replaced by an incoming file is listed before the file list, past a
+# blank line. Every path in both lists has to be named in the sync's own line.
+(cd "$t21/other" && git pull -q --ff-only origin main \
+  && echo incoming > df.txt && echo incoming > sub.txt \
+  && git add -A && git commit -qm "add df.txt and sub.txt" && git push -q origin main)
+mkdir -p "$t21/main/df.txt" && echo keep > "$t21/main/df.txt/keep.txt"
+echo local > "$t21/main/sub.txt"
+t21_head=$(git -C "$t21/main" rev-parse HEAD)
+t21_sync "$t21/main"
+t21_named=$(echo "$t21_err" | grep -F 'kingpin-sync: the incoming commits would overwrite these untracked paths:' || true)
+if [ "$t21_rc" -ne 0 ] && [ -n "$t21_named" ] \
+   && echo "$t21_named" | grep -qF "df.txt" && echo "$t21_named" | grep -qF "sub.txt" \
+   && ! echo "$t21_err" | grep -q "would be overwritten by merge" \
+   && [ "$(cat "$t21/main/df.txt/keep.txt")" = "keep" ] \
+   && [ "$(cat "$t21/main/sub.txt")" = "local" ] \
+   && [ "$(git -C "$t21/main" rev-parse HEAD)" = "$t21_head" ]; then
+  pass "t21: directory-replacement collision is refused with every path named and nothing applied"
+else
+  fail "t21: directory collision: rc=$t21_rc err=$t21_err df=$(ls "$t21/main/df.txt" 2>/dev/null) sub=$(cat "$t21/main/sub.txt" 2>/dev/null)"
+fi
+rm -rf "$t21/main/df.txt" "$t21/main/sub.txt"
+t21_sync "$t21/main"
+if [ "$t21_rc" -eq 0 ] && [ "$(cat "$t21/main/df.txt")" = "incoming" ] && [ -f "$t21/main/sub.txt" ]; then
+  pass "t21: the same sync completes after both collision shapes are removed"
+else
+  fail "t21: directory collision cleanup: rc=$t21_rc out=$t21_out err=$t21_err"
 fi
 
 # Non-fast-forward: a local commit and a different remote commit.
