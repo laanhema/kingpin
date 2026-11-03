@@ -7,6 +7,8 @@ set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 KP_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=../lib/status.sh
+. "$KP_BIN/../lib/status.sh"
 
 id=""
 ONCE=0
@@ -119,8 +121,6 @@ PROMPTS_MJS="$KP_BIN/../lib/lavish-prompts.mjs"
 note() { printf '%s\n' "$1" >> "$task_dir/status"; }
 reply() { "$LAVISH_CMD" reply "$task_dir/report.html" --agent-reply "$1" >/dev/null 2>&1 || true; }
 
-# How many events the worker itself has reported (listener notes do not count).
-worker_event_count() { grep -vcE '^(approved|feedback):' "$task_dir/status" 2>/dev/null || true; }
 
 handle_approve() {
   if [ -f "$task_dir/landing_sent" ]; then
@@ -130,7 +130,7 @@ handle_approve() {
   # A fix pass or re-review that an earlier approval started is still running:
   # the worker has not reported a new event, so landing again would resend it.
   local last
-  last=$(worker_event_count)
+  last=$(kp_status_worker_events "$task_dir/status")
   if [ -f "$task_dir/approve_pending" ] && [ "$(cat "$task_dir/approve_pending")" = "$last" ]; then
     reply "Approval already received; waiting for the worker to finish its fix pass or re-review."
     return 0

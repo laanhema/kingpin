@@ -192,7 +192,7 @@ Kingpin-injected worktree configuration files (`.agents/rules/kingpin.md`, `.age
 Run the lint and the full test suite from the repository root:
 
 ```bash
-# Lint: bash -n + shellcheck over bin/* and tests/*.sh (config in .shellcheckrc)
+# Lint: bash -n + shellcheck over bin/*, lib/*.sh and tests/*.sh (config in .shellcheckrc)
 ./tests/lint.sh
 
 # Automation suite: unified CLI, init, watch, and run

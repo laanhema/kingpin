@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lint every shell script: `bash -n` for syntax, then shellcheck (settings in .shellcheckrc).
+# Lint every shell script (bin/*, lib/*.sh, tests/*.sh): `bash -n` for syntax, then shellcheck (settings in .shellcheckrc).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -9,7 +9,7 @@ command -v shellcheck >/dev/null || {
   exit 127
 }
 
-files=(bin/* tests/*.sh)
+files=(bin/* lib/*.sh tests/*.sh)
 for f in "${files[@]}"; do
   bash -n "$f" || { echo "lint: bash -n failed: $f" >&2; exit 1; }
 done

@@ -7,6 +7,8 @@ set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 KP_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=../lib/status.sh
+. "$KP_BIN/../lib/status.sh"
 
 [ $# -ge 1 ] || { echo "usage: kingpin-land <task-id>" >&2; exit 1; }
 id=$1
@@ -17,14 +19,14 @@ task_dir="$KP_HOME/tasks/$id"
 env_file="$task_dir/task.env"
 [ -f "$env_file" ] || { echo "kingpin-land: task.env missing in $task_dir" >&2; exit 1; }
 
-project=$(sed -n 's/^PROJECT=//p' "$env_file" 2>/dev/null || true)
-issue=$(sed -n 's/^ISSUE=//p' "$env_file" 2>/dev/null || true)
-worktree=$(sed -n 's/^WORKTREE=//p' "$env_file" 2>/dev/null || true)
+project=$(kp_env_get "$env_file" PROJECT)
+issue=$(kp_env_get "$env_file" ISSUE)
+worktree=$(kp_env_get "$env_file" WORKTREE)
 [ -n "$project" ] || project="default"
 
 status_file="$task_dir/status"
-# Ignore listener notes (approved:, feedback:): the gate needs the worker's own last event.
-last_status=$(grep -vE '^(approved|feedback):' "$status_file" 2>/dev/null | tail -n 1 || true)
+# The gate needs the worker's own last event (kp_status_last skips listener notes).
+last_status=$(kp_status_last "$status_file")
 
 if [ -z "$issue" ] && [ -f "$status_file" ]; then
   # Parse issue number from status if not in task.env
@@ -100,21 +102,13 @@ mkdir -p "$lock_dir"
 project_landing_lock="$lock_dir/$project.landing"
 queue_file="$lock_dir/$project.landing_queue"
 
-is_terminal_status() {
-  local last_line=${1:-}
-  case "$last_line" in
-    merged:*|failed:*|cleanup-refused:*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
 if [ -f "$project_landing_lock" ]; then
   holder=$(cat "$project_landing_lock" 2>/dev/null || true)
   holder_status=""
   if [ -n "$holder" ] && [ -f "$KP_HOME/tasks/$holder/status" ]; then
-    holder_status=$(tail -n 1 "$KP_HOME/tasks/$holder/status" 2>/dev/null || true)
+    holder_status=$(kp_status_last "$KP_HOME/tasks/$holder/status")
   fi
-  if [ "$holder" != "$id" ] && [ -d "$KP_HOME/tasks/$holder" ] && ! is_terminal_status "$holder_status"; then
+  if [ "$holder" != "$id" ] && [ -d "$KP_HOME/tasks/$holder" ] && ! kp_status_is_terminal "$holder_status"; then
     echo "kingpin-land: project $project is already landing $holder; queuing $id"
     grep -qx "$id" "$queue_file" 2>/dev/null || echo "$id" >> "$queue_file"
     exit 0

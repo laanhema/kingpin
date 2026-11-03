@@ -23,6 +23,8 @@ set -euo pipefail
 
 KP_BIN=$(cd "$(dirname "$0")" && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+# shellcheck source=../lib/status.sh
+. "$KP_BIN/../lib/status.sh"
 
 usage() {
   cat << 'HELP'
@@ -126,17 +128,17 @@ case "$cmd" in
       env_file="$d/task.env"
       proj="-" harness="claude" mode="review"
       if [ -f "$env_file" ]; then
-        proj=$(sed -n 's/^PROJECT=//p' "$env_file" 2>/dev/null || true)
+        proj=$(kp_env_get "$env_file" PROJECT)
         [ -n "$proj" ] || proj="-"
-        harness=$(sed -n 's/^HARNESS=//p' "$env_file" 2>/dev/null || true)
+        harness=$(kp_env_get "$env_file" HARNESS)
         [ -n "$harness" ] || harness="claude"
-        mode=$(sed -n 's/^MODE=//p' "$env_file" 2>/dev/null || true)
+        mode=$(kp_env_get "$env_file" MODE)
         [ -n "$mode" ] || mode="review"
       fi
       status_file="$d/status"
       st="(pending)"
       if [ -f "$status_file" ] && [ -s "$status_file" ]; then
-        st=$(tail -n 1 "$status_file")
+        st=$(kp_status_newest "$status_file")
       fi
       printf "%-22s %-10s %-8s %-12s %s%s\n" "$tid" "$proj" "$harness" "$mode" "$st" "$suffix"
       if [ -z "$suffix" ] && [ -f "$d/report.html" ]; then
@@ -195,7 +197,8 @@ case "$cmd" in
 
     task_dir="$KP_HOME/tasks/$task_id"
     mode="review"
-    [ -f "$task_dir/task.env" ] && mode=$(sed -n 's/^MODE=//p' "$task_dir/task.env" 2>/dev/null || echo "review")
+    mode=$(kp_env_get "$task_dir/task.env" MODE)
+    [ -n "$mode" ] || mode="review"
 
     echo "[kingpin run] Monitoring $task_id (mode: $mode)..."
     while true; do
@@ -211,8 +214,7 @@ case "$cmd" in
       fi
 
       status_file="$task_dir/status"
-      last_st=""
-      [ -f "$status_file" ] && last_st=$(tail -n 1 "$status_file" 2>/dev/null || true)
+      last_st=$(kp_status_last "$status_file")
 
       case "$last_st" in
         merged:*)
