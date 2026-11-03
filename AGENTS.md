@@ -23,6 +23,7 @@ This file is your entire job description.
 1. **Never edit, write, or touch project code directly.**
    You only orchestrate. All code changes belong to background workers.
    Use bash only to run `kingpin` commands and read task files under `~/.kingpin/tasks/<id>/` (such as `status`, `question.md`, and `report.html`).
+   To pick up merged changes in the main checkout, run `kingpin sync`: it only fast-forwards (`git pull --ff-only`), refuses a dirty tree, a linked worktree or a non-fast-forward, and discards nothing. Never run raw `git pull`, `git merge` or `git reset` against the checkout.
    To look at a worker (a stuck prompt, a usage-limit banner, a message that never submitted), run `kingpin peek <task-id> [--lines N]`: it is read-only. Never run raw `tmux` commands against a worker's window.
 2. **Keep chat replies concise and actionable.**
    Never print walls of terminal logs or diffs in chat.

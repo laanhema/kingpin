@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Fast-forward the main checkout from its upstream branch, never discarding anything.
+#
+# Usage: kingpin-sync
+#
+# Runs in the repo of the current directory, which must be the main checkout (not
+# a linked worktree). It refuses, with a message on stderr and a non-zero exit,
+# when the working tree is dirty (any `git status --porcelain` output; ignored
+# files do not count), when HEAD is detached or has no upstream, or when the
+# fast-forward is not possible. Otherwise it runs `git pull --ff-only` and prints
+# the old and new short SHAs plus the commits pulled, or `already up to date`.
+# It never merges, rebases, resets or stashes.
+set -euo pipefail
+
+usage() { echo "usage: kingpin-sync" >&2; }
+die() { echo "kingpin-sync: $*" >&2; exit 1; }
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)
+      usage
+      echo "  Fast-forwards the main checkout from its upstream with 'git pull --ff-only'." >&2
+      echo "  Refuses in a linked worktree, on a dirty tree, or when a fast-forward is not possible." >&2
+      exit 0
+      ;;
+    -*)
+      echo "kingpin-sync: unknown option '$1'" >&2
+      usage
+      exit 2
+      ;;
+    *)
+      echo "kingpin-sync: unexpected argument '$1'" >&2
+      usage
+      exit 2
+      ;;
+  esac
+done
+
+git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $PWD"
+
+# A leased worktree is a linked worktree: only the main checkout is synced.
+if [ "$(git rev-parse --path-format=absolute --git-dir)" != \
+     "$(git rev-parse --path-format=absolute --git-common-dir)" ]; then
+  die "$PWD is a linked worktree (a worker checkout); run this in the main Kingpin checkout"
+fi
+
+branch=$(git symbolic-ref --short -q HEAD || true)
+[ -n "$branch" ] || die "HEAD is detached; check out a branch first"
+
+upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+[ -n "$upstream" ] || die "branch '$branch' has no upstream; set one with 'git branch --set-upstream-to'"
+
+if [ -n "$(git status --porcelain)" ]; then
+  die "working tree is dirty; commit or remove the changes first (nothing was changed)"
+fi
+
+old=$(git rev-parse HEAD)
+
+# --ff-only overrides pull.rebase and merge settings; never prompt for credentials.
+pull_log=$(mktemp)
+trap 'rm -f "$pull_log"' EXIT
+if ! GIT_TERMINAL_PROMPT=0 git pull --ff-only --no-rebase --no-autostash >"$pull_log" 2>&1; then
+  cat "$pull_log" >&2
+  die "cannot fast-forward '$branch' from '$upstream' (nothing was changed)"
+fi
+
+new=$(git rev-parse HEAD)
+if [ "$old" = "$new" ]; then
+  echo "already up to date"
+  exit 0
+fi
+
+echo "synced $branch from $upstream: $(git rev-parse --short "$old")..$(git rev-parse --short "$new")"
+git log --oneline "$old..$new"
