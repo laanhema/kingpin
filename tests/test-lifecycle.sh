@@ -66,7 +66,7 @@ wt_path=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/task-auto-1/task.env")
 # Run one step of kingpin-watch (should detect merged status, trigger kingpin-done)
 echo "merged: pr=https://github.com/laanhema/demo/pull/201" >> "$KINGPIN_HOME/tasks/task-auto-1/status"
 "$KP_BIN/kingpin" watch --once >/dev/null
-[ -f "$KINGPIN_HOME/archive/task-auto-1/done_cleaned" ] && [ ! -d "$KINGPIN_HOME/tasks/task-auto-1" ] && pass "kingpin-watch completed auto-cleanup and archived the task" || fail "auto-cleanup not triggered"
+[ -f "$KINGPIN_HOME/archive/task-auto-1/done_cleaned" ] && [ -L "$KINGPIN_HOME/tasks/task-auto-1" ] && pass "kingpin-watch completed auto-cleanup and archived the task" || fail "auto-cleanup not triggered"
 
 # Test 4: kingpin run one-command lifecycle
 echo "=== Test 4: kingpin run one-command lifecycle ==="

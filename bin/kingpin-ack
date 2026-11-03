@@ -115,15 +115,17 @@ ack_task() {
 if [ "$ALL" -eq 1 ]; then
   if [ -d "$tasks_dir" ]; then
     for dir in "$tasks_dir"/*; do
-      [ -d "$dir" ] || continue
+      kp_task_is_live "$dir" || continue
       ack_task "$dir"
     done
   fi
 else
   for id in "${TARGETS[@]}"; do
     task_dir="$tasks_dir/$id"
-    if [ ! -d "$task_dir" ] && [ -d "$KP_HOME/archive/$id" ]; then
-      # kingpin-done archives the task: there is nothing left to acknowledge.
+    if kp_task_archive_dir "$KP_HOME" "$id" >/dev/null; then
+      # kingpin-done archives the task and leaves its link at this path: there is
+      # nothing left to acknowledge, and the archive is the record, so no cursor
+      # is written into it (issue #115).
       echo "kingpin-ack: task $id is already archived; nothing to acknowledge"
       continue
     fi

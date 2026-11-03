@@ -16,6 +16,10 @@
 # gate in kingpin-land and the approval gate in kingpin-listen share one parser.
 # The one pane decision the outcome writers share (`kp_pane_shows_working`) lives
 # here as well, so the per-harness working-marker list exists once.
+#
+# Where a task record lives is decided here too (`kp_task_is_live`,
+# `kp_task_archive_dir`): `kingpin done` leaves a symlink at tasks/<id> for the
+# archived task, so every reader that globs tasks/* has to tell the two apart.
 
 # kp_status_last <status-file>
 # The worker's last event: the last line that is not an approved:/feedback: note.
@@ -178,4 +182,40 @@ kp_pane_shows_working() {
       ;;
     *) return 1 ;;
   esac
+}
+
+# kp_task_is_live <task-dir>
+# Exit 0 when the path is a live task record: a real directory, not the symlink
+# `kingpin done` leaves at tasks/<id> once it archives the task. Every reader that
+# globs tasks/* calls this, so a finished task is never listed, waited on, landed
+# or cleaned a second time through its dossier link.
+kp_task_is_live() {
+  local dir=${1:-}
+  [ -n "$dir" ] && [ -d "$dir" ] && [ ! -L "$dir" ]
+}
+
+# kp_task_archive_dir <kp-home> <id>
+# Prints the archived record of a finished task and exits 0; prints nothing and
+# exits 1 while the task is live or unknown. The two shapes `kingpin done` leaves
+# behind are its symlink at tasks/<id> and, for a fleet cleaned up before that
+# link existed, no live directory with archive/<id> in its place.
+kp_task_archive_dir() {
+  local home=${1:-} id=${2:-} dir resolved
+  [ -n "$home" ] && [ -n "$id" ] || return 1
+  dir="$home/tasks/$id"
+  if [ -L "$dir" ]; then
+    if [ -d "$dir" ] && resolved=$(cd "$dir" && pwd -P); then
+      printf '%s\n' "$resolved"
+    else
+      # A dangling link (the archive went away by hand) still names the record
+      # the caller has to talk about.
+      printf '%s\n' "$home/archive/$id"
+    fi
+    return 0
+  fi
+  if [ ! -d "$dir" ] && [ -d "$home/archive/$id" ]; then
+    printf '%s\n' "$home/archive/$id"
+    return 0
+  fi
+  return 1
 }

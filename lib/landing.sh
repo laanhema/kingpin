@@ -65,25 +65,27 @@ kp_landing_holder() {
 }
 
 # kp_landing_holder_live <kp-home> <holder>
-# Exit 0 only when the holder's task dir still exists and its last worker event
-# is not terminal. An empty holder, a missing task dir and a finished task all
-# mean the lane is free: exit 1.
+# Exit 0 only when the holder's task dir is a live record and its last worker
+# event is not terminal. An empty holder, a missing task dir, the link
+# kingpin-done leaves for an archived task, and a finished task all mean the
+# lane is free: exit 1.
 kp_landing_holder_live() {
   local home=${1:-} holder=${2:-}
   [ -n "$home" ] && [ -n "$holder" ] || return 1
-  [ -d "$home/tasks/$holder" ] || return 1
+  kp_task_is_live "$home/tasks/$holder" || return 1
   ! kp_status_is_terminal "$(kp_status_last "$home/tasks/$holder/status")"
 }
 
 # kp_landing_task_landable <kp-home> <task>
-# Exit 0 only when <task> can still land: its task dir and task.env exist, it has
-# no done_cleaned and no landing_sent marker, and its last worker event is not
-# terminal. Exit 1 otherwise (the id is dead and belongs out of the queue).
+# Exit 0 only when <task> can still land: its task dir is a live record with a
+# task.env, it has no done_cleaned and no landing_sent marker, and its last worker
+# event is not terminal. Exit 1 otherwise (the id is dead and belongs out of the
+# queue).
 kp_landing_task_landable() {
   local home=${1:-} task=${2:-} dir
   [ -n "$home" ] && [ -n "$task" ] || return 1
   dir="$home/tasks/$task"
-  [ -d "$dir" ] || return 1
+  kp_task_is_live "$dir" || return 1
   [ -f "$dir/task.env" ] || return 1
   [ ! -f "$dir/done_cleaned" ] || return 1
   [ ! -f "$dir/landing_sent" ] || return 1
@@ -95,6 +97,7 @@ kp_landing_task_landable() {
 _kp_landing_unlandable_reason() {
   local home=${1:-} task=${2:-} dir last
   dir="$home/tasks/$task"
+  if [ -L "$dir" ]; then printf 'archived\n'; return 0; fi
   [ -d "$dir" ] || { printf 'no task dir\n'; return 0; }
   [ -f "$dir/task.env" ] || { printf 'no task.env\n'; return 0; }
   [ ! -f "$dir/done_cleaned" ] || { printf 'already cleaned up\n'; return 0; }

@@ -28,6 +28,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-land.sh` | `land`: review-gate verdicts, fix pass, re-review, output wording |
 | `test-landing-lane.sh` | land lane: dead worker window, dead queue entry, concurrent lands, append-after-release |
 | `test-done.sh` | `done`: refused cleanup, archive, slot guard, branch cleanup, single-flight, default-branch resolution |
+| `test-archive-link.sh` | an archived task's dossier link: the page keeps resolving, and `list`/`wait`/`watch`/`land`/`listen`/`spawn`/`ack` treat the link as finished |
 | `test-listen.sh` | `listen`: dossier opening, live listener, prompt routing |
 | `test-send-peek.sh` | `send` and `peek` |
 | `test-spawn.sh` | `spawn`: window ID tracking, descriptive slugs, pinned window names |
