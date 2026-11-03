@@ -225,7 +225,12 @@ EOF
   agy)
     node "$KP_ROOT/lib/agy-trust.mjs" "$worktree" >/dev/null
     mkdir -p "$worktree/.agents/rules"
-    cp "$task_dir/preamble.md" "$worktree/.agents/rules/kingpin.md"
+    # A rules file agy does not recognize is skipped without a word, so the preamble
+    # carries the trigger frontmatter that makes agy load it (verified with agy 1.4.12).
+    {
+      printf -- '---\ntrigger: always_on\ndescription: Kingpin worker preamble\n---\n\n'
+      cat "$task_dir/preamble.md"
+    } > "$worktree/.agents/rules/kingpin.md"
     cat > "$worktree/.agents/hooks.json" << 'EOF_HOOKS'
 {
   "kingpin": {
@@ -249,11 +254,12 @@ EOF
     ;;
   opencode)
     mkdir -p "$worktree/.opencode/plugins"
-    cat > "$worktree/.opencode/config.json" << EOF_OC_CFG
+    # OpenCode V2 reads opencode.json(c) (or .opencode/opencode.json), not
+    # .opencode/config.json, which it ignores without a word (verified with
+    # opencode 2.2.5: the old file left the worker with no preamble at all).
+    cat > "$worktree/.opencode/opencode.json" << EOF_OC_CFG
 {
-  "permission": {
-    "*": "allow"
-  },
+  "\$schema": "https://opencode.ai/config.json",
   "instructions": [
     "$task_dir/preamble.md"
   ]
@@ -315,19 +321,25 @@ export default {
   },
 };
 EOF_OC_PLUG
-    exclude_path '.opencode/config.json'
+    exclude_path '.opencode/opencode.json'
     exclude_path '.opencode/plugins/package.json'
     exclude_path '.opencode/plugins/kingpin-stop.js'
     cat > "$task_dir/launch.sh" <<EOF
 #!/usr/bin/env bash
 export KINGPIN_TASK_DIR='$task_dir'
-export OPENCODE_CONFIG_CONTENT='{"permission":{"*":"allow"}}'
 exec $OPENCODE_CMD --standalone --auto --prompt "\$(cat '$task_dir/prompt.txt')"
 EOF
     ;;
 esac
 
 chmod +x "$task_dir/launch.sh"
+
+# Refuse a worker whose context would carry the orchestrator contract, and name the
+# file that leaks it (issue #96). The check reads the files the harness really loads,
+# so a harness that silently ignores the preamble fails here instead of waking up as
+# the orchestrator. A warning about a global instruction file is the user's to fix.
+"$KP_ROOT/bin/kingpin-scope" check --harness "$harness" --worktree "$worktree" --preamble "$task_dir/preamble.md" \
+  || die "refusing to launch a $harness worker: its instruction context is unsafe (files named above)"
 
 # Record the window ID (@N): unlike the name in TMUX_TARGET, it survives a
 # rename or a move to another session.

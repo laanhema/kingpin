@@ -17,6 +17,7 @@
 #   kingpin list [--all]
 #   kingpin lock [status|check|acquire [--harness <name>]|release|harness]
 #   kingpin guard [install|check|warn]
+#   kingpin scope files|check --harness <name> --worktree <dir> [--preamble <file>]
 #   kingpin report diffs [--repo <dir>] [--base <ref>] | check <report.html>
 #   kingpin curate
 set -euo pipefail
@@ -47,7 +48,8 @@ Commands:
   ack       Acknowledge task events to advance seen counters
   list      Display active tasks in the terminal (--all adds finished ones)
   lock      Check, acquire, or release the orchestrator session lock (records its harness)
-  guard     Install or verify the orchestrator-only tool guard (a hook)
+  guard     Install or verify the orchestrator-only tool guard (a hook) and contract
+  scope     Name the instruction files a harness loads for a worker, and check them
   report    Generate or check the @pierre/diffs blocks of a review dossier
   curate    Aggregate critique logs from finished workers
 
@@ -96,6 +98,9 @@ case "$cmd" in
     ;;
   guard)
     exec "$KP_BIN/kingpin-guard" "$@"
+    ;;
+  scope)
+    exec "$KP_BIN/kingpin-scope" "$@"
     ;;
   report)
     exec "$KP_BIN/kingpin-report" "$@"

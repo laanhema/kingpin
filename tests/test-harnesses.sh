@@ -82,7 +82,7 @@ echo "=== Test 1: Claude Spawn ==="
 grep -q "^HARNESS=claude$" "$KINGPIN_HOME/tasks/task-claude/task.env" && pass "task-claude recorded HARNESS=claude" || fail "wrong harness in task.env"
 grep -q -- "--append-system-prompt-file" "$KINGPIN_HOME/tasks/task-claude/launch.sh" && pass "task-claude launch script has append-system-prompt-file" || fail "wrong launch script"
 grep -q "background code worker" "$KINGPIN_HOME/tasks/task-claude/preamble.md" && pass "claude preamble instructs background worker role" || fail "missing worker role in claude preamble"
-grep -q "AGENTS.md" "$KINGPIN_HOME/tasks/task-claude/preamble.md" && pass "claude preamble instructs to ignore AGENTS.md" || fail "missing AGENTS.md instruction in claude preamble"
+! grep -q "underboss" "$KINGPIN_HOME/tasks/task-claude/preamble.md" && pass "claude preamble carries no orchestrator persona" || fail "orchestrator persona in claude preamble"
 ! grep -q "{{WORKTREE}}" "$KINGPIN_HOME/tasks/task-claude/preamble.md" && pass "claude preamble substituted WORKTREE" || fail "unsubstituted WORKTREE in claude preamble"
 
 wt_claude=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/task-claude/task.env")
@@ -124,7 +124,8 @@ process.exit(1);
 # Verify AGY rules & hooks in worktree
 [ -f "$wt_agy/.agents/rules/kingpin.md" ] && pass "agy rules/kingpin.md written in worktree" || fail "missing agy rules"
 grep -q "background code worker" "$wt_agy/.agents/rules/kingpin.md" && pass "agy rules instruct background worker role" || fail "missing worker role in agy rules"
-grep -q "AGENTS.md" "$wt_agy/.agents/rules/kingpin.md" && pass "agy rules instruct to ignore AGENTS.md" || fail "missing AGENTS.md instruction in agy rules"
+grep -qx "trigger: always_on" "$wt_agy/.agents/rules/kingpin.md" && pass "agy rules carry the trigger frontmatter agy needs to load them" || fail "agy rules lack trigger: always_on"
+! grep -q "underboss" "$wt_agy/.agents/rules/kingpin.md" && pass "agy rules carry no orchestrator persona" || fail "orchestrator persona in agy rules"
 ! grep -q "{{WORKTREE}}" "$wt_agy/.agents/rules/kingpin.md" && pass "agy rules substituted WORKTREE" || fail "unsubstituted WORKTREE in agy rules"
 [ -f "$wt_agy/.agents/hooks.json" ] && pass "agy hooks.json written in worktree" || fail "missing agy hooks"
 grep -q "KINGPIN_TASK_DIR/stopped" "$wt_agy/.agents/hooks.json" && pass "agy hook command writes to stopped file" || fail "wrong agy hook"
@@ -154,17 +155,18 @@ grep -q -- "--auto" "$KINGPIN_HOME/tasks/task-opencode/launch.sh" && pass "task-
 wt_oc=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/task-opencode/task.env")
 
 # Verify OpenCode config & plugins in worktree
-[ -f "$wt_oc/.opencode/config.json" ] && pass "opencode config.json written" || fail "missing config.json"
-grep -q "preamble.md" "$wt_oc/.opencode/config.json" && pass "opencode config references preamble.md in instructions" || fail "missing instructions"
+[ -f "$wt_oc/.opencode/opencode.json" ] && pass "opencode opencode.json written" || fail "missing opencode.json"
+grep -q "preamble.md" "$wt_oc/.opencode/opencode.json" && pass "opencode config references preamble.md in instructions" || fail "missing instructions"
+[ ! -e "$wt_oc/.opencode/config.json" ] && pass "opencode does not get the config.json it ignores" || fail "spawn wrote .opencode/config.json, which OpenCode never reads"
 grep -q "background code worker" "$KINGPIN_HOME/tasks/task-opencode/preamble.md" && pass "opencode preamble instructs background worker role" || fail "missing worker role in opencode preamble"
-grep -q "AGENTS.md" "$KINGPIN_HOME/tasks/task-opencode/preamble.md" && pass "opencode preamble instructs to ignore AGENTS.md" || fail "missing AGENTS.md instruction in opencode preamble"
+! grep -q "underboss" "$KINGPIN_HOME/tasks/task-opencode/preamble.md" && pass "opencode preamble carries no orchestrator persona" || fail "orchestrator persona in opencode preamble"
 ! grep -q "{{WORKTREE}}" "$KINGPIN_HOME/tasks/task-opencode/preamble.md" && pass "opencode preamble substituted WORKTREE" || fail "unsubstituted WORKTREE in opencode preamble"
 [ -f "$wt_oc/.opencode/plugins/kingpin-stop.js" ] && pass "opencode kingpin-stop.js plugin written" || fail "missing plugin"
 [ -f "$wt_oc/.opencode/plugins/package.json" ] && pass "opencode plugin package.json written" || fail "missing plugin package.json"
 # Verify .opencode specific files excluded from git, broad .opencode migrated
 git_excl=$(git -C "$wt_oc" rev-parse --git-path info/exclude)
 case "$git_excl" in /*) ;; *) git_excl="$wt_oc/$git_excl" ;; esac
-grep -q "^\.opencode/config\.json$" "$git_excl" && pass "opencode config.json added to git info/exclude" || fail "config.json not excluded"
+grep -q "^\.opencode/opencode\.json$" "$git_excl" && pass "opencode opencode.json added to git info/exclude" || fail "opencode.json not excluded"
 grep -q "^\.opencode/plugins/package\.json$" "$git_excl" && pass "opencode plugin package.json added to git info/exclude" || fail "plugin package.json not excluded"
 grep -q "^\.opencode/plugins/kingpin-stop\.js$" "$git_excl" && pass "opencode kingpin-stop.js added to git info/exclude" || fail "plugin kingpin-stop.js not excluded"
 ! grep -qE '^/?\.opencode/?$' "$git_excl" && pass "broad .opencode not in git info/exclude" || fail "broad .opencode still in info/exclude"
@@ -239,12 +241,15 @@ for h in claude agy opencode; do
   echo "$list_out" | grep -Eq "[[:space:]]${h}[[:space:]]" && pass "list shows $h harness" || fail "$h harness missing from list"
 done
 
-# Test 7: Scope guard in AGENTS.md and role separation
-echo "=== Test 7: AGENTS.md Scope Guard & Role Separation ==="
-grep -qi "scope guard" "$KP_ROOT/AGENTS.md" && pass "AGENTS.md contains scope guard" || fail "missing scope guard in AGENTS.md"
-grep -qi "leased worktree" "$KP_ROOT/AGENTS.md" && pass "AGENTS.md scope guard exempts leased worktrees" || fail "missing leased worktree exemption in AGENTS.md"
+# Test 7: the orchestrator contract is not in a file a worker loads (issue #96)
+echo "=== Test 7: Orchestrator Contract & Role Separation ==="
+! grep -q "underboss" "$KP_ROOT/AGENTS.md" && pass "AGENTS.md carries no orchestrator persona" || fail "orchestrator persona is back in AGENTS.md"
+! grep -q "The user is the boss" "$KP_ROOT/AGENTS.md" && pass "AGENTS.md carries no boss address" || fail "boss address is back in AGENTS.md"
+[ -f "$KP_ROOT/orchestrator/contract.md" ] && pass "orchestrator/contract.md holds the contract" || fail "missing orchestrator/contract.md"
+grep -q "You are the underboss" "$KP_ROOT/orchestrator/contract.md" && pass "the contract still has its persona" || fail "contract lost the persona"
 grep -qi "background code worker" "$KP_ROOT/worker/preamble.md" && pass "worker preamble declares background code worker role" || fail "missing background code worker in preamble"
-grep -qi "AGENTS.md" "$KP_ROOT/worker/preamble.md" && pass "worker preamble overrides AGENTS.md" || fail "preamble does not override AGENTS.md"
+grep -q "kingpin spawn" "$KP_ROOT/worker/preamble.md" && pass "worker preamble forbids orchestration commands" || fail "preamble does not forbid orchestration commands"
+grep -qi "may edit code" "$KP_ROOT/worker/preamble.md" && pass "worker preamble says the worker may edit code" || fail "preamble does not say a worker may edit code"
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL MULTI-HARNESS TESTS PASSED"

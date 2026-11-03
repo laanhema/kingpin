@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Name the instruction files a harness loads into a spawned worker's context, and
+# refuse a worktree whose instruction files carry the orchestrator contract.
+#
+# A worker's context is assembled by the harness from files the worker never chose:
+# the repository's AGENTS.md, a harness's own config, the global config directory.
+# A rule that matters has to be a file the harness really loads (issue #96: two of
+# the three harnesses silently ignored the preamble file the spawn pointed at), and
+# the orchestrator contract must not be one of those files.
+#
+# Usage: kingpin-scope files --harness <claude|agy|opencode> --worktree <dir>
+#        kingpin-scope check --harness <claude|agy|opencode> --worktree <dir> --preamble <file>
+#
+# `files` prints one "<kind>\t<path>" line per source that exists:
+#   discovery   the harness loads it by discovery (AGENTS.md, CLAUDE.md, rules/)
+#   configured  an `instructions` entry of the worktree's harness config
+#   ignored     a rules file the harness skips (agy without a trigger frontmatter)
+#   global      loaded in every session from the user's config directory
+#
+# `check` exits 1 and names the file when a non-global source carries an
+# orchestrator-contract marker, or when the preamble is not among the sources the
+# harness actually loads. A global hit is a warning: it is the user's own file, and
+# Kingpin cannot keep it out of a worker's context. `check` never edits anything.
+set -euo pipefail
+
+# The sentences that make a file the orchestrator contract. Each one is a marker
+# that must never reach a worker; `orchestrator/contract.md` carries the first.
+MARKERS=(
+  'kingpin orchestrator contract'
+  'You are the underboss'
+  'The user is the boss'
+  'Never edit, write, or touch project code directly'
+)
+
+die() { echo "kingpin-scope: $*" >&2; exit 2; }
+
+cmd='' harness='' worktree='' preamble=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    files|check) cmd=$1; shift ;;
+    --harness) harness=${2:?--harness needs a value}; shift 2 ;;
+    --worktree) worktree=${2:?--worktree needs a directory}; shift 2 ;;
+    --preamble) preamble=${2:?--preamble needs a file}; shift 2 ;;
+    -h|--help)
+      echo "usage: kingpin-scope files|check --harness <claude|agy|opencode> --worktree <dir> [--preamble <file>]"
+      exit 0
+      ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+[ -n "$cmd" ] || die "give files or check"
+case $harness in claude|agy|opencode) ;; *) die "--harness must be claude, agy, or opencode" ;; esac
+[ -n "$worktree" ] || die "--worktree is required"
+[ -d "$worktree" ] || die "worktree does not exist: $worktree"
+worktree=$(cd "$worktree" && pwd -P)
+[ "$cmd" != check ] || [ -n "$preamble" ] || die "check needs --preamble <file>"
+
+emit() {
+  local kind=$1 path=$2
+  if [ -f "$path" ]; then printf '%s\t%s\n' "$kind" "$path"; fi
+  return 0
+}
+
+# The `instructions` entries of one OpenCode config document, resolved the way the
+# harness resolves them. A JSONC document with comments is not parsed: it prints a
+# note on stderr and contributes nothing.
+opencode_instructions() {
+  # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
+  node -e '
+    const fs = require("fs");
+    const [file, root] = [process.argv[1], process.argv[2]];
+    const home = process.env.HOME || "";
+    let cfg;
+    try { cfg = JSON.parse(fs.readFileSync(file, "utf8")); }
+    catch (e) { console.error(`kingpin-scope: cannot parse ${file}: ${e.message}`); process.exit(0); }
+    const list = (cfg && cfg.instructions) || [];
+    for (const entry of list) {
+      if (typeof entry !== "string" || /^https?:\/\//.test(entry)) continue;
+      const p = entry.startsWith("~/") ? home + entry.slice(1)
+        : entry.startsWith("/") ? entry : root + "/" + entry;
+      console.log(p);
+    }
+  ' "$1" "$2" 2>/dev/null || true
+}
+
+scope_files() {
+  local f d kind
+  case $harness in
+    claude)
+      # Claude Code loads the workspace CLAUDE.md (and whatever it imports, which is
+      # how AGENTS.md arrives here) plus every .claude/rules/*.md of the workspace.
+      emit discovery "$worktree/CLAUDE.md"
+      emit discovery "$worktree/AGENTS.md"
+      for f in "$worktree"/.claude/rules/*.md; do emit discovery "$f"; done
+      local claude_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+      emit global "$claude_dir/CLAUDE.md"
+      for f in "$claude_dir"/rules/*.md; do emit global "$f"; done
+      ;;
+    agy)
+      # agy loads the workspace AGENTS.md/GEMINI.md, and a file under .agents/rules/
+      # only when it is named AGENTS.md/GEMINI.md or carries a trigger frontmatter.
+      emit discovery "$worktree/AGENTS.md"
+      emit discovery "$worktree/GEMINI.md"
+      for f in "$worktree"/.agents/rules/*.md; do
+        [ -f "$f" ] || continue
+        case $(basename "$f") in
+          AGENTS.md|GEMINI.md) emit discovery "$f" ;;
+          *)
+            if head -n 5 "$f" | grep -qE '^trigger:[[:space:]]*(always_on|model_decision|manual|glob)[[:space:]]*$'; then
+              emit discovery "$f"
+            else
+              emit ignored "$f"
+            fi
+            ;;
+        esac
+      done
+      local gemini_dir=${GEMINI_CONFIG_DIR:-$HOME/.gemini}
+      emit global "$gemini_dir/AGENTS.md"
+      emit global "$gemini_dir/GEMINI.md"
+      ;;
+    opencode)
+      # OpenCode loads every AGENTS.md from the workspace up to the home directory.
+      emit discovery "$worktree/AGENTS.md"
+      d=$worktree
+      while case $d in "$HOME"/*) true ;; *) false ;; esac; do
+        d=$(dirname "$d")
+        emit discovery "$d/AGENTS.md"
+      done
+      for f in "$worktree/opencode.json" "$worktree/.opencode/opencode.json"; do
+        [ -f "$f" ] || continue
+        while IFS= read -r d; do [ -n "$d" ] && emit configured "$d"; done < <(opencode_instructions "$f" "$worktree")
+      done
+      local oc_dir=${XDG_CONFIG_HOME:-$HOME/.config}/opencode
+      emit global "$oc_dir/AGENTS.md"
+      for f in "$oc_dir/opencode.json" "$oc_dir/opencode.jsonc"; do
+        [ -f "$f" ] || continue
+        while IFS= read -r d; do [ -n "$d" ] && emit global "$d"; done < <(opencode_instructions "$f" "$oc_dir")
+      done
+      ;;
+  esac
+}
+
+if [ "$cmd" = files ]; then
+  scope_files
+  exit 0
+fi
+
+list=$(mktemp)
+trap 'rm -f "$list"' EXIT
+scope_files > "$list"
+rc=0
+while IFS=$'\t' read -r kind path; do
+  [ -f "$path" ] || continue
+  case $kind in
+    ignored)
+      echo "kingpin-scope: $path is ignored by agy (a rules file needs a trigger: frontmatter)" >&2
+      ;;
+    global)
+      for marker in "${MARKERS[@]}"; do
+        grep -Fq -- "$marker" "$path" \
+          && echo "kingpin-scope: warning: the global instruction file carries the orchestrator contract: $path" >&2
+      done
+      ;;
+    *)
+      for marker in "${MARKERS[@]}"; do
+        if grep -Fq -- "$marker" "$path"; then
+          echo "kingpin-scope: the orchestrator contract reaches this worker through $path" >&2
+          rc=1
+        fi
+      done
+      ;;
+  esac
+done < "$list"
+
+# The preamble must be a source the harness really loads, not just a file the spawn
+# wrote somewhere. For Claude Code it arrives through --append-system-prompt-file,
+# which the launch script passes, so it is not part of discovery.
+case $harness in
+  opencode)
+    grep -qxF "configured	$preamble" "$list" \
+      || { echo "kingpin-scope: the preamble is not in OpenCode's instruction set: $preamble" >&2; rc=1; }
+    ;;
+  agy)
+    grep -qxF "discovery	$worktree/.agents/rules/kingpin.md" "$list" \
+      || { echo "kingpin-scope: the preamble is not a rules file agy loads: $worktree/.agents/rules/kingpin.md" >&2; rc=1; }
+    ;;
+esac
+
+exit "$rc"

@@ -21,6 +21,7 @@
 set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # The deny rules older versions wrote; install removes them, check rejects them.
 LEGACY_DENY='["Edit","Write","NotebookEdit","Agent"]'
 MATCHER='Edit|Write|NotebookEdit|Agent'
@@ -68,6 +69,88 @@ if [ "$(git -C "$dir" rev-parse --path-format=absolute --git-dir)" != \
   die "$dir is a linked worktree (a worker checkout); run this in the main Kingpin checkout"
 fi
 
+# The orchestrator contract is installed from the tracked orchestrator/contract.md
+# into instruction sources that exist only in this checkout: a worker in a leased
+# worktree must never load one (issue #96). A checkout without the tracked template
+# (an arbitrary --dir) skips the contract and keeps the guard-only behaviour.
+contract_src="$dir/orchestrator/contract.md"
+home_contract="$KP_HOME/orchestrator.md"
+claude_contract="$dir/.claude/rules/kingpin-orchestrator.md"
+agy_contract="$dir/.agents/rules/kingpin.md"
+opencode_cfg="$dir/.opencode/opencode.json"
+
+ensure_excluded() {
+  local file=$1 rel excl
+  git -C "$dir" check-ignore -q -- "$file" && return 0
+  rel=${file#"$dir"/}
+  excl=$(git -C "$dir" rev-parse --path-format=absolute --git-path info/exclude)
+  mkdir -p "$(dirname "$excl")"
+  grep -qxF "$rel" "$excl" 2>/dev/null || echo "$rel" >> "$excl"
+}
+
+install_contract() {
+  [ -f "$contract_src" ] || { echo "contract: skipped (no orchestrator/contract.md in $dir)"; return 0; }
+  # Kingpin owns these filenames in its own checkout, but never clobbers a file it did
+  # not write: a user's own rules file at that path stops the install with its name.
+  if [ -f "$agy_contract" ] && ! grep -Fq -- 'kingpin orchestrator contract' "$agy_contract"; then
+    die "$agy_contract exists and was not written by Kingpin; move it, then rerun"
+  fi
+  mkdir -p "$(dirname "$home_contract")" "$dir/.claude/rules" "$dir/.agents/rules" "$dir/.opencode"
+  cp "$contract_src" "$home_contract"
+  cp "$contract_src" "$claude_contract"
+  # agy skips a rules file without a trigger frontmatter, so it gets one.
+  {
+    printf -- '---\ntrigger: always_on\ndescription: Kingpin orchestrator contract\n---\n\n'
+    cat "$contract_src"
+  } > "$agy_contract"
+  # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
+  node -e '
+    const fs = require("fs");
+    const [file, entry] = [process.argv[1], process.argv[2]];
+    let cfg = {};
+    if (fs.existsSync(file)) {
+      try { cfg = JSON.parse(fs.readFileSync(file, "utf8")); }
+      catch (e) { console.error(`kingpin-guard: malformed JSON in ${file}: ${e.message}`); process.exit(1); }
+    }
+    if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
+      console.error(`kingpin-guard: ${file} must contain a JSON object`); process.exit(1);
+    }
+    if (cfg.instructions !== undefined && !Array.isArray(cfg.instructions)) {
+      console.error(`kingpin-guard: "instructions" in ${file} must be a JSON array`); process.exit(1);
+    }
+    cfg.$schema = cfg.$schema || "https://opencode.ai/config.json";
+    cfg.instructions = (cfg.instructions || []).filter((e) => e !== entry).concat(entry);
+    const tmp = `${file}.tmp.${process.pid}`;
+    fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + "\n");
+    fs.renameSync(tmp, file);
+  ' "$opencode_cfg" "$home_contract"
+  ensure_excluded "$claude_contract"
+  ensure_excluded "$agy_contract"
+  ensure_excluded "$opencode_cfg"
+  echo "contract: installed ($home_contract, $claude_contract, $agy_contract, $opencode_cfg)"
+}
+
+check_contract() {
+  [ -f "$contract_src" ] || { echo "contract: skipped (no orchestrator/contract.md in $dir)"; return 0; }
+  local rc=0
+  cmp -s "$contract_src" "$home_contract" \
+    || { echo "contract: $home_contract is stale or missing; run 'kingpin guard install'" >&2; rc=1; }
+  cmp -s "$contract_src" "$claude_contract" \
+    || { echo "contract: $claude_contract is stale or missing; run 'kingpin guard install'" >&2; rc=1; }
+  # The agy copy carries a five-line frontmatter block before the contract body.
+  [ -f "$agy_contract" ] && tail -n +6 "$agy_contract" | cmp -s - "$contract_src" \
+    || { echo "contract: $agy_contract is stale or missing; run 'kingpin guard install'" >&2; rc=1; }
+  if [ -f "$opencode_cfg" ] && node -e '
+    const cfg = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+    process.exit((cfg.instructions || []).includes(process.argv[2]) ? 0 : 1);
+  ' "$opencode_cfg" "$home_contract"; then :; else
+    echo "contract: $opencode_cfg does not load it; run 'kingpin guard install'" >&2
+    rc=1
+  fi
+  [ "$rc" = 0 ] && echo "contract: active ($home_contract)"
+  return "$rc"
+}
+
 case "$cmd" in
   check)
     [ -f "$file" ] || { echo "guard: missing ($file); run 'kingpin guard install'" >&2; exit 1; }
@@ -90,6 +173,7 @@ case "$cmd" in
       *) echo "guard: incomplete ($file); run 'kingpin guard install'" >&2; exit 1 ;;
     esac
     echo "guard: active ($file)"
+    check_contract || exit 1
     ;;
   warn)
     "$0" check --dir "$dir" >/dev/null 2>&1 \
@@ -138,5 +222,6 @@ case "$cmd" in
       echo ".claude/settings.local.json" >> "$excl"
     fi
     echo "OK: orchestrator guard installed in $file"
+    install_contract
     ;;
 esac
