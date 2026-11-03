@@ -324,6 +324,12 @@ chmod +x "$task_dir/launch.sh"
 # Record the window ID (@N): unlike the name in TMUX_TARGET, it survives a
 # rename or a move to another session.
 window_id=$(tmux new-window -d -P -F '#{window_id}' -t "$target_session:" -n "$id" -c "$worktree" "$task_dir/launch.sh")
+# Pin the name: ambient `automatic-rename on` and `allow-rename on` (tmux config,
+# or an escape sequence from the worker's child commands) would otherwise
+# rename the window. Only kingpin-rename/kingpin-wait renames it, explicitly.
+# `|| true`: a failed pin is cosmetic and must not tear down a started worker.
+tmux set-window-option -t "$window_id" automatic-rename off || true
+tmux set-window-option -t "$window_id" allow-rename off || true
 printf 'TMUX_WINDOW_ID=%s\n' "$window_id" >> "$task_dir/task.env"
 launched=1
 
