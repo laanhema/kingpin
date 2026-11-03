@@ -5,6 +5,13 @@
 #   1. When a worker in 'auto' mode reports 'ready:', automatically triggers kingpin-land.
 #   2. When a worker reports 'merged:', automatically runs kingpin-done to clean up.
 #
+# Every unprocessed status line is dispatched once, in file order. The cursor is
+# the task's `seen` count, advanced line by line through `kingpin-ack --through`,
+# so a worker event that a listener note follows is not lost, and lines appended
+# while a batch runs stay pending for the next pass. A supervisor restart resumes
+# at the first undispatched line; a crash between a dispatch and its ack replays
+# that one line (at-least-once, never lost).
+#
 # One supervisor per fleet: it claims $KINGPIN_HOME/supervisor.pid (pid on line 1,
 # start epoch on line 2) and refuses to start a second copy while that pid is live,
 # naming it. A stale file (dead pid, or a pid that is not a kingpin-watch) is
@@ -140,27 +147,16 @@ claim_supervisor() {
   exit 1
 }
 
-process_task_event() {
+# Apply one status line. The case is the dispatch table; process_task_event calls
+# it once per unprocessed line, so a worker event batched with a listener note
+# cannot be acknowledged away.
+dispatch_status_line() {
   local id=$1
-  local reason=$2
-  local task_dir="$KP_HOME/tasks/$id"
-  [ -d "$task_dir" ] || return 0
+  local task_dir=$2
+  local mode=$3
+  local line=$4
 
-  local env_file="$task_dir/task.env"
-  [ -f "$env_file" ] || return 0
-
-  local mode
-  mode=$(kp_env_get "$env_file" MODE)
-  [ -n "$mode" ] || mode="review"
-
-  local status_file="$task_dir/status"
-  # The newest line, notes included: this dispatch reports approved: and feedback: too.
-  local last_status
-  last_status=$(kp_status_newest "$status_file")
-
-  "$KP_BIN/kingpin-ack" "$id"
-
-  case "$last_status" in
+  case "$line" in
     ready:*)
       if [ "$mode" = "auto" ] && [ ! -f "$task_dir/landing_sent" ]; then
         echo "[kingpin-watch] $id is ready (auto mode); initiating landing..."
@@ -172,7 +168,7 @@ process_task_event() {
         else
           echo "[kingpin-watch] $id is ready for review (lavish-axi $task_dir/report.html)"
           if [ -f "$task_dir/report.html" ]; then
-            "$KP_BIN/kingpin-report" check "$task_dir/report.html" >/dev/null 2>&1 || echo "[kingpin-watch] WARNING $id report.html fails kingpin report check (blank diffs or sloppy prose); run kingpin report check $task_dir/report.html to see the reason" >&2
+            "$KP_BIN/kingpin-report" check "$task_dir/report.html" >/dev/null 2>&1 || echo "[kingpin-watch] WARNING $id report.html fails kingpin report check (blank diffs, an overflowing layout or sloppy prose); run kingpin report check $task_dir/report.html to see the reason" >&2
             "$KP_BIN/kingpin-listen" "$id" --background || true
           fi
         fi
@@ -183,7 +179,7 @@ process_task_event() {
       echo "[kingpin-watch] $id was approved via the review dossier; landing started by its listener"
       ;;
     feedback:*)
-      echo "[kingpin-watch] $id received review feedback: $last_status"
+      echo "[kingpin-watch] $id received review feedback: $line"
       ;;
     fixed:*)
       if [ "$mode" = "auto" ] || [ -f "$task_dir/landing_in_progress" ]; then
@@ -198,18 +194,74 @@ process_task_event() {
       fi
       ;;
     cleanup-refused:*)
-      echo "[kingpin-watch] $id cleanup refused: ${last_status#cleanup-refused: }"
+      echo "[kingpin-watch] $id cleanup refused: ${line#cleanup-refused: }"
       ;;
     failed:*)
-      echo "[kingpin-watch] $id reported failure: $last_status"
+      echo "[kingpin-watch] $id reported failure: $line"
       ;;
     needs-input:*)
       echo "[kingpin-watch] $id needs input (question at $task_dir/question.md)"
       ;;
     waiting:*)
-      echo "[kingpin-watch] $id is waiting: ${last_status#waiting: }"
+      echo "[kingpin-watch] $id is waiting: ${line#waiting: }"
       ;;
   esac
+}
+
+process_task_event() {
+  # $2 is the kingpin-wait reason (status|quiet|exited); every reason is acked.
+  local id=$1
+  local task_dir="$KP_HOME/tasks/$id"
+  [ -d "$task_dir" ] || return 0
+
+  local env_file="$task_dir/task.env"
+  [ -f "$env_file" ] || return 0
+
+  local mode
+  mode=$(kp_env_get "$env_file" MODE)
+  [ -n "$mode" ] || mode="review"
+
+  local status_file="$task_dir/status"
+
+  # The cursor: how many lines are already handled. It lives on disk, so a
+  # supervisor restart resumes at the first undispatched line instead of
+  # replaying handled lines or losing the ones that came after.
+  local seen=0 total=0
+  [ -f "$task_dir/seen" ] && seen=$(tr -d ' \n' < "$task_dir/seen" 2>/dev/null || true)
+  case $seen in ''|*[!0-9]*) seen=0 ;; esac
+
+  # A task directory can carry task.env and no status file (hand-made or repaired
+  # by hand). It is not an early return: the ack at the end still has to run, or a
+  # quiet/exited event for such a task is reported on every pass and the
+  # supervisor spins. With no file the loop below dispatches nothing.
+  local i=$seen line
+  if [ -f "$status_file" ]; then
+    total=$(wc -l < "$status_file" | tr -d ' ')
+
+    # Read at most the lines that existed when this pass started. A line a
+    # dispatch appends (kingpin-done's cleanup-refused:, a listener note) gets a
+    # number past `total`, so it stays pending for the next pass rather than
+    # being swallowed.
+    while [ "$i" -lt "$total" ] && IFS= read -r line; do
+      i=$((i + 1))
+      # Blank and issue: lines are informational: they advance the cursor but
+      # dispatch nothing, exactly as kingpin-wait treats them.
+      if [ "${line#issue:}" = "$line" ] && [ -n "${line//[[:space:]]/}" ]; then
+        dispatch_status_line "$id" "$task_dir" "$mode" "$line"
+      fi
+      # Ack after the line is handled, through its index only, so later appends
+      # stay pending. A crash between the dispatch and this write replays that one
+      # line (at-least-once, never lost).
+      "$KP_BIN/kingpin-ack" --through "$i" "$id" >/dev/null 2>&1 || true
+    done < <(tail -n +$((seen + 1)) "$status_file")
+  fi
+
+  # Every event is acknowledged, including a status-less `quiet` or `exited` one:
+  # seen_stopped, seen_activity and seen_exited live in the same ack, and without
+  # this call kingpin-wait reports the event on every pass (a supervisor spin).
+  # --through "$i" keeps the status cursor where the batch ended (i is `seen` when
+  # there was no pending line), so a line appended meanwhile stays pending.
+  "$KP_BIN/kingpin-ack" --through "$i" "$id" >/dev/null 2>&1 || true
 }
 
 # Retry cleanups that kingpin-done refused (dirty worktree, HEAD not yet on the

@@ -114,6 +114,360 @@ printf '<html><body><div class="kp-diff"></div><p>The patch is small.</p></body>
 "$KP_BIN/kingpin" report check --prose-only "$T/page-empty-container.html" >/dev/null 2>&1 && pass "--prose-only ignores an empty diff container" || fail "--prose-only failed an empty diff container"
 "$KP_BIN/kingpin" report check "$T/page-empty-container.html" >/dev/null 2>&1 && fail "full check accepted an empty diff container" || pass "full check still rejects an empty diff container"
 
+echo "=== kingpin report check: layout ==="
+FIX="$KP_ROOT/tests/fixtures/dossier-layout.html"
+"$KP_BIN/kingpin-report" --help | grep -q 'layout' && pass "--help documents the layout pass" || fail "--help does not mention the layout pass"
+out=$("$KP_BIN/kingpin" report check "$FIX" 2>&1) && pass "check accepts the corrected dossier" || fail "check rejected the corrected dossier: $out"
+echo "$out" | grep -q 'has renderable diffs and clean prose' && pass "the fixture keeps the existing OK line" || fail "unexpected OK line: $out"
+
+# Each page below is a full document: the layout pass applies. The line numbers are the line of the
+# element or rule the failure must name, so a verdict without a location cannot pass here.
+cat > "$T/pre-bare.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<pre>./tests/test-report.sh --filter a-line-that-never-wraps</pre>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/pre-bare.html" 2>&1) && fail "check accepted a <pre> with no wrap rule" || pass "check rejects a <pre> with no wrap rule"
+echo "$out" | grep -q 'pre-bare.html:6: <pre> has no wrap rule' && pass "the <pre> failure names its line" || fail "no file:line for the <pre>: $out"
+
+cat > "$T/table-bare.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<table><tbody><tr><td><code>tests/test-report.sh</code></td></tr></tbody></table>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/table-bare.html" 2>&1) && fail "check accepted a table with no wrap rule" || pass "check rejects a table with no wrap rule"
+echo "$out" | grep -q 'table-bare.html:6: <table> has no wrap rule' && pass "the table failure names its line" || fail "no file:line for the table: $out"
+
+cat > "$T/grid-bare.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  code { overflow-wrap: anywhere; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; }
+</style></head><body>
+<div class="grid"><p>left</p><p>right</p></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/grid-bare.html" 2>&1) && fail "check accepted a grid with no shrink guard" || pass "check rejects a grid with no shrink guard"
+echo "$out" | grep -q 'grid-bare.html:4: grid/flex layout has no shrink guard' && pass "the grid failure names its line" || fail "no file:line for the grid: $out"
+
+printf '<!DOCTYPE html>\n<html><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body>\n<img src="/home/lauri/kingpin.jpg" alt="banner" />\n</body></html>\n' > "$T/abs-src.html"
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/abs-src.html" 2>&1) && fail "check accepted an absolute asset path" || pass "check rejects an absolute asset path"
+echo "$out" | grep -q 'abs-src.html:6: absolute asset path: /home/lauri/kingpin.jpg' && pass "the absolute path failure names its line" || fail "no file:line for the absolute path: $out"
+
+printf '<!DOCTYPE html>\n<html><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body>\n<img src="../kingpin.jpg" alt="banner" />\n</body></html>\n' > "$T/climb-src.html"
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/climb-src.html" 2>&1) && fail "check accepted an asset path climbing out of the folder" || pass "check rejects an asset path that climbs out of the folder"
+echo "$out" | grep -q 'climb-src.html:6: asset path climbs out of the page folder: ../kingpin.jpg' && pass "the climbing path failure names its line" || fail "no file:line for the climbing path: $out"
+
+# A diff fragment is not a page: it has no viewport and no layout of its own, so the pass stays out
+# of it. This is what keeps the generated diffs fragment and DESIGN.md-style files passing.
+printf '<div><pre>a line the host page must wrap</pre></div>\n' > "$T/fragment-pre.html"
+"$KP_BIN/kingpin" report check --prose-only "$T/fragment-pre.html" >/dev/null 2>&1 && pass "a fragment is not layout-checked" || fail "a fragment was treated as a full page"
+
+# The fixture with its guards stripped is the page that used to reach review looking broken.
+sed -e 's/min-width: 0;//' -e 's/ overflow-wrap: anywhere;//g' -e 's/table-layout: fixed;//' -e 's/white-space: pre-wrap;//g' -e 's/overflow-x: auto;//' -e 's/max-width: 100%;//' "$FIX" > "$T/stripped.html"
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/stripped.html" 2>&1) && fail "check accepted the stripped fixture" || pass "check rejects the stripped fixture"
+echo "$out" | grep -q 'stripped.html:[0-9]*: <pre> has no wrap rule' && pass "the stripped fixture names a <pre>" || fail "no <pre> hit in the stripped fixture: $out"
+echo "$out" | grep -q 'stripped.html:[0-9]*: <table> has no wrap rule' && pass "the stripped fixture names a table" || fail "no table hit in the stripped fixture: $out"
+echo "$out" | grep -q 'stripped.html:[0-9]*: <code> has no wrap rule' && pass "the stripped fixture names the inline code" || fail "no code hit in the stripped fixture: $out"
+echo "$out" | grep -q 'stripped.html:[0-9]*: <img> has no max-width rule' && pass "the stripped fixture names an image" || fail "no <img> hit in the stripped fixture: $out"
+
+# An image keeps its intrinsic width unless a max-width rule reaches it.
+cat > "$T/img-bare.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<img src="shot.png" alt="a screenshot with no size rule" />
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/img-bare.html" 2>&1) && fail "check accepted an image with no max-width rule" || pass "check rejects an image with no max-width rule"
+echo "$out" | grep -q 'img-bare.html:6: <img> has no max-width rule' && pass "the image failure names its line" || fail "no file:line for the image: $out"
+
+# overflow-wrap inherits, so a rule on p reaches the inline code inside it.
+cat > "$T/inherited-wrap.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  p { overflow-wrap: anywhere; }
+</style></head><body>
+<p><code>/home/lauri/.treehouse/kingpin-edca9a/3/kingpin/tests/test-watch-supervisor.sh</code></p>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/inherited-wrap.html" >/dev/null 2>&1 && pass "a wrap rule on p reaches the inline code inside it" || fail "an inherited overflow-wrap was not seen"
+
+# Inheritance follows the real markup: a `p` rule does not reach a code element in a div. This page
+# measured 3128/1280 in Chrome while the old selector-shape matcher printed OK.
+long=$(printf 'a%.0s' $(seq 1 400))
+cat > "$T/p-wrap-outside-code.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  p { overflow-wrap: anywhere; }
+</style></head><body>
+<div><code>${long}</code></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/p-wrap-outside-code.html" 2>&1) && fail "check lent a p wrap rule to code outside a p" || pass "a wrap rule on p does not reach code in a div"
+echo "$out" | grep -q 'p-wrap-outside-code.html:6: <code> has no wrap rule' && pass "the unreachable code failure names its line" || fail "no file:line for the unreachable code: $out"
+
+# A child guard belongs to the container's real children: `p { min-width: 0 }` does not guard divs.
+# This page measured 2879/1280 in Chrome while the old selector-shape matcher printed OK.
+cat > "$T/grid2-p-guard.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  code { overflow-wrap: anywhere; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; }
+  p { min-width: 0; }
+</style></head><body>
+<div class="grid2"><div>${long}</div><div>right</div></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/grid2-p-guard.html" 2>&1) && fail "check lent a p min-width rule to a grid of divs" || pass "a min-width rule on p does not guard a grid of divs"
+echo "$out" | grep -q 'grid2-p-guard.html:4: grid/flex layout has no shrink guard' && pass "the unguarded grid failure names its rule line" || fail "no file:line for the unguarded grid: $out"
+
+# A `p` wrap rule does not reach a table's cells either, so a fixed table still needs its own rule.
+cat > "$T/table-fixed-p-wrap.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  p { overflow-wrap: anywhere; }
+  table { width: 100%; max-width: 100%; table-layout: fixed; }
+</style></head><body>
+<table><tbody><tr><td>${long}</td><td>b</td></tr></tbody></table>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/table-fixed-p-wrap.html" 2>&1) && fail "check lent a p wrap rule to a table's cells" || pass "a wrap rule on p does not reach a table's cells"
+echo "$out" | grep -q 'table-fixed-p-wrap.html:7: <table> has no wrap rule' && pass "the unreachable cell wrap failure names the table" || fail "no file:line for the table: $out"
+
+# A layout guard is judged per layout rule: an unrelated min-width rule does not cover this grid.
+cat > "$T/grid-unrelated-guard.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  code { overflow-wrap: anywhere; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; }
+  .muted { min-width: 0; color: #888; }
+</style></head><body>
+<div class="grid"><p class="muted">left</p><p>right</p></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/grid-unrelated-guard.html" 2>&1) && fail "check accepted a grid guarded only by an unrelated rule" || pass "check does not lend an unrelated min-width rule to a grid"
+echo "$out" | grep -q 'grid-unrelated-guard.html:4: grid/flex layout has no shrink guard' && pass "the grid failure names the layout rule's line" || fail "no file:line for the unguarded grid: $out"
+
+# `display` declared only in an inline style is still a layout.
+cat > "$T/grid-inline-display.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<div style="display: grid; grid-template-columns: 1fr 1fr"><p>left</p><p>right</p></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/grid-inline-display.html" 2>&1) && fail "check accepted a grid declared only in an inline style" || pass "check reads display from an inline style"
+echo "$out" | grep -q 'grid-inline-display.html:5: grid/flex layout has no shrink guard' && pass "the inline grid failure names its element's line" || fail "no file:line for the inline grid: $out"
+
+# A comment and a script body are not rendered, so the elements written there are not judged.
+cat > "$T/ignored-elements.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<!-- The old page had <pre> without a wrap rule and .grid { display: grid; grid-template-columns: 1fr 1fr; } -->
+<p>Clean page.</p>
+<script>const template = "<table><tr><td>no wrap rule</td></tr></table>";</script>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/ignored-elements.html" >/dev/null 2>&1 && pass "comments and script bodies are not scanned as elements" || fail "a comment or script body tripped the layout pass"
+
+# A fixed table layout alone leaves a long token running into the next column.
+cat > "$T/table-fixed-bare.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+  table { width: 100%; max-width: 100%; table-layout: fixed; }
+</style></head><body>
+<table><tbody><tr><td>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</td><td>b</td></tr></tbody></table>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/table-fixed-bare.html" 2>&1) && fail "check accepted a fixed table with no cell wrap rule" || pass "check requires a cell wrap rule on a fixed table"
+echo "$out" | grep -q 'table-fixed-bare.html:7: <table> has no wrap rule' && pass "the fixed-table failure names its line" || fail "no file:line for the fixed table: $out"
+
+# The declaration parser accepts the shorthand, !important and a single-quoted style.
+cat > "$T/pre-overflow-shorthand.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+  pre { overflow: auto; }
+</style></head><body>
+<pre>$ ./tests/test-report.sh --filter a-line-that-never-wraps</pre>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/pre-overflow-shorthand.html" >/dev/null 2>&1 && pass "pre accepts the overflow shorthand" || fail "pre { overflow: auto } was rejected"
+
+cat > "$T/pre-important.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+  pre { white-space: pre-wrap !important; }
+</style></head><body>
+<pre>$ ./tests/test-report.sh --filter a-line-that-never-wraps</pre>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/pre-important.html" >/dev/null 2>&1 && pass "pre accepts !important on its wrap rule" || fail "white-space: pre-wrap !important was rejected"
+
+cat > "$T/pre-single-quote.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<pre style='white-space: pre-wrap'>$ ./tests/test-report.sh --filter a-line-that-never-wraps</pre>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/pre-single-quote.html" >/dev/null 2>&1 && pass "an inline style in single quotes is read" || fail "a single-quoted inline style was rejected"
+
+# H4: a layout container with no element children (a text-only badge or a flex heading) has nothing
+# that can overflow, and a layout rule that matches no element has no rendered layout. Neither is a
+# finding. Both pages carry the documented block and measured 1280/1280 and 1024/1024 in Chrome.
+{
+  echo '<!DOCTYPE html>'
+  echo '<html><head>'
+  awk '/^```html$/ { if (!seen) { seen = 1; inside = 1; next } } inside && /^```$/ { exit } inside { print }' "$KP_ROOT/worker/preamble.md"
+  echo '<style>'
+  echo '  .badge { display: inline-flex; align-items: center; padding: 1px 10px; }'
+  echo '</style>'
+  echo '</head><body>'
+  echo '<p>Status: <span class="badge">APPROVE</span></p>'
+  echo '</body></html>'
+} > "$T/block-badge.html"
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/block-badge.html" 2>&1) && pass "a text-only inline-flex badge passes" || fail "the documented block cannot pass for a text-only badge: $out"
+
+{
+  echo '<!DOCTYPE html>'
+  echo '<html><head>'
+  awk '/^```html$/ { if (!seen) { seen = 1; inside = 1; next } } inside && /^```$/ { exit } inside { print }' "$KP_ROOT/worker/preamble.md"
+  echo '<style>'
+  echo '  .cards-2up { display: grid; grid-template-columns: 1fr 1fr; }'
+  echo '</style>'
+  echo '</head><body>'
+  echo '<p>A rule for a class no element uses.</p>'
+  echo '</body></html>'
+} > "$T/block-unused-grid.html"
+"$KP_BIN/kingpin" report check --prose-only "$T/block-unused-grid.html" >/dev/null 2>&1 && pass "a layout rule that matches no element is skipped" || fail "an unmatched layout rule still failed the page"
+
+# The same flex rule over text and no element children cannot overflow either; measured 1280/1280
+# and 1024/1024 in Chrome.
+cat > "$T/flex-heading.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  body { margin: 0; }
+  h2 { display: flex; align-items: center; gap: 10px; }
+</style></head><body>
+<h2>5. The report names its own line</h2>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/flex-heading.html" >/dev/null 2>&1 && pass "a text-only flex heading passes" || fail "a text-only flex heading was rejected"
+
+# A flex row with real children and no guard still fails: H4 skips only the childless case.
+cat > "$T/flex-row-bare.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  .row { display: flex; }
+</style></head><body>
+<div class="row"><span>left</span><span>right</span></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/flex-row-bare.html" 2>&1) && fail "check accepted an unguarded flex row with real children" || pass "an unguarded flex row with real children still fails"
+echo "$out" | grep -q 'flex-row-bare.html:3: grid/flex layout has no shrink guard' && pass "the unguarded flex row failure names its rule line" || fail "no file:line for the unguarded flex row: $out"
+
+# M5: a selector list inside :where()/:is() is still a selector list. Both pages measured 1280/1280
+# and 1024/1024 in Chrome and were rejected by the old parser, which split them on the inner comma.
+cat > "$T/where-wrap.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  :where(p, td) { overflow-wrap: anywhere; }
+  table { width: 100%; max-width: 100%; table-layout: fixed; }
+</style></head><body>
+<p><code>${long}</code></p>
+<table><tbody><tr><td><code>${long}</code></td><td>b</td></tr></tbody></table>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/where-wrap.html" >/dev/null 2>&1 && pass ":where(p, td) contributes a wrap rule" || fail "a selector list inside :where was not matched"
+
+cat > "$T/where-guard.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  code { overflow-wrap: anywhere; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; }
+  :where(.cell) { min-width: 0; }
+</style></head><body>
+<div class="grid"><div class="cell"><code>${long}</code></div><div class="cell">right</div></div>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/where-guard.html" >/dev/null 2>&1 && pass ":where(.cell) contributes a shrink guard" || fail "a selector inside :where was not matched"
+
+# M6: a scoped rule reaches only what the whole chain matches. The old matcher credited the last
+# compound only, so these two pages printed OK while measuring 3128/1280 and 2879/1280 in Chrome.
+cat > "$T/scoped-wrap.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  .panel p { overflow-wrap: anywhere; }
+</style></head><body>
+<div class="panel"><p>Short text.</p></div>
+<p><code>${long}</code></p>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/scoped-wrap.html" 2>&1) && fail "check lent a scoped .panel p wrap rule to a p outside the panel" || pass "a scoped wrap rule reaches only p inside the panel"
+echo "$out" | grep -q 'scoped-wrap.html:7: <code> has no wrap rule' && pass "the scoped wrap failure names the unreached code" || fail "no file:line for the scoped wrap: $out"
+
+cat > "$T/scoped-guard.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  .grid-a { display: grid; grid-template-columns: 1fr 1fr; }
+  .grid-b { display: grid; grid-template-columns: 1fr 1fr; }
+  .grid-a .cell { min-width: 0; }
+</style></head><body>
+<div class="grid-a"><div class="cell">left</div><div class="cell">right</div></div>
+<div class="grid-b"><div class="cell">${long}</div><div class="cell">right</div></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/scoped-guard.html" 2>&1) && fail "check lent a .grid-a .cell guard to .grid-b" || pass "a scoped guard reaches only cells inside its own grid"
+echo "$out" | grep -q 'scoped-guard.html:4: grid/flex layout has no shrink guard' && pass "the scoped guard failure names the other grid's rule line" || fail "no file:line for the scoped guard: $out"
+
+# The documented block and the checker cannot drift: a page built from the block in
+# worker/preamble.md must pass, with a table, a long pre, a grid, inline code and an image.
+{
+  echo '<!DOCTYPE html>'
+  echo '<html><head>'
+  awk '/^```html$/ { if (!seen) { seen = 1; inside = 1; next } } inside && /^```$/ { exit } inside { print }' "$KP_ROOT/worker/preamble.md"
+  echo '<style>'
+  echo '  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }'
+  echo '</style>'
+  echo '</head><body>'
+  echo '<p>Built from the documented block.</p>'
+  echo '<table><thead><tr><th>File</th><th>Change</th></tr></thead><tbody><tr><td><code>/home/lauri/.treehouse/kingpin-edca9a/3/kingpin/tests/test-watch-supervisor.sh</code></td><td>A cell that has to wrap inside its column.</td></tr></tbody></table>'
+  echo '<pre>$ ./tests/test-report.sh --filter /home/lauri/.treehouse/kingpin-edca9a/3/kingpin/tests/test-watch-supervisor-2026-11-03T16-02-odd-and-very-long-run-identifier-0123456789abcdef.sh</pre>'
+  echo '<div class="cols"><div><p>Left column with a long unbroken token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</p></div><div><p>Right column.</p></div></div>'
+  echo '<img src="screenshot-before.svg" alt="a screenshot" />'
+  echo '</body></html>'
+} > "$T/block.html"
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/block.html" 2>&1) && pass "a page built from the documented block passes" || fail "the documented block no longer satisfies the check: $out"
+
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL REPORT TESTS PASSED"
 else

@@ -111,6 +111,21 @@ MLEOF
   export KINGPIN_LAVISH="$T/mock-lavish-quiet"
 }
 
+# kp_test_stub_treehouse: a stand-in for `treehouse return` that succeeds and
+# records each call. A suite whose synthetic WORKTREE is a plain directory (never
+# leased from a TREEHOUSE_ROOT pool) gets `worktree <path> is not managed by
+# treehouse` from the real binary, and kingpin-done now refuses the cleanup when
+# the return fails (issue #75). Suites that assert the pool itself (spawn,
+# lifecycle, acceptance) must not call this.
+kp_test_stub_treehouse() {
+  cat > "$T/bin/treehouse" << 'TREEEOF'
+#!/usr/bin/env bash
+printf 'return %s\n' "$*" >> "${KP_TREEHOUSE_CALLS:-/dev/null}"
+exit 0
+TREEEOF
+  chmod +x "$T/bin/treehouse"
+}
+
 # kp_test_finish <LABEL>
 kp_test_finish() {
   if [ "$FAILED" -eq 0 ]; then

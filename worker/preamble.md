@@ -33,6 +33,34 @@ Report every event as one line appended to `{{TASK_DIR}}/status`, with `printf '
 
 Before you append `ready:` or `merged:`, write `{{TASK_DIR}}/report.html`: one self-contained page that shows what changed and why, the review verdict and every finding, the diff of each changed file, and before/after screenshots for a visual change. The prose is part of the deliverable, so write it as a person would and run the `unslop` skill over the page before you save it: no em dashes, no "testament to", no "it's not just", no "delve", "seamless", "in order to", "let me know", "I hope this helps". The checker below enforces that mechanical list. Use dark mode by default (color-scheme: dark, background #0d1117, text #e6edf3, themeType: "dark"). Build the diffs as described under "Diffs in `report.html`" below (`lavish-axi playbook code` has the general Pierre guidance). Include an action bar at the top with a prominent 'Approve & Land' CTA (`kingpin land {{TASK_ID}}`, with a button triggering `window.lavish?.queuePrompt?.("kingpin land {{TASK_ID}}")` or copying the CLI command to clipboard) and a 'Request Changes' button (triggering `window.lavish?.queuePrompt?.('Request Changes: ...')`).
 
+Dossier layout. A dossier is a page someone reads in a browser, so it has to hold its box at two
+widths. Every dossier carries this block, and the generated diff fallback needs it like any other
+`pre`:
+
+```html
+<style>
+  * { box-sizing: border-box; min-width: 0; }
+  body { margin: 0; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto; }
+  code { overflow-wrap: anywhere; }
+  table { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; }
+  th, td { overflow-wrap: anywhere; vertical-align: top; }
+  img { max-width: 100%; height: auto; }
+</style>
+```
+
+Grid and flex children need `min-width: 0` (or `minmax(0, 1fr)` tracks), or a long path refuses to
+shrink and pushes the page wider. Check the finished page at 1280 and at 1024 wide: at both,
+`document.documentElement.scrollWidth === document.documentElement.clientWidth`, and no element is
+wider than its container. A dossier that scrolls sideways, overlaps text, clips it, shrinks the type
+or truncates data is rejected at review, so fit the text to the box and wrap it.
+
+`bin/kingpin-report check` fails on the mechanical causes and names the line: a `pre` with no wrap
+rule, inline `code` with none, an `img` with no `max-width`, a table whose cells have none, a grid
+or flex layout with no shrink guard, and a `src`, `href` or `url()` that is an absolute path or
+climbs out with `..`. Fix the line it names; `overflow: hidden`, a narrower font or a shortened
+value is not a fix.
+
 Diffs in `report.html` (the section that shows each changed file) must go through `@pierre/diffs`, whose `FileDiff` takes `oldFile` and `newFile`, each `{ name, contents }`. It has no `patch` option: `render({ containerWrapper, patch: diffString })` returns without rendering and leaves the section blank. Generate the section with the helper (it only reads git and prints HTML; it is not an orchestration command):
 
 ```bash
@@ -54,6 +82,6 @@ It covers committed, uncommitted and untracked files, includes a static diff tha
 </script>
 ```
 
-Before you append `ready:` or `merged:`, run `{{KP_ROOT}}/bin/kingpin-report check {{TASK_DIR}}/report.html`. It prints `FAILED: <file>:<line>:` when the diff section would render blank and when a prose line carries one of the tells above; fix that line and run it again. If a flagged word is genuinely wanted, put `<!-- unslop:ignore -->` on that line. Do not report ready on a failing check.
+Before you append `ready:` or `merged:`, run `{{KP_ROOT}}/bin/kingpin-report check {{TASK_DIR}}/report.html`. It prints `FAILED: <file>:<line>:` when the diff section would render blank, when the layout pass finds a `pre`, `code`, image, table, grid/flex or asset path that lets the page overflow, and when a prose line carries one of the tells above; fix that line and run it again. If a flagged word is genuinely wanted, put `<!-- unslop:ignore -->` on that line. Do not report ready on a failing check.
 
 Work only inside this worktree and the task folder. Push, merge, or delete a branch only when the command you run (`/do`, `/issue-flow-done`) does it. A person may type into this window directly: treat that as authoritative.

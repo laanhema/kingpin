@@ -4,7 +4,13 @@
 # Advances seen status line counts, seen_stopped timestamps, records the pane
 # activity time (seen_activity), and sets seen_exited for specified task IDs or all tasks (--all).
 #
-# Usage: kingpin-ack <task-id>... | --all
+# `--through <line>` moves `seen` to that line instead of the whole file. It is for
+# a caller that dispatches a batch one line at a time (kingpin-watch): lines
+# appended while the batch runs stay pending, and a restart resumes at the first
+# undispatched line. The cursor never moves backwards, and it is clamped to the
+# file's line count.
+#
+# Usage: kingpin-ack [--through <line>] <task-id>... | --all
 set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
@@ -13,6 +19,7 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 tasks_dir="$KP_HOME/tasks"
 
 ALL=0
+THROUGH=''
 TARGETS=()
 
 while [ $# -gt 0 ]; do
@@ -21,8 +28,15 @@ while [ $# -gt 0 ]; do
       ALL=1
       shift
       ;;
+    --through)
+      THROUGH=${2:-}
+      case $THROUGH in
+        ''|*[!0-9]*) echo "kingpin-ack: --through needs a whole line number" >&2; exit 2 ;;
+      esac
+      shift 2
+      ;;
     -h|--help)
-      echo "usage: kingpin-ack <task-id>... | --all"
+      echo "usage: kingpin-ack [--through <line>] <task-id>... | --all"
       exit 0
       ;;
     -*)
@@ -36,8 +50,13 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ "$ALL" -eq 1 ] && [ -n "$THROUGH" ]; then
+  echo "kingpin-ack: --through names one task's cursor; it cannot be combined with --all" >&2
+  exit 2
+fi
+
 if [ "$ALL" -eq 0 ] && [ ${#TARGETS[@]} -eq 0 ]; then
-  echo "usage: kingpin-ack <task-id>... | --all" >&2
+  echo "usage: kingpin-ack [--through <line>] <task-id>... | --all" >&2
   exit 2
 fi
 
@@ -49,9 +68,21 @@ ack_task() {
   local status_file="$task_dir/status"
   local stopped_file="$task_dir/stopped"
 
-  # 1. If status exists, count lines and write to seen
+  # 1. If status exists, count lines and write to seen. With --through, advance to
+  # the line the caller just handled instead, so a later append stays pending.
   if [ -f "$status_file" ]; then
-    wc -l < "$status_file" | tr -d ' ' > "$task_dir/seen"
+    if [ -n "$THROUGH" ]; then
+      local current=0 lines target
+      [ -f "$task_dir/seen" ] && current=$(tr -d ' \n' < "$task_dir/seen" 2>/dev/null || true)
+      case $current in ''|*[!0-9]*) current=0 ;; esac
+      lines=$(wc -l < "$status_file" | tr -d ' ')
+      target=$THROUGH
+      if [ "$target" -gt "$lines" ]; then target=$lines; fi
+      if [ "$target" -lt "$current" ]; then target=$current; fi
+      printf '%s\n' "$target" > "$task_dir/seen"
+    else
+      wc -l < "$status_file" | tr -d ' ' > "$task_dir/seen"
+    fi
   fi
 
   # 2. If stopped exists, read timestamp and write to seen_stopped

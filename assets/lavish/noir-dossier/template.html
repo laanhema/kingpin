@@ -38,6 +38,7 @@
   h1, h2, h3 { font-family: "Playfair Display", Georgia, serif; margin: 0; letter-spacing: -.01em; }
   .kicker, .label, .rule-label, .stamp, code, th, .rank-name {
     font-family: "Special Elite", "Courier New", monospace;
+    overflow-wrap: anywhere;
   }
   .kicker {
     font-size: 12px; letter-spacing: .18em; text-transform: uppercase;
@@ -51,7 +52,7 @@
     border-radius: 4px; background: #0b0a08;
     box-shadow: 0 30px 80px rgba(0,0,0,.55);
   }
-  .hero-figure img { display: block; width: 100%; height: auto; filter: sepia(.14) contrast(1.03); }
+  .hero-figure img { display: block; width: 100%; max-width: 100%; height: auto; filter: sepia(.14) contrast(1.03); }
   .hero-copy {
     position: relative; padding: 26px 4px 0; display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 420px); gap: 28px; align-items: end;
@@ -106,7 +107,7 @@
     text-align: left; font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase;
     color: var(--sepia); border-bottom: 2px solid rgba(27,23,18,.35); padding: 0 12px 8px 0;
   }
-  td { vertical-align: top; padding: 12px 12px 12px 0; border-bottom: 1px solid var(--paper-rule); }
+  td { vertical-align: top; padding: 12px 12px 12px 0; border-bottom: 1px solid var(--paper-rule); overflow-wrap: anywhere; }
   td:first-child { width: 24%; }
   .rank-name { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-on-paper); }
   .rank-who { display: block; font-size: 14px; color: #55483a; margin-top: 3px; }
