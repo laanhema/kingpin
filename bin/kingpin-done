@@ -137,7 +137,11 @@ fi
 # The window ID survives rename and move; older task.env files only have the name.
 tmux_target=${TMUX_WINDOW_ID:-${TMUX_TARGET:-kingpin:$id}}
 tmux kill-window -t "$tmux_target" 2>/dev/null || true
-"$KP_BIN/kingpin-ack" "$id" >/dev/null 2>&1 || true
+# No status ack here. The refusal paths exit above and the success path archives
+# the task directory below, so this ack bought nothing; a plain `kingpin-ack`
+# would also write `seen` to the file's *current* length and acknowledge away a
+# note the still-open listener appended while the cleanup ran. kingpin-watch
+# owns the cursor once the merged: dispatch returns.
 
 # Clean up background lavish listener and session
 stop_listener
