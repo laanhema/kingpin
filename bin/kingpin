@@ -19,7 +19,7 @@
 #   kingpin guard [install|check|warn]
 #   kingpin scope files|check --harness <name> --worktree <dir> [--preamble <file>]
 #   kingpin report diffs [--repo <dir>] [--base <ref>] | check [--prose-only] <report.html>
-#   kingpin curate
+#   kingpin curate [--dry-run]
 set -euo pipefail
 
 KP_BIN=$(cd "$(dirname "$0")" && pwd)

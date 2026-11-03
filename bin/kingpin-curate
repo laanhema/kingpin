@@ -2,27 +2,84 @@
 # Collect saved skill critique lines from task directories and run one curator worker in ~/.claude/skills.
 #
 # Usage: kingpin-curate [--dry-run]
+#
+# One run at a time: collection through launch is serialized by the shared
+# `lib/mutex.sh` mutex at $KP_HOME/curator/curator.mutex, so two runs that start
+# together cannot both publish the shared curator state.
 set -euo pipefail
 
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 SKILLS_DIR="${KINGPIN_SKILLS_DIR:-$HOME/.claude/skills}"
 CLAUDE_CMD="${KINGPIN_CURATOR_CMD:-${KINGPIN_CLAUDE:-claude}}"
-DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
-[ -d "$SKILLS_DIR" ] || { echo "kingpin-curate: skills directory $SKILLS_DIR not found" >&2; exit 1; }
+# shellcheck source=../lib/mutex.sh
+. "$KP_ROOT/lib/mutex.sh"
+
+die() { echo "kingpin-curate: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'HELP'
+Usage: kingpin curate [--dry-run]
+
+Collect saved skill critique lines from finished task directories and run one
+curator worker in the skills directory.
+
+Options:
+  --dry-run   list the pending critiques and change nothing
+  -h, --help  show this help and exit
+HELP
+}
+
+DRY_RUN=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "kingpin-curate: unknown argument '$1'. Run 'kingpin curate --help' for usage." >&2; exit 2 ;;
+  esac
+  shift
+done
+
+[ -d "$SKILLS_DIR" ] || die "skills directory $SKILLS_DIR not found"
 
 curator_dir="$KP_HOME/curator"
-mkdir -p "$KP_HOME" "$curator_dir"
+mutex_file="$curator_dir/curator.mutex"
 
 input_file="$curator_dir/curator-input.txt"
 batch_file="$curator_dir/batch-critiques.txt"
 prompt_file="$curator_dir/prompt.txt"
 launch_file="$curator_dir/launch.sh"
 result_file="$KP_HOME/curator-result"
+collected_dir="$curator_dir/collected"
 
-: > "$input_file"
-: > "$batch_file"
+# Collect into a temporary directory: --dry-run must not touch the curator state.
+tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/kingpin-curate.XXXXXX")
+input_tmp="$tmp_dir/curator-input.txt"
+batch_tmp="$tmp_dir/batch-critiques.txt"
+collected_tmp="$tmp_dir/collected"
+: > "$input_tmp"
+: > "$batch_tmp"
+mkdir -p "$collected_tmp"
+
+# The mutex is a backstop for every exit path, including the refusals below.
+mutex_held=0
+cleanup() {
+  if [ "$mutex_held" -eq 1 ]; then
+    kp_mutex_release "$mutex_file"
+  fi
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+# Serialize collection through launch: two runs that start together must not both
+# publish curator-input.txt, batch-critiques.txt and launch.sh, or share the same
+# curator-result. A dry run writes nothing and takes no mutex.
+if [ "$DRY_RUN" -eq 0 ]; then
+  kp_mutex_acquire "$mutex_file" \
+    || die "could not take the curator mutex (held by pid ${kp_mutex_owner:-unknown} for more than 8 s)"
+  mutex_held=1
+fi
 
 count=0
 seen_tasks=""
@@ -36,13 +93,24 @@ for search_dir in "$KP_HOME/tasks" "$KP_HOME/archive"; do
     esac
     crit_file="$task_dir/critique"
     if [ -f "$crit_file" ] && [ -s "$crit_file" ]; then
+      # A successful run copies the applied bytes beside the critique as
+      # critique.consumed. The stamp travels with the task when kingpin done
+      # archives it, and a rewritten critique no longer matches, so it is
+      # collected again.
+      stamp_file="$task_dir/critique.consumed"
+      if [ -f "$stamp_file" ] && cmp -s "$stamp_file" "$crit_file"; then
+        continue
+      fi
       seen_tasks="$seen_tasks $task_id"
+      # Keep the exact bytes the curator is given: the stamp is written from this
+      # copy, so a critique rewritten while the run is in flight is not consumed.
+      cp "$crit_file" "$collected_tmp/$task_id"
       {
         echo "--- Task $task_id ---"
         cat "$crit_file"
         echo ""
-      } >> "$input_file"
-      echo "$crit_file" >> "$batch_file"
+      } >> "$input_tmp"
+      echo "$crit_file" >> "$batch_tmp"
       count=$((count + 1))
     fi
   done
@@ -55,15 +123,45 @@ fi
 
 if [ "$DRY_RUN" -eq 1 ]; then
   echo "kingpin-curate: dry-run, $count task(s) have pending critiques:"
-  cat "$input_file"
+  cat "$input_tmp"
   exit 0
 fi
 
-# Ensure no curator is already active
-if tmux list-panes -t kingpin:curator >/dev/null 2>&1; then
-  echo "kingpin-curate: curator window kingpin:curator is already active" >&2
-  exit 1
-fi
+# Ensure no curator is already active. A window whose only panes have exited is
+# not a curator: on a host with tmux's remain-on-exit set, a failed launch leaves
+# that dead pane behind, and treating it as live would block every later run.
+curator_state() {
+  local panes
+  panes=$(tmux list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null) || { echo none; return; }
+  if printf '%s\n' "$panes" | grep -q '^0$'; then
+    echo alive
+  else
+    echo dead
+  fi
+}
+
+case "$(curator_state)" in
+  alive)
+    die "curator window kingpin:curator is already active"
+    ;;
+  dead)
+    tmux kill-window -t kingpin:curator 2>/dev/null || true
+    echo "kingpin-curate: reaped dead curator window kingpin:curator"
+    ;;
+  none) : ;;
+esac
+
+# claude stops at the folder-trust dialog in a directory it has not been trusted
+# in, and a curator parked there writes no result and holds the window open. Record
+# trust first, with the same helper and redirection kingpin-spawn uses.
+node "$KP_ROOT/lib/claude-trust.mjs" "$SKILLS_DIR" >/dev/null
+
+# Only a real run publishes the collected batch and touches the curator state.
+mkdir -p "$KP_HOME" "$curator_dir"
+mv "$input_tmp" "$input_file"
+mv "$batch_tmp" "$batch_file"
+rm -rf "$collected_dir"
+mv "$collected_tmp" "$collected_dir"
 
 # Write prompt to file safely preserving single/double quotes and $() verbatim
 cat > "$prompt_file" << 'EOF_PROMPT'
@@ -89,6 +187,26 @@ export KINGPIN_HOME='$KP_HOME'
 PROMPT_FILE='$prompt_file'
 RESULT_FILE='$result_file'
 BATCH_FILE='$batch_file'
+COLLECTED_DIR='$collected_dir'
+
+# Resolve the critique by task id: kingpin done may have moved the task into the
+# archive, or into archive/<id>.<n> on a name collision, while the curator ran.
+critique_for_task() {
+  local id=\$1 dir
+  for dir in "\$KINGPIN_HOME/tasks/\$id" "\$KINGPIN_HOME/archive/\$id"; do
+    if [ -f "\$dir/critique" ]; then
+      printf '%s\n' "\$dir/critique"
+      return 0
+    fi
+  done
+  for dir in "\$KINGPIN_HOME/archive/\$id".*; do
+    if [ -f "\$dir/critique" ]; then
+      printf '%s\n' "\$dir/critique"
+      return 0
+    fi
+  done
+  return 1
+}
 
 curator_rc=0
 $CLAUDE_CMD "\$(cat "\$PROMPT_FILE")" || curator_rc=\$?
@@ -96,8 +214,25 @@ $CLAUDE_CMD "\$(cat "\$PROMPT_FILE")" || curator_rc=\$?
 if [ "\$curator_rc" -eq 0 ] && [ -f "\$RESULT_FILE" ] && [ -s "\$RESULT_FILE" ]; then
   applied_count=0
   while IFS= read -r crit_file; do
-    if [ -f "\$crit_file" ]; then
-      mv -f "\$crit_file" "\$crit_file.applied.\$(date +%s)"
+    [ -n "\$crit_file" ] || continue
+    task_id=\$(basename "\$(dirname "\$crit_file")")
+    target=\$(critique_for_task "\$task_id") || continue
+    # The stamp is a copy of the bytes the curator was given, not of the file at
+    # completion, so a critique rewritten during the run is not marked consumed.
+    snapshot="\$COLLECTED_DIR/\$task_id"
+    if [ ! -f "\$snapshot" ]; then
+      echo "kingpin-curate: no collected copy for \$task_id; leaving its critique pending" >&2
+      continue
+    fi
+    if ! cmp -s "\$snapshot" "\$target"; then
+      echo "kingpin-curate: critique for \$task_id changed while the curator ran; leaving it pending" >&2
+      continue
+    fi
+    # The stamp is written first: a process killed between the stamp and the
+    # rename still leaves the critique consumed on the next run.
+    stamp="\$target.consumed"
+    if cp -f "\$snapshot" "\$stamp.tmp.\$\$" && mv -f "\$stamp.tmp.\$\$" "\$stamp"; then
+      mv -f "\$target" "\$target.applied.\$(date +%s)"
       applied_count=\$((applied_count + 1))
     fi
   done < "\$BATCH_FILE"
@@ -110,5 +245,10 @@ chmod +x "$launch_file"
 
 tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
 tmux new-window -d -t kingpin: -n curator -c "$SKILLS_DIR" "$launch_file"
+
+# The window now exists and the state is published, so a second run sees a live
+# curator and refuses; the mutex only has to cover collection through launch.
+kp_mutex_release "$mutex_file"
+mutex_held=0
 
 echo "OK: spawned curator in tmux kingpin:curator for $count task critique(s)"
