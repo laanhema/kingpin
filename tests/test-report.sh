@@ -172,11 +172,146 @@ printf '<div><pre>a line the host page must wrap</pre></div>\n' > "$T/fragment-p
 "$KP_BIN/kingpin" report check --prose-only "$T/fragment-pre.html" >/dev/null 2>&1 && pass "a fragment is not layout-checked" || fail "a fragment was treated as a full page"
 
 # The fixture with its guards stripped is the page that used to reach review looking broken.
-sed -e 's/min-width: 0;//' -e 's/ overflow-wrap: anywhere;//g' -e 's/table-layout: fixed;//' -e 's/white-space: pre-wrap;//g' -e 's/overflow-x: auto;//' "$FIX" > "$T/stripped.html"
+sed -e 's/min-width: 0;//' -e 's/ overflow-wrap: anywhere;//g' -e 's/table-layout: fixed;//' -e 's/white-space: pre-wrap;//g' -e 's/overflow-x: auto;//' -e 's/max-width: 100%;//' "$FIX" > "$T/stripped.html"
 out=$("$KP_BIN/kingpin" report check --prose-only "$T/stripped.html" 2>&1) && fail "check accepted the stripped fixture" || pass "check rejects the stripped fixture"
 echo "$out" | grep -q 'stripped.html:[0-9]*: <pre> has no wrap rule' && pass "the stripped fixture names a <pre>" || fail "no <pre> hit in the stripped fixture: $out"
 echo "$out" | grep -q 'stripped.html:[0-9]*: <table> has no wrap rule' && pass "the stripped fixture names a table" || fail "no table hit in the stripped fixture: $out"
 echo "$out" | grep -q 'stripped.html:[0-9]*: <code> has no wrap rule' && pass "the stripped fixture names the inline code" || fail "no code hit in the stripped fixture: $out"
+echo "$out" | grep -q 'stripped.html:[0-9]*: <img> has no max-width rule' && pass "the stripped fixture names an image" || fail "no <img> hit in the stripped fixture: $out"
+
+# An image keeps its intrinsic width unless a max-width rule reaches it.
+cat > "$T/img-bare.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<img src="shot.png" alt="a screenshot with no size rule" />
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/img-bare.html" 2>&1) && fail "check accepted an image with no max-width rule" || pass "check rejects an image with no max-width rule"
+echo "$out" | grep -q 'img-bare.html:6: <img> has no max-width rule' && pass "the image failure names its line" || fail "no file:line for the image: $out"
+
+# overflow-wrap inherits, so a rule on p reaches the inline code inside it.
+cat > "$T/inherited-wrap.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  p { overflow-wrap: anywhere; }
+</style></head><body>
+<p><code>/home/lauri/.treehouse/kingpin-edca9a/3/kingpin/tests/test-watch-supervisor.sh</code></p>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/inherited-wrap.html" >/dev/null 2>&1 && pass "a wrap rule on p reaches the inline code inside it" || fail "an inherited overflow-wrap was not seen"
+
+# A layout guard is judged per layout rule: an unrelated min-width rule does not cover this grid.
+cat > "$T/grid-unrelated-guard.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  code { overflow-wrap: anywhere; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; }
+  .muted { min-width: 0; color: #888; }
+</style></head><body>
+<div class="grid"><p class="muted">left</p><p>right</p></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/grid-unrelated-guard.html" 2>&1) && fail "check accepted a grid guarded only by an unrelated rule" || pass "check does not lend an unrelated min-width rule to a grid"
+echo "$out" | grep -q 'grid-unrelated-guard.html:4: grid/flex layout has no shrink guard' && pass "the grid failure names the layout rule's line" || fail "no file:line for the unguarded grid: $out"
+
+# `display` declared only in an inline style is still a layout.
+cat > "$T/grid-inline-display.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<div style="display: grid; grid-template-columns: 1fr 1fr"><p>left</p><p>right</p></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/grid-inline-display.html" 2>&1) && fail "check accepted a grid declared only in an inline style" || pass "check reads display from an inline style"
+echo "$out" | grep -q 'grid-inline-display.html:5: grid/flex layout has no shrink guard' && pass "the inline grid failure names its element's line" || fail "no file:line for the inline grid: $out"
+
+# A comment and a script body are not rendered, so the elements written there are not judged.
+cat > "$T/ignored-elements.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<!-- The old page had <pre> without a wrap rule and .grid { display: grid; grid-template-columns: 1fr 1fr; } -->
+<p>Clean page.</p>
+<script>const template = "<table><tr><td>no wrap rule</td></tr></table>";</script>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/ignored-elements.html" >/dev/null 2>&1 && pass "comments and script bodies are not scanned as elements" || fail "a comment or script body tripped the layout pass"
+
+# A fixed table layout alone leaves a long token running into the next column.
+cat > "$T/table-fixed-bare.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+  table { width: 100%; max-width: 100%; table-layout: fixed; }
+</style></head><body>
+<table><tbody><tr><td>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</td><td>b</td></tr></tbody></table>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/table-fixed-bare.html" 2>&1) && fail "check accepted a fixed table with no cell wrap rule" || pass "check requires a cell wrap rule on a fixed table"
+echo "$out" | grep -q 'table-fixed-bare.html:7: <table> has no wrap rule' && pass "the fixed-table failure names its line" || fail "no file:line for the fixed table: $out"
+
+# The declaration parser accepts the shorthand, !important and a single-quoted style.
+cat > "$T/pre-overflow-shorthand.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+  pre { overflow: auto; }
+</style></head><body>
+<pre>$ ./tests/test-report.sh --filter a-line-that-never-wraps</pre>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/pre-overflow-shorthand.html" >/dev/null 2>&1 && pass "pre accepts the overflow shorthand" || fail "pre { overflow: auto } was rejected"
+
+cat > "$T/pre-important.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+  pre { white-space: pre-wrap !important; }
+</style></head><body>
+<pre>$ ./tests/test-report.sh --filter a-line-that-never-wraps</pre>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/pre-important.html" >/dev/null 2>&1 && pass "pre accepts !important on its wrap rule" || fail "white-space: pre-wrap !important was rejected"
+
+cat > "$T/pre-single-quote.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<pre style='white-space: pre-wrap'>$ ./tests/test-report.sh --filter a-line-that-never-wraps</pre>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/pre-single-quote.html" >/dev/null 2>&1 && pass "an inline style in single quotes is read" || fail "a single-quoted inline style was rejected"
+
+# The documented block and the checker cannot drift: a page built from the block in
+# worker/preamble.md must pass, with a table, a long pre, a grid, inline code and an image.
+{
+  echo '<!DOCTYPE html>'
+  echo '<html><head>'
+  awk '/^```html$/ { if (!seen) { seen = 1; inside = 1; next } } inside && /^```$/ { exit } inside { print }' "$KP_ROOT/worker/preamble.md"
+  echo '<style>'
+  echo '  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }'
+  echo '</style>'
+  echo '</head><body>'
+  echo '<p>Built from the documented block.</p>'
+  echo '<table><thead><tr><th>File</th><th>Change</th></tr></thead><tbody><tr><td><code>/home/lauri/.treehouse/kingpin-edca9a/3/kingpin/tests/test-watch-supervisor.sh</code></td><td>A cell that has to wrap inside its column.</td></tr></tbody></table>'
+  echo '<pre>$ ./tests/test-report.sh --filter /home/lauri/.treehouse/kingpin-edca9a/3/kingpin/tests/test-watch-supervisor-2026-11-03T16-02-odd-and-very-long-run-identifier-0123456789abcdef.sh</pre>'
+  echo '<div class="cols"><div><p>Left column with a long unbroken token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</p></div><div><p>Right column.</p></div></div>'
+  echo '<img src="screenshot-before.svg" alt="a screenshot" />'
+  echo '</body></html>'
+} > "$T/block.html"
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/block.html" 2>&1) && pass "a page built from the documented block passes" || fail "the documented block no longer satisfies the check: $out"
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL REPORT TESTS PASSED"

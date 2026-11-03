@@ -32,6 +32,10 @@
   h2 { font-size: 20px; margin-top: 28px; }
   p { margin: 0 0 12px; }
   code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13.5px; overflow-wrap: anywhere; }
+  img { max-width: 100%; height: auto; display: block; }
+  .shots { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  .shot { margin: 0; }
+  .shot img { border: 1px solid var(--line); border-radius: 6px; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px 20px; margin: 0 0 20px; }
   .muted { color: var(--muted); }
   .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 1px 10px; font-size: 12.5px; color: var(--muted); }
@@ -94,6 +98,20 @@
       </table>
     </section>
   </div>
+
+  <section class="panel">
+    <h2>Before and after</h2>
+    <div class="shots">
+      <figure class="shot">
+        <img src="screenshot-before.svg" alt="The page before the fix, scrolling sideways at 1024." />
+        <figcaption class="muted">Before: the screenshot kept its 1024 px width and pushed the page wider.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="screenshot-after.svg" alt="The page after the fix, holding its width at 1024." />
+        <figcaption class="muted">After: the image shrinks to its column and the page holds its width.</figcaption>
+      </figure>
+    </div>
+  </section>
 
   <section id="kp-diffs">
     <div class="kp-diff-file">

@@ -45,6 +45,7 @@ widths. Every dossier carries this block, and the generated diff fallback needs 
   code { overflow-wrap: anywhere; }
   table { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; }
   th, td { overflow-wrap: anywhere; vertical-align: top; }
+  img { max-width: 100%; height: auto; }
 </style>
 ```
 
@@ -55,9 +56,10 @@ wider than its container. A dossier that scrolls sideways, overlaps text, clips 
 or truncates data is rejected at review, so fit the text to the box and wrap it.
 
 `bin/kingpin-report check` fails on the mechanical causes and names the line: a `pre` with no wrap
-rule, inline `code` with none, a table with none, a grid or flex layout with no shrink guard, and a
-`src`, `href` or `url()` that is an absolute path or climbs out with `..`. Fix the line it names;
-`overflow: hidden`, a narrower font or a shortened value is not a fix.
+rule, inline `code` with none, an `img` with no `max-width`, a table whose cells have none, a grid
+or flex layout with no shrink guard, and a `src`, `href` or `url()` that is an absolute path or
+climbs out with `..`. Fix the line it names; `overflow: hidden`, a narrower font or a shortened
+value is not a fix.
 
 Diffs in `report.html` (the section that shows each changed file) must go through `@pierre/diffs`, whose `FileDiff` takes `oldFile` and `newFile`, each `{ name, contents }`. It has no `patch` option: `render({ containerWrapper, patch: diffString })` returns without rendering and leaves the section blank. Generate the section with the helper (it only reads git and prints HTML; it is not an orchestration command):
 
@@ -80,6 +82,6 @@ It covers committed, uncommitted and untracked files, includes a static diff tha
 </script>
 ```
 
-Before you append `ready:` or `merged:`, run `{{KP_ROOT}}/bin/kingpin-report check {{TASK_DIR}}/report.html`. It prints `FAILED: <file>:<line>:` when the diff section would render blank, when the layout pass finds a `pre`, `code`, table, grid/flex or asset path that lets the page overflow, and when a prose line carries one of the tells above; fix that line and run it again. If a flagged word is genuinely wanted, put `<!-- unslop:ignore -->` on that line. Do not report ready on a failing check.
+Before you append `ready:` or `merged:`, run `{{KP_ROOT}}/bin/kingpin-report check {{TASK_DIR}}/report.html`. It prints `FAILED: <file>:<line>:` when the diff section would render blank, when the layout pass finds a `pre`, `code`, image, table, grid/flex or asset path that lets the page overflow, and when a prose line carries one of the tells above; fix that line and run it again. If a flagged word is genuinely wanted, put `<!-- unslop:ignore -->` on that line. Do not report ready on a failing check.
 
 Work only inside this worktree and the task folder. Push, merge, or delete a branch only when the command you run (`/do`, `/issue-flow-done`) does it. A person may type into this window directly: treat that as authoritative.
