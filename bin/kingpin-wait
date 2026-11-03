@@ -49,6 +49,11 @@ check_task() {
   local task_env="$dir/task.env"
   [ -f "$task_env" ] || return 0
 
+  # A worker that stopped without a single status line failed at launch. The
+  # helper appends `failed: no status: ...` once its grace period is over, so the
+  # new line is counted as a status event below. Its stdout is not an event.
+  [ -s "$dir/status" ] || "$(dirname "$0")/kingpin-launch-check" "$dir" >/dev/null 2>&1 || true
+
   local status_file="$dir/status"
   local seen_file="$dir/seen"
   local stopped_file="$dir/stopped"
@@ -118,6 +123,7 @@ check_task() {
       local pane_tail
       pane_tail=$(tmux capture-pane -pt "$tmux_target" -S -30 2>/dev/null || true)
 
+      # Working markers: keep in step with the copy in kingpin-launch-check.
       case "$harness" in
         claude)
           if echo "$pane_tail" | grep -qE "Waiting for [0-9]+ background agent|Background agent"; then
