@@ -1,0 +1,15 @@
+diff --git a/tests/test-worker-settings.sh b/tests/test-worker-settings.sh
+index 1ef702f..20c42f5 100755
+--- a/tests/test-worker-settings.sh
++++ b/tests/test-worker-settings.sh
+@@ -200,7 +200,9 @@ rc=0; printf '{}' | env -u KINGPIN_ROOT bash -c "$worker_cmd" >/dev/null 2>&1 ||
+ echo "=== Test 4: init and lock wiring ==="
+ unset KINGPIN_SKIP_GUARD
+ rm -f "$T/proj/.claude/settings.local.json"
+-(cd "$T/proj" && "$KP_BIN/kingpin" guard check >/dev/null 2>&1) && fail "proj wrapper check saw a guard it should not"
++# --dir is required: kingpin-guard ignores the working directory and defaults to its own checkout,
++# which carries a guard when the suite runs in the orchestrator's main checkout.
++"$KP_BIN/kingpin" guard check --dir "$T/proj" >/dev/null 2>&1 && fail "proj wrapper check saw a guard it should not" || pass "proj wrapper check fails without a guard"
+ lock_err=$(KINGPIN_LOCK_PID=$$ "$T/proj/bin/kingpin-lock" acquire 2>&1 >/dev/null || true)
+ echo "$lock_err" | grep -q "guard is not active" && pass "lock acquire warns when the guard is missing" || fail "no lock warning: $lock_err"
+ list_err=$("$T/proj/bin/kingpin" list 2>&1 >/dev/null || true)

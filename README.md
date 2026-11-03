@@ -183,6 +183,8 @@ Each supported harness uses native configuration and hook mechanisms without dir
 
 Kingpin-injected worktree configuration files (`.agents/rules/kingpin.md`, `.agents/hooks.json`, `.opencode/config.json`, `.opencode/plugins/package.json`, and `.opencode/plugins/kingpin-stop.js`) are added to `.git/info/exclude` in each leased worktree to guarantee zero uncommitted git pollution without hiding user-created artifacts in those directories.
 
+`.gitignore` ignores `.agents/plans/`, `.agents/reports/` and `.agents/reviews/`. They hold local working artifacts (plans, implementation reports, reviews and prototype patches) that agents write while they work, so they are not tracked. Other files under `.agents/`, such as a PRD, stay trackable.
+
 ---
 
 ## Running Automated Tests

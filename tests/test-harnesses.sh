@@ -138,11 +138,10 @@ status_out=$(git -C "$wt_agy" status --porcelain)
 [ -z "$status_out" ] && pass "git status in agy worktree is clean" || fail "git status dirty: $status_out"
 
 # Verify new files in .agents/ show up in git status
-mkdir -p "$wt_agy/.agents/reviews"
-touch "$wt_agy/.agents/reviews/x.md"
+touch "$wt_agy/.agents/PRD.md"
 status_out=$(git -C "$wt_agy" status --porcelain -u)
-echo "$status_out" | grep -q "\.agents/reviews/x\.md" && pass "new .agents/reviews/x.md shows in git status" || fail "new .agents file hidden from git status"
-rm -f "$wt_agy/.agents/reviews/x.md"
+echo "$status_out" | grep -q "\.agents/PRD\.md" && pass "new .agents/PRD.md shows in git status" || fail "new .agents file hidden from git status"
+rm -f "$wt_agy/.agents/PRD.md"
 
 # Test 3: OpenCode spawn
 echo "=== Test 3: OpenCode Spawn ==="
