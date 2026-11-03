@@ -51,7 +51,7 @@ The rule that keeps the orchestrator from editing code lives in `.claude/setting
 
 ## Validation
 
-Lint with `./tests/lint.sh` (`bash -n` plus shellcheck; install the version CI pins, shellcheck 0.11.0, with `pip install shellcheck-py==0.11.0.1` in a venv). The five suites are `tests/test-*.sh`; CI runs both on every PR. Disable a shellcheck rule only with a `# shellcheck disable=SCnnnn # reason` line, or in `.shellcheckrc` with a comment.
+Lint with `./tests/lint.sh` (`bash -n` plus shellcheck; install the version CI pins, shellcheck 0.11.0, with `pip install shellcheck-py==0.11.0.1` in a venv). The suites are `tests/test-*.sh` (one per feature; shared setup in `tests/lib.sh`); run them one at a time in a checkout, since two of them briefly swap `bin/kingpin-send`. CI runs the lint and one matrix leg per suite on every PR, and `./tests/lint.sh` fails when a suite has no leg. Disable a shellcheck rule only with a `# shellcheck disable=SCnnnn # reason` line, or in `.shellcheckrc` with a comment.
 
 ## How to Handle Requests
 

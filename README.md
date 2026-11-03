@@ -103,12 +103,22 @@ kingpin watch
 | `kingpin send` | `kingpin send <task-id> "<text>"` | Types the text literally into a worker window, then presses Enter. |
 | `kingpin peek` | `kingpin peek <task-id> [--lines N]` | Read-only view of a worker: prints the last 20 non-empty lines of its tmux pane (`--lines N` changes the count), scrollback included. It finds the pane from the recorded window ID (`TMUX_WINDOW_ID`), so it works after the window is renamed or moved, and falls back to `TMUX_TARGET` for older `task.env` files. It sends no keys and changes no state. Exits 1 for an unknown task or a window that is gone, 2 for a bad argument. Use it to see why a worker is stuck (an unsubmitted pasted message, a usage-limit banner, a permission prompt). |
 | `kingpin sync` | `kingpin sync` | Fast-forwards the main checkout from its upstream branch with `git pull --ff-only`, so the orchestrator never runs raw git against project files. Run it in the main checkout; it prints the old and new short SHAs plus the commits pulled, or `already up to date`. It never merges, rebases, resets or stashes. Exits 1 with a message on stderr in a linked worktree, on a dirty tree (any `git status --porcelain` output; ignored files do not count), with a detached HEAD or no upstream, or when a fast-forward is not possible; 2 for an argument. |
+| `kingpin listen` | `kingpin listen <task-id> [--once] [--background]` | Keeps a Lavish listener attached to a task's review dossier (`report.html`): opens the dossier once, then polls it and routes what the reviewer does. **Approve & Land** runs `kingpin land` and appends an `approved:` note to the task's `status`; **Request Changes** appends the text to `feedback.md` plus a `feedback:` note, and both notes wake `kingpin wait`. `--background` starts one detached listener per task (concurrent launches start only one; pid in `listener.pid`, output in `listener.log`) and returns at once; `kingpin watch` starts it when a review-mode worker reports `ready:`. `--once` stops after one poll. Without `lavish-axi` (or `KINGPIN_LAVISH`) it prints a note on stderr and exits 0. Exits 1 for an unknown task or one without `report.html`, 2 for a bad argument. `kingpin done` stops the listener. |
+| `kingpin wait` | `kingpin wait [--timeout <sec>] [--once]` | Prints one `<task-id> <reason>` line (`status`, `quiet` or `exited`) per fleet event that needs action. Exits 0 on events and on a plain timeout (nothing printed); `--once` with no events exits 1; 2 for a bad argument. See [Fleet Overview](#fleet-overview--visual-review-dossiers). |
+| `kingpin ack` | `kingpin ack <task-id>... \| --all` | Marks a task's events as seen, so `kingpin wait` reports only newer ones. |
 | `kingpin land` | `kingpin land <task-id>` (alias: `kingpin approve <task-id>`) | Serializes project landing and triggers merge. When the review verdict has findings (`APPROVE WITH NITS`, `NEEDS CHANGES`) it runs `/fix-findings` first and says so; landing continues after the worker reports `fixed:`. When the review is clean it says that landing is starting. |
 | `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, advances the queue, and archives the task record to `~/.kingpin/archive/<task-id>`. Refuses, even with `--force`, when another unfinished task records the same worktree. A refusal is recorded as a `cleanup-refused:` status line only for a finished task (`merged:`, `failed:`); a worker that may still be live keeps its last status (for example `needs-input:`), and the reason goes to stderr. `done` also stops the task's dossier listener, and `kingpin ack` of an archived task is a no-op that exits 0 with a note. |
 | `kingpin lock` | `kingpin lock [status\|check\|acquire [--harness <name>]\|release\|harness]` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. |
 | `kingpin guard` | `kingpin guard [install\|check\|warn]` | Installs or verifies the orchestrator-only tool guard, a `PreToolUse` hook in `.claude/settings.local.json` (untracked); `install` also removes the deny rules that older versions wrote there, which leaked into workers; `warn` prints a stderr warning when the guard is missing or stale; `kingpin guard hook <orchestrator\|worker>` is the hook entry point; `list` and `wait` run it at startup, and `lock acquire` prints the same warning. |
 | `kingpin report` | `kingpin report diffs [--repo <dir>] [--base <ref>]` / `kingpin report check <report.html>` | Dossier helper for workers. `diffs` prints the HTML for the file-diff section (every committed, uncommitted and untracked change, each with a static fallback and a `@pierre/diffs` call that passes `oldFile`/`newFile`). `check` exits 1 when a dossier would show blank diffs (`patch:` used, `FileDiff` without `oldFile`/`newFile`, or an empty diff container). The worker preamble tells workers to run `check` before reporting `ready:`. |
 | `kingpin curate` | `kingpin curate` | Aggregates critique files from finished worker tasks. |
+
+### Internal helpers
+
+Two scripts in `bin/` are not `kingpin` subcommands. `kingpin wait` calls them as it scans tasks (`kingpin-launch-check` for a task with an empty `status`, `kingpin-rename` when a task has new status lines); run them by hand only to debug.
+
+- `bin/kingpin-launch-check <task-dir>`: finds a worker that died at launch (its `status` file is still empty). Once the task is older than the grace period (`KINGPIN_STATUS_GRACE`, 30 seconds, counted from the last stop or from launch) and its tmux window or pane is gone, or the Stop hook fired and the window stayed silent without a working marker, it appends and prints `failed: no status: ...`. Exits 0 when it recorded that line, 1 when it recorded nothing, 2 for a bad argument.
+- `bin/kingpin-rename <task-id>`: renames the tmux window and `TMUX_TARGET` of a `--text` task to `kp-<n>-<slug>` once the worker has reported `issue: #<n>`. The task ID, folder, branch and worktree keep their first name. It is idempotent (a `renamed` marker in the task folder) and a no-op for tasks that already have an issue or no `issue:` line.
 
 ---
 
@@ -192,23 +202,35 @@ Kingpin-injected worktree configuration files (`.agents/rules/kingpin.md`, `.age
 Run the lint and the full test suite from the repository root:
 
 ```bash
-# Lint: bash -n + shellcheck over bin/*, lib/*.sh and tests/*.sh (config in .shellcheckrc)
+# Lint: bash -n + shellcheck over bin/*, lib/*.sh and tests/*.sh (config in .shellcheckrc),
+# plus a check that every tests/test-*.sh is a leg of the CI matrix
 ./tests/lint.sh
 
-# Automation suite: unified CLI, init, watch, and run
-./tests/test-automation.sh
-
-# Dossier diff helper: generated diffs are renderable, blank-diff reports are rejected
-./tests/test-report.sh
-
-# Multi-harness contract and isolation test
-./tests/test-harnesses.sh
-
-# Orchestrator tool guard and worker edit boundary: workers keep Edit/Write/Agent inside their worktree
-./tests/test-worker-settings.sh
-
-# 3-worker parallel concurrency and serial landing acceptance test
-./tests/test-acceptance.sh
+# Every suite, one after the other
+for s in tests/test-*.sh; do "./$s" || break; done
 ```
 
-CI (`.github/workflows/ci.yml`) runs the lint plus each suite on every PR and push to `main`. The suites need `git`, `tmux`, `node`, `treehouse` and a git identity (the suites set one themselves). They use fake agents, so no harness binary is required.
+The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmux server, scratch repo, helpers):
+
+| Suite | Covers |
+|---|---|
+| `test-lifecycle.sh` | `init`, `list`, `watch` auto-lifecycle, `run`, tmux session targeting |
+| `test-wait.sh` | `wait` and `ack`: blocking, wake filtering, exit codes |
+| `test-lock.sh` | `lock`: lifecycle, collisions, stale locks, recorded harness |
+| `test-curate.sh` | `curate` |
+| `test-land.sh` | `land`: review-gate verdicts, fix pass, re-review, output wording |
+| `test-done.sh` | `done`: refused cleanup, archive, slot guard, branch cleanup |
+| `test-listen.sh` | `listen`: dossier opening, live listener, prompt routing |
+| `test-send-peek.sh` | `send` and `peek` |
+| `test-spawn.sh` | `spawn`: window ID tracking, descriptive slugs, pinned window names |
+| `test-sync.sh` | `sync` |
+| `test-launch-check.sh` | `kingpin-launch-check`: workers that die at launch |
+| `test-status.sh` | `lib/status.sh`, the shared status protocol |
+| `test-report.sh` | `report`: generated diffs are renderable, blank-diff reports are rejected |
+| `test-harnesses.sh` | Multi-harness contract and isolation |
+| `test-worker-settings.sh` | Orchestrator tool guard and worker edit boundary |
+| `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
+
+Run one suite with `./tests/test-<name>.sh`. Run suites one at a time in a checkout: `test-lifecycle.sh` and `test-acceptance.sh` briefly replace `bin/kingpin-send` with a stub (restored on exit), so a second suite that sends keys to a worker during that window hits the stub and fails. CI legs do not clash, since each runs in its own checkout.
+
+CI (`.github/workflows/ci.yml`) runs the lint plus one matrix leg per suite on every PR and push to `main`. The suites need `git`, `tmux`, `node`, `treehouse` and a git identity (the suites set one themselves). They use fake agents, so no harness binary is required. A new suite needs a matrix leg; `./tests/lint.sh` fails until it has one.

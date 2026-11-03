@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Verification test for Kingpin: kingpin sync.
+set -euo pipefail
+
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
+kp_test_setup "sync"
+kp_test_project
+
+kp_test_stub_lavish
+
+# Test 21: kingpin sync fast-forwards the main checkout, never discards anything
+# ---------------------------------------------------------------------------
+echo "--- Test 21: kingpin sync ---"
+t21="$T/t21"
+mkdir -p "$t21"
+git init -q --bare "$t21/origin.git"
+git clone -q "$t21/origin.git" "$t21/main" 2>/dev/null
+git clone -q "$t21/origin.git" "$t21/other" 2>/dev/null
+for d in main other; do
+  git -C "$t21/$d" config user.email t@t
+  git -C "$t21/$d" config user.name t
+done
+(
+  cd "$t21/main"
+  git checkout -q -b main
+  echo one > f.txt
+  printf 'ignored.log\n' > .gitignore
+  git add f.txt .gitignore
+  git commit -qm "first"
+  git push -q -u origin main
+)
+git -C "$t21/other" fetch -q origin
+git -C "$t21/other" checkout -q -b main origin/main
+t21_push() { # <message>: commit from the second clone and push
+  (cd "$t21/other" && git pull -q --ff-only origin main && echo "$1" >> f.txt && git commit -qam "$1" && git push -q origin main)
+}
+t21_sync() { # run kingpin sync in $1; sets t21_out, t21_err, t21_rc
+  t21_rc=0
+  t21_out=$(cd "$1" && "$KP_BIN/kingpin" sync 2>"$t21/err") || t21_rc=$?
+  t21_err=$(cat "$t21/err")
+}
+
+t21_sync "$t21/main"
+[ "$t21_rc" -eq 0 ] && [ "$t21_out" = "already up to date" ] && pass "t21: up to date prints 'already up to date'" || fail "t21: up-to-date rc=$t21_rc out=$t21_out err=$t21_err"
+
+t21_push "second"
+t21_push "third"
+t21_old=$(git -C "$t21/main" rev-parse --short HEAD)
+t21_new_full=$(git -C "$t21/other" rev-parse HEAD)
+t21_sync "$t21/main"
+t21_new=$(git -C "$t21/main" rev-parse --short HEAD)
+if [ "$t21_rc" -eq 0 ] && [ "$(git -C "$t21/main" rev-parse HEAD)" = "$t21_new_full" ] \
+   && echo "$t21_out" | grep -q "$t21_old\.\.$t21_new" \
+   && echo "$t21_out" | grep -q " second$" && echo "$t21_out" | grep -q " third$" && ! echo "$t21_out" | grep -q " first$"; then
+  pass "t21: success pulls the commits and prints old/new SHAs and the log"
+else
+  fail "t21: success rc=$t21_rc out=$t21_out err=$t21_err"
+fi
+
+t21_push "fourth"
+echo "local edit" >> "$t21/main/f.txt"
+t21_head=$(git -C "$t21/main" rev-parse HEAD)
+t21_sync "$t21/main"
+if [ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "dirty" && [ "$(git -C "$t21/main" rev-parse HEAD)" = "$t21_head" ] && grep -q "local edit" "$t21/main/f.txt"; then
+  pass "t21: dirty tracked change is refused and left untouched"
+else
+  fail "t21: dirty rc=$t21_rc err=$t21_err"
+fi
+git -C "$t21/main" checkout -q -- f.txt
+
+echo scratch > "$t21/main/untracked.txt"
+t21_sync "$t21/main"
+if [ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "dirty" && [ -f "$t21/main/untracked.txt" ]; then
+  pass "t21: untracked file counts as dirty"
+else
+  fail "t21: untracked rc=$t21_rc err=$t21_err"
+fi
+rm -f "$t21/main/untracked.txt"
+
+echo noise > "$t21/main/ignored.log"
+t21_sync "$t21/main"
+[ "$t21_rc" -eq 0 ] && echo "$t21_out" | grep -q " fourth$" && [ -f "$t21/main/ignored.log" ] && pass "t21: ignored file does not block the sync" || fail "t21: ignored rc=$t21_rc out=$t21_out err=$t21_err"
+
+# Non-fast-forward: a local commit and a different remote commit.
+(cd "$t21/main" && echo local >> f.txt && git commit -qam "local only")
+t21_push "fifth"
+t21_head=$(git -C "$t21/main" rev-parse HEAD)
+t21_sync "$t21/main"
+if [ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "cannot fast-forward" && [ "$(git -C "$t21/main" rev-parse HEAD)" = "$t21_head" ] && [ -z "$(git -C "$t21/main" status --porcelain)" ]; then
+  pass "t21: non-fast-forward is refused without touching HEAD or the tree"
+else
+  fail "t21: non-ff rc=$t21_rc err=$t21_err"
+fi
+
+git -C "$t21/main" worktree add -q -b t21-wt "$t21/wt" HEAD
+t21_sync "$t21/wt"
+[ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "linked worktree" && pass "t21: linked worktree is refused" || fail "t21: worktree rc=$t21_rc err=$t21_err"
+
+git -C "$t21/main" checkout -q -b t21-noup
+t21_sync "$t21/main"
+[ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "no upstream" && pass "t21: branch without upstream is refused" || fail "t21: no-upstream rc=$t21_rc err=$t21_err"
+
+t21_sync "$t21"
+[ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "not a git repository" && pass "t21: non-repo directory is refused" || fail "t21: non-repo rc=$t21_rc err=$t21_err"
+
+t21_rc=0
+t21_out=$("$KP_BIN/kingpin" sync --help 2>&1) || t21_rc=$?
+[ "$t21_rc" -eq 0 ] && echo "$t21_out" | grep -q "usage: kingpin-sync" && pass "t21: --help exits 0 with usage" || fail "t21: --help rc=$t21_rc out=$t21_out"
+
+t21_rc=0
+(cd "$t21/main" && "$KP_BIN/kingpin" sync --bogus >/dev/null 2>&1) || t21_rc=$?
+[ "$t21_rc" -eq 2 ] && pass "t21: unknown argument exits 2" || fail "t21: unknown arg rc=$t21_rc"
+
+"$KP_BIN/kingpin" --help | grep -q "^  sync " && grep -q "^#   kingpin sync" "$KP_BIN/kingpin" && pass "t21: sync is in the kingpin help and header" || fail "t21: sync missing from kingpin help/header"
+
+rm -rf "$t21"
+
+kp_test_finish SYNC
