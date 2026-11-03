@@ -8,6 +8,12 @@ Kingpin is a multi-worker fleet orchestrator for AI coding agents. It runs tasks
 
 Kingpin supports **Claude Code**, **Antigravity CLI (agy)**, and **OpenCode**.
 
+## The Ranks
+
+The fleet runs on a four-rank fiction that lives in conversation. The **kingpin** is the user, who owns the jobs and the final word. The **underboss** is the orchestrator session: it plans jobs, sends out capos, reads dossiers, lands work and never touches code. A **caporegime** (capo) is one spawned worker running one job end to end in its own worktree. A **soldier** is a subagent a capo sends out under the label `Soldier: <job>`.
+
+The voice stays in the room. Commits, PRs, issues, code, status fields, review reports and dossiers stay neutral and machine-readable.
+
 ---
 
 ## Prerequisites
@@ -262,6 +268,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-launch-check.sh` | `kingpin-launch-check`: workers that die at launch |
 | `test-status.sh` | `lib/status.sh`, the shared status protocol |
 | `test-report.sh` | `report`: generated diffs are renderable, blank-diff reports are rejected |
+| `test-ranks.sh` | rank voice: the contract's Ranks section, the capo preamble, and the neutral status lines |
 | `test-noir-template.sh` | noir dossier template: the three files ship together, every ref stays inside the folder, the diffs keep static fallbacks, the prose stays clean |
 | `test-harnesses.sh` | Multi-harness contract and isolation |
 | `test-worker-scope.sh` | Worker instruction context: what each harness really loads, the spawn refusal, the installed contract |
