@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Record a worker's turn end and make its outcome explicit (issue #102).
+#
+# One Stop hook for all three harnesses: Claude Code's worker/hooks.json, agy's
+# .agents/hooks.json, and OpenCode's .opencode/plugins/kingpin-stop.js. It writes the
+# `stopped` timestamp exactly as the old one-line hook did, then fills the one hole
+# the status protocol allows: a worker that ended a turn without reporting.
+#
+# The turn boundary is the previous `stopped` file. A status file that is newer than
+# it was written during this turn (bash's -nt compares mtimes, so the protocol needs
+# no new state file). The first stop has no boundary yet and the whole session is one
+# turn, so any worker event counts as a report.
+#
+#   no status this turn, last line needs-input:/feedback:  -> waiting: <kind> <path>
+#   no status this turn, anything else                     -> failed: no status: stopped without reporting
+#   a status was written this turn                         -> left untouched
+#
+# A stop hook that fails must not trap the session: every write is best effort, a
+# failure is named on stderr, and the exit status is always 0.
+#
+# Usage: kingpin-stop   (reads $KINGPIN_TASK_DIR)
+set -euo pipefail
+
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=../lib/status.sh
+. "$KP_ROOT/lib/status.sh"
+
+task_dir=${KINGPIN_TASK_DIR:-}
+if [ -z "$task_dir" ] || [ ! -d "$task_dir" ]; then
+  echo "kingpin-stop: KINGPIN_TASK_DIR is unset or not a directory; the worker's outcome is not recorded" >&2
+  exit 0
+fi
+
+status_file="$task_dir/status"
+stopped_file="$task_dir/stopped"
+now=$(date +%s)
+
+warn() { echo "kingpin-stop: $*" >&2; }
+
+last=$(kp_status_last "$status_file")
+newest=$(kp_status_newest "$status_file")
+
+# A finished task has nothing left to report.
+if kp_status_is_terminal "$last"; then
+  :
+else
+  fresh=0
+  if [ -s "$status_file" ] && [ "$(kp_status_worker_events "$status_file")" -gt 0 ]; then
+    if [ ! -f "$stopped_file" ]; then
+      fresh=1
+    elif [ "$status_file" -nt "$stopped_file" ]; then
+      # A line appended after the previous turn ended belongs to this turn.
+      fresh=1
+    fi
+  fi
+
+  if [ "$fresh" -eq 0 ]; then
+    if kp_status_is_silent "$newest" || [ "${newest%%:*}" = waiting ]; then
+      # This stop is already recorded for the same state; do not pile up lines.
+      :
+    elif kp_status_is_waiting "$newest"; then
+      kind=${newest%%:*}
+      path="$task_dir/question.md"
+      [ "$kind" = feedback ] && path="$task_dir/feedback.md"
+      printf '%s\n' "waiting: $kind $path" 2>/dev/null >> "$status_file" \
+        || warn "cannot append the waiting line to $status_file"
+    else
+      printf '%s\n' 'failed: no status: stopped without reporting' 2>/dev/null >> "$status_file" \
+        || warn "cannot append the missing status to $status_file"
+    fi
+  fi
+fi
+
+# The marker kingpin-wait, kingpin-launch-check and kingpin-ack read. The old hook
+# wrote it unconditionally, even when the worker had reported.
+printf '%s\n' "$now" > "$stopped_file" 2>/dev/null || warn "cannot write $stopped_file"
+
+exit 0

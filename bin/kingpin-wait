@@ -73,11 +73,12 @@ is_launching() {
   [ "$age" -lt "$LAUNCH_GRACE" ]
 }
 
-# True when the worker already reported `needs-input:` (acknowledged) and its pane
-# shows no activity since that ack: a stop in that state is the same idle wait.
+# True when the worker already reported a wait (needs-input:, a feedback: note, or
+# the Stop hook's waiting: line) and its pane shows no activity since that ack: a
+# stop in that state is the same idle wait.
 quiet_held() {
   local dir=$1 target=$2 last=$3 count=$4 seen=$5
-  case "$last" in needs-input:*) ;; *) return 1 ;; esac
+  kp_status_is_waiting "$last" || return 1
   [ "$count" -eq "$seen" ] || return 1
   [ -f "$dir/seen_activity" ] || return 1
   local now_act

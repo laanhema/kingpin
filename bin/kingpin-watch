@@ -184,6 +184,9 @@ process_task_event() {
     needs-input:*)
       echo "[kingpin-watch] $id needs input (question at $task_dir/question.md)"
       ;;
+    waiting:*)
+      echo "[kingpin-watch] $id is waiting: ${last_status#waiting: }"
+      ;;
   esac
 }
 

@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# Verification test for Kingpin: a worker's stop always leaves an outcome (issue #102).
+#
+# Covers the shared Stop hook (bin/kingpin-stop) in all three harnesses, the
+# failed:/waiting: lines it appends, the fail-soft contract, and the STATE column of
+# `kingpin list`.
+set -euo pipefail
+
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
+kp_test_setup "worker-stop"
+kp_test_project
+
+# The real Claude Code Stop command, read from the tracked settings file.
+claude_stop_cmd=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).hooks.Stop[0].hooks[0].command)' "$KP_ROOT/worker/hooks.json")
+run_claude_stop() { # <task-dir>
+  KINGPIN_TASK_DIR=$1 KINGPIN_ROOT=$KP_ROOT bash -c "$claude_stop_cmd"
+}
+
+# One live window stands in for the worker pane, so `kingpin list` sees the tasks as live.
+probe_wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n kp102-probe 'exec bash')
+[ -n "$probe_wid" ] && pass "probe window created ($probe_wid)" || fail "could not create the probe window"
+
+mk_task() { # <id> <harness>; prints the task dir
+  local d="$KINGPIN_HOME/tasks/$1"
+  mkdir -p "$d"
+  cat > "$d/task.env" << ENV
+TASK_ID=$1
+PROJECT=demo-auto
+HARNESS=$2
+MODE=review
+TMUX_TARGET=kingpin:$1
+TMUX_WINDOW_ID=$probe_wid
+CREATED=$(date -Iseconds)
+ENV
+  : > "$d/status"
+  printf '%s\n' "$d"
+}
+
+# Test 1: a silent stop gets a failed line, the exact line the issue names
+echo "=== Test 1: a silent stop gets a failed line ==="
+d=$(mk_task kp102-silent claude)
+run_claude_stop "$d"
+grep -qx 'failed: no status: stopped without reporting' "$d/status" && pass "a worker that stops without a status gets the failed line" || fail "silent stop status: $(cat "$d/status")"
+[ -s "$d/stopped" ] && pass "the stop hook still records the stopped timestamp" || fail "the stop hook did not write stopped"
+[ "$(wc -l < "$d/status" | tr -d ' ')" = "1" ] && pass "the failed line is written once" || fail "silent stop has $(wc -l < "$d/status") lines"
+
+# A second stop without a new line does not pile up duplicate failed lines
+run_claude_stop "$d"
+[ "$(wc -l < "$d/status" | tr -d ' ')" = "1" ] && pass "a repeated silent stop adds no second failed line" || fail "duplicate failed lines: $(cat "$d/status")"
+
+# Test 2: a status written this turn is never overwritten
+echo "=== Test 2: a status written this turn survives ==="
+d=$(mk_task kp102-ready claude)
+printf 'ready: branch=b review=APPROVE report=r.md\n' > "$d/status"
+before=$(cat "$d/status")
+run_claude_stop "$d"
+[ "$(cat "$d/status")" = "$before" ] && pass "the hook never overwrites a status written this turn" || fail "status rewritten: $(cat "$d/status")"
+[ -s "$d/stopped" ] && pass "the stop is recorded even when the worker reported" || fail "no stopped marker for a reporting worker"
+
+d=$(mk_task kp102-needs-fresh claude)
+printf 'needs-input: which option?\n' > "$d/status"
+before=$(cat "$d/status")
+run_claude_stop "$d"
+[ "$(cat "$d/status")" = "$before" ] && pass "a needs-input: written this turn is kept as it is" || fail "needs-input rewritten: $(cat "$d/status")"
+
+# Test 3: a repeated stop while waiting is recorded as waiting, not failed
+echo "=== Test 3: a waiting stop is marked waiting ==="
+d=$(mk_task kp102-waiting claude)
+printf 'needs-input: which option?\n' > "$d/status"
+touch -d '10 seconds ago' "$d/status"
+date +%s > "$d/stopped"
+run_claude_stop "$d"
+grep -qx 'needs-input: which option?' "$d/status" && pass "the worker's needs-input: line survives" || fail "needs-input lost: $(cat "$d/status")"
+grep -qx "waiting: needs-input $d/question.md" "$d/status" && pass "a repeated waiting stop appends waiting: needs-input <question path>" || fail "no waiting line: $(cat "$d/status")"
+! grep -q '^failed:' "$d/status" && pass "a waiting stop is not marked failed" || fail "waiting stop was marked failed: $(cat "$d/status")"
+run_claude_stop "$d"
+[ "$(wc -l < "$d/status" | tr -d ' ')" = "2" ] && pass "a second waiting stop adds no duplicate waiting line" || fail "duplicate waiting lines: $(cat "$d/status")"
+
+# Test 4: the hook fails soft
+echo "=== Test 4: the hook fails soft ==="
+d=$(mk_task kp102-unwritable claude)
+rm -f "$d/status"
+mkdir "$d/status"
+out=$(run_claude_stop "$d" 2>&1)
+rc=$?
+[ "$rc" -eq 0 ] && pass "an unwritable status does not fail the stop hook" || fail "unwritable status exited $rc"
+echo "$out" | grep -q "cannot append the missing status" && pass "an unwritable status is named on stderr" || fail "no warning for an unwritable status: $out"
+[ -s "$d/stopped" ] && pass "the stopped marker is still written when the status write fails" || fail "stopped missing after a failed append"
+
+out=$(KINGPIN_TASK_DIR="$T/kp102-missing" KINGPIN_ROOT=$KP_ROOT bash -c "$claude_stop_cmd" 2>&1) || true
+echo "$out" | grep -q "KINGPIN_TASK_DIR is unset or not a directory" && pass "a missing task dir is reported on stderr" || fail "no warning for a missing task dir: $out"
+out=$(KINGPIN_TASK_DIR="$d" KINGPIN_ROOT="$T/kp102-no-root" bash -c "$claude_stop_cmd" 2>&1) || true
+echo "$out" | grep -q "stop hook unavailable" && pass "a missing kingpin-stop is reported, not silenced" || fail "no warning for a missing helper: $out"
+
+# Test 5: kingpin list marks WAITING, SILENT and Unseen
+echo "=== Test 5: kingpin list STATE column ==="
+d=$(mk_task kp102-list-wait claude)
+printf 'needs-input: choose one\n' > "$d/status"
+echo 1 > "$d/seen"
+d=$(mk_task kp102-list-silent claude)
+printf 'failed: no status: stopped without reporting\n' > "$d/status"
+echo 1 > "$d/seen"
+d=$(mk_task kp102-list-plain claude)
+printf 'issue: #102\n' > "$d/status"
+echo 1 > "$d/seen"
+d=$(mk_task kp102-list-unseen claude)
+printf 'issue: #102\nready: branch=b review=APPROVE report=r.md\n' > "$d/status"
+echo 0 > "$d/seen"
+
+list_out=$("$KP_BIN/kingpin" list 2>/dev/null)
+row=$(grep '^kp102-list-wait ' <<< "$list_out" || true)
+grep -q 'WAITING' <<< "$row" && pass "a live waiting task shows WAITING" || fail "waiting row: $row"
+row=$(grep '^kp102-list-silent ' <<< "$list_out" || true)
+grep -q 'SILENT' <<< "$row" && pass "a live silently stopped task shows SILENT" || fail "silent row: $row"
+row=$(grep '^kp102-list-plain ' <<< "$list_out" || true)
+! grep -qE 'WAITING|SILENT' <<< "$row" && pass "a normal live task shows no state marker" || fail "plain row: $row"
+row=$(grep '^kp102-list-unseen ' <<< "$list_out" || true)
+grep -q 'Unseen: 2' <<< "$row" && pass "unacknowledged events show as Unseen: N" || fail "unseen row: $row"
+grep -q 'STATE' <<< "$list_out" && pass "the list header names the STATE column" || fail "no STATE header: $list_out"
+
+# The supervisor prints the waiting event instead of dropping it
+d=$(mk_task kp102-watch claude)
+printf 'waiting: needs-input /some/question.md\n' > "$d/status"
+watch_out=$("$KP_BIN/kingpin-watch" --once 2>/dev/null || true)
+grep -q "\[kingpin-watch\] kp102-watch is waiting: needs-input /some/question.md" <<< "$watch_out" && pass "kingpin-watch reports a waiting task" || fail "no waiting event from watch: $watch_out"
+
+# Test 6: the hook is wired into all three harnesses
+echo "=== Test 6: all three harnesses ==="
+cat > "$T/kp102-harness" << 'H'
+#!/usr/bin/env bash
+exec bash
+H
+chmod +x "$T/kp102-harness"
+export KINGPIN_CLAUDE=$T/kp102-harness KINGPIN_AGY=$T/kp102-harness KINGPIN_OPENCODE=$T/kp102-harness
+
+# Claude Code: the tracked settings file runs the shared helper
+grep -q 'kingpin-stop' "$KP_ROOT/worker/hooks.json" && pass "claude Stop hook runs kingpin-stop" || fail "claude Stop hook does not run kingpin-stop"
+"$KP_BIN/kingpin-spawn" demo-auto --issue 102 --id kp102-claude --harness claude >/dev/null
+d="$KINGPIN_HOME/tasks/kp102-claude"
+: > "$d/status"
+rm -f "$d/stopped"
+run_claude_stop "$d"
+grep -qx 'failed: no status: stopped without reporting' "$d/status" && pass "claude: a silent stop leaves the failed line" || fail "claude silent stop: $(cat "$d/status")"
+
+# agy: the generated .agents/hooks.json runs it, with KINGPIN_ROOT exported by the launcher
+"$KP_BIN/kingpin-spawn" demo-auto --issue 102 --id kp102-agy --harness agy >/dev/null
+d="$KINGPIN_HOME/tasks/kp102-agy"
+wt_agy=$(sed -n 's/^WORKTREE=//p' "$d/task.env")
+grep -q 'kingpin-stop' "$wt_agy/.agents/hooks.json" && pass "agy Stop hook runs kingpin-stop" || fail "agy Stop hook does not run kingpin-stop"
+grep -q '^export KINGPIN_ROOT=' "$d/launch.sh" && pass "agy launcher exports KINGPIN_ROOT for the hook" || fail "agy launcher does not export KINGPIN_ROOT"
+agy_stop_cmd=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).kingpin.Stop[0].command)' "$wt_agy/.agents/hooks.json")
+: > "$d/status"
+rm -f "$d/stopped"
+KINGPIN_TASK_DIR=$d KINGPIN_ROOT=$KP_ROOT bash -c "$agy_stop_cmd"
+grep -qx 'failed: no status: stopped without reporting' "$d/status" && pass "agy: a silent stop leaves the failed line" || fail "agy silent stop: $(cat "$d/status")"
+
+# OpenCode: the generated plugin calls it, through KINGPIN_ROOT
+"$KP_BIN/kingpin-spawn" demo-auto --issue 102 --id kp102-open --harness opencode >/dev/null
+d="$KINGPIN_HOME/tasks/kp102-open"
+wt_oc=$(sed -n 's/^WORKTREE=//p' "$d/task.env")
+grep -q 'kingpin-stop' "$wt_oc/.opencode/plugins/kingpin-stop.js" && pass "opencode Stop plugin calls kingpin-stop" || fail "opencode plugin does not call kingpin-stop"
+grep -q '^export KINGPIN_ROOT=' "$d/launch.sh" && pass "opencode launcher exports KINGPIN_ROOT for the plugin" || fail "opencode launcher does not export KINGPIN_ROOT"
+: > "$d/status"
+rm -f "$d/stopped"
+OC_PLUGIN="$wt_oc/.opencode/plugins/kingpin-stop.js" KINGPIN_TASK_DIR=$d KINGPIN_ROOT=$KP_ROOT node --input-type=module -e '
+const mod = await import(process.env.OC_PLUGIN);
+const plugin = await mod.KingpinStop();
+await plugin.event({ event: { type: "session.idle" } });
+'
+grep -qx 'failed: no status: stopped without reporting' "$d/status" && pass "opencode: a silent stop leaves the failed line" || fail "opencode silent stop: $(cat "$d/status")"
+
+tmux kill-window -t "$probe_wid" 2>/dev/null || true
+
+kp_test_finish WORKER-STOP

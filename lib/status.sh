@@ -48,6 +48,28 @@ kp_status_is_terminal() {
   esac
 }
 
+# kp_status_is_waiting <status-line>
+# Exit 0 when the line means the worker is blocked on a human: its own needs-input:,
+# the listener's feedback: note, or the Stop hook's waiting: line. `kingpin list`
+# marks such a task WAITING, and kingpin-wait holds a repeated quiet for it.
+kp_status_is_waiting() {
+  case "${1:-}" in
+    needs-input:*|feedback:*|waiting:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# kp_status_is_silent <status-line>
+# Exit 0 for the line the Stop hook (kingpin-stop) and kingpin-launch-check write
+# when a worker stopped without reporting. `kingpin list` marks a live task SILENT.
+# Both writers share the "failed: no status:" prefix.
+kp_status_is_silent() {
+  case "${1:-}" in
+    "failed: no status:"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # kp_status_field <status-line> <key>
 # The value of one key= field of a status line, whatever its position: everything
 # up to the next "<word>=" field or the end of the line, trimmed. Empty when the

@@ -29,6 +29,18 @@ done
 for t62_l in "ready: b" "needs-input: q" "fixed: high=0" "approved: x" "feedback: x" "issue: #1" ""; do
   kp_status_is_terminal "$t62_l" && fail "t62: '$t62_l' counted as terminal" || pass "t62: '${t62_l%%:*}' is not terminal"
 done
+# The Stop hook's outcome kinds (#102): waiting and silent are read here, not spelled out
+# again by kingpin list, kingpin-wait and the suites.
+for t62_l in "needs-input: q" "feedback: x" "waiting: needs-input q"; do
+  kp_status_is_waiting "$t62_l" && pass "t62: '$t62_l' is waiting" || fail "t62: '$t62_l' not waiting"
+done
+for t62_l in "ready: b" "failed: x" ""; do
+  kp_status_is_waiting "$t62_l" && fail "t62: '$t62_l' counted as waiting" || pass "t62: '$t62_l' is not waiting"
+done
+kp_status_is_silent "failed: no status: stopped without reporting" && pass "t62: the hook's no-status line is silent" || fail "t62: no-status line not silent"
+for t62_l in "failed: something else" "waiting: x" "ready: b" ""; do
+  kp_status_is_silent "$t62_l" && fail "t62: '$t62_l' counted as silent" || pass "t62: '$t62_l' is not silent"
+done
 printf '%s\n' "MODE=review" "HARNESS=agy" "HARNESS=claude" "EMPTY=" "PATH_X=a=b" > "$t62_dir/task.env"
 [ "$(kp_env_get "$t62_dir/task.env" HARNESS)" = "claude" ] && pass "t62: kp_env_get returns the last assignment" || fail "t62: kp_env_get HARNESS = $(kp_env_get "$t62_dir/task.env" HARNESS)"
 [ "$(kp_env_get "$t62_dir/task.env" PATH_X)" = "a=b" ] && [ -z "$(kp_env_get "$t62_dir/task.env" EMPTY)" ] && [ -z "$(kp_env_get "$t62_dir/task.env" NOPE)" ] && [ -z "$(kp_env_get "$t62_dir/nofile" MODE)" ] && pass "t62: kp_env_get handles = in values, empty, absent and missing file" || fail "t62: kp_env_get edge cases"
