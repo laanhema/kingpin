@@ -58,6 +58,12 @@ so no harness binary is needed.
 - User-facing success lines start with `OK:`; failures go to stderr through `die`.
 - Test suites define `pass`/`fail` from `tests/lib.sh` and print `ALL <LABEL> TESTS PASSED`
   through `kp_test_finish`.
+- `kingpin sync` refuses a tracked change, the only thing that counts as a dirty tree
+  (`git status --porcelain --untracked-files=no`). An untracked path, such as a `.lavish/`
+  handover page, does not block it and survives the fast-forward. When the incoming tree
+  would overwrite one, `git pull --ff-only` aborts before writing anything, and the sync
+  reports every such path by name and changes nothing; the fix is to move or remove the
+  named path, never to add it to `.git/info/exclude` or `.gitignore`.
 - Harness-specific files a command writes into a worktree (`.opencode/*`, `.agents/rules/*`,
   `.agents/hooks.json`) are hidden by a Kingpin-owned exclude file,
   `$KP_HOME/tasks/<id>/exclude`, which the worktree reads through a worktree-scoped
