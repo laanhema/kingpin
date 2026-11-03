@@ -194,6 +194,222 @@ KINGPIN_ALLOW_GLOBAL_CONTRACT=1 "$KP_BIN/kingpin-scope" check --harness opencode
 rm -f "$XDG_CONFIG_HOME/opencode/AGENTS.md"
 rm -rf "$w"
 
+# 3b. The pi harness: its context files, its check, and the doctor probe
+echo "=== Test 3b: pi scope, check and doctor ==="
+mkdir -p "$T/pihome/proj/wt/.pi" "$T/pi-agent"
+printf '# ancestor\n' > "$T/pihome/proj/AGENTS.md"
+printf '# proj\nneutral instructions\n' > "$T/pihome/proj/wt/AGENTS.md"
+printf '@AGENTS.md\n' > "$T/pihome/proj/wt/CLAUDE.md"
+printf 'APPEND\n' > "$T/pihome/proj/wt/.pi/APPEND_SYSTEM.md"
+printf 'WORKER-PREAMBLE-TEXT\n' > "$T/pihome/proj/wt/pre.md"
+printf '# global\n' > "$T/pi-agent/AGENTS.md"
+
+HOME=$T/pihome "$KP_BIN/kingpin-scope" files --harness pi --worktree "$T/pihome/proj/wt" > "$T/files-pi"
+grep -qxF "discovery	$T/pihome/proj/wt/AGENTS.md" "$T/files-pi" \
+  && pass "pi: AGENTS.md is a discovery source" || fail "pi: worktree AGENTS.md missing"
+grep -qxF "discovery	$T/pihome/proj/wt/CLAUDE.md" "$T/files-pi" \
+  && pass "pi: CLAUDE.md is a discovery source" || fail "pi: worktree CLAUDE.md missing"
+grep -qxF "discovery	$T/pihome/proj/AGENTS.md" "$T/files-pi" \
+  && pass "pi: a parent-directory AGENTS.md is a discovery source" || fail "pi: ancestor AGENTS.md missing"
+grep -qxF "configured	$T/pihome/proj/wt/.pi/APPEND_SYSTEM.md" "$T/files-pi" \
+  && pass "pi: .pi/APPEND_SYSTEM.md is a configured source" || fail "pi: .pi/APPEND_SYSTEM.md missing"
+
+HOME=$T/pihome PI_CODING_AGENT_DIR=$T/pi-agent "$KP_BIN/kingpin-scope" files --harness pi --worktree "$T/pihome/proj/wt" > "$T/files-pi"
+grep -qxF "global	$T/pi-agent/AGENTS.md" "$T/files-pi" \
+  && pass "pi: a PI_CODING_AGENT_DIR instruction file is a global source" || fail "pi: global AGENTS.md missing"
+
+# Pi loads every discovered SKILL.md, and the extension's automatic trust is what
+# admits a project's own skill directory, so a contract in a skill must fail the
+# check (issue #93 review, H3).
+neutral_skill() {
+  printf -- '---\nname: %s\ndescription: neutral skill\n---\n\nNeutral skill body.\n' "$1"
+}
+mkdir -p "$T/pihome/proj/wt/.agents/skills/x" "$T/pihome/proj/wt/.pi/skills/y" "$T/pi-skills/z"
+neutral_skill x > "$T/pihome/proj/wt/.agents/skills/x/SKILL.md"
+neutral_skill y > "$T/pihome/proj/wt/.pi/skills/y/SKILL.md"
+neutral_skill z > "$T/pi-skills/z/SKILL.md"
+HOME=$T/pihome KINGPIN_SKILLS_DIR=$T/pi-skills "$KP_BIN/kingpin-scope" files --harness pi --worktree "$T/pihome/proj/wt" > "$T/files-pi"
+grep -qxF "configured	$T/pihome/proj/wt/.agents/skills/x/SKILL.md" "$T/files-pi" \
+  && pass "pi: a project .agents/skills SKILL.md is a configured source" || fail "pi: .agents/skills SKILL.md missing"
+grep -qxF "configured	$T/pihome/proj/wt/.pi/skills/y/SKILL.md" "$T/files-pi" \
+  && pass "pi: a project .pi/skills SKILL.md is a configured source" || fail "pi: .pi/skills SKILL.md missing"
+grep -qxF "global	$T/pi-skills/z/SKILL.md" "$T/files-pi" \
+  && pass "pi: a bridged skills SKILL.md is a global source" || fail "pi: bridged SKILL.md missing"
+HOME=$T/pihome KINGPIN_SKILLS_DIR=$T/pi-skills "$KP_BIN/kingpin-scope" check --harness pi --worktree "$T/pihome/proj/wt" --preamble "$T/pihome/proj/wt/pre.md" \
+  && pass "pi: neutral skill files pass the check" || fail "pi: neutral skill files rejected"
+persona_text > "$T/pihome/proj/wt/.agents/skills/x/SKILL.md"
+err=$(HOME=$T/pihome KINGPIN_SKILLS_DIR=$T/pi-skills "$KP_BIN/kingpin-scope" check --harness pi --worktree "$T/pihome/proj/wt" --preamble "$T/pihome/proj/wt/pre.md" 2>&1 || true)
+if HOME=$T/pihome KINGPIN_SKILLS_DIR=$T/pi-skills "$KP_BIN/kingpin-scope" check --harness pi --worktree "$T/pihome/proj/wt" --preamble "$T/pihome/proj/wt/pre.md" >/dev/null 2>&1; then
+  fail "pi: a contract in a project skill passed the check"
+else
+  pass "pi: a contract in a project skill fails the check"
+fi
+echo "$err" | grep -q "$T/pihome/proj/wt/.agents/skills/x/SKILL.md" \
+  && pass "pi: the refusal names the leaking skill file" || fail "pi: the skill refusal does not name the file: $err"
+neutral_skill x > "$T/pihome/proj/wt/.agents/skills/x/SKILL.md"
+persona_text > "$T/pi-skills/z/SKILL.md"
+if HOME=$T/pihome KINGPIN_SKILLS_DIR=$T/pi-skills "$KP_BIN/kingpin-scope" check --harness pi --worktree "$T/pihome/proj/wt" --preamble "$T/pihome/proj/wt/pre.md" >/dev/null 2>&1; then
+  fail "pi: a contract in a bridged skill passed the check"
+else
+  pass "pi: a contract in a bridged skill fails the check"
+fi
+neutral_skill z > "$T/pi-skills/z/SKILL.md"
+
+# Pi loads two more user-level skill locations: the Agent Skills directory
+# ~/.agents/skills/, and the agent directory's skills/ (issue #93 review, M3).
+# Neither is a worktree path, so a contract there is a global leak the user owns:
+# `check` must refuse it and name the file.
+mkdir -p "$T/pihome/.agents/skills/g" "$T/pi-agent/skills/h"
+neutral_skill g > "$T/pihome/.agents/skills/g/SKILL.md"
+neutral_skill h > "$T/pi-agent/skills/h/SKILL.md"
+HOME=$T/pihome PI_CODING_AGENT_DIR=$T/pi-agent KINGPIN_SKILLS_DIR=$T/pi-skills \
+  "$KP_BIN/kingpin-scope" files --harness pi --worktree "$T/pihome/proj/wt" > "$T/files-pi"
+grep -qxF "global	$T/pihome/.agents/skills/g/SKILL.md" "$T/files-pi" \
+  && pass "pi: a home .agents/skills SKILL.md is a global source" || fail "pi: home .agents/skills SKILL.md missing"
+grep -qxF "global	$T/pi-agent/skills/h/SKILL.md" "$T/files-pi" \
+  && pass "pi: an agent-directory skills SKILL.md is a global source" || fail "pi: agent-directory skills SKILL.md missing"
+HOME=$T/pihome PI_CODING_AGENT_DIR=$T/pi-agent KINGPIN_SKILLS_DIR=$T/pi-skills \
+  "$KP_BIN/kingpin-scope" check --harness pi --worktree "$T/pihome/proj/wt" --preamble "$T/pihome/proj/wt/pre.md" \
+  && pass "pi: neutral user-level skill files pass the check" || fail "pi: neutral user-level skill files rejected"
+persona_text > "$T/pihome/.agents/skills/g/SKILL.md"
+err=$(HOME=$T/pihome PI_CODING_AGENT_DIR=$T/pi-agent KINGPIN_SKILLS_DIR=$T/pi-skills \
+  "$KP_BIN/kingpin-scope" check --harness pi --worktree "$T/pihome/proj/wt" --preamble "$T/pihome/proj/wt/pre.md" 2>&1 || true)
+if HOME=$T/pihome PI_CODING_AGENT_DIR=$T/pi-agent KINGPIN_SKILLS_DIR=$T/pi-skills \
+  "$KP_BIN/kingpin-scope" check --harness pi --worktree "$T/pihome/proj/wt" --preamble "$T/pihome/proj/wt/pre.md" >/dev/null 2>&1; then
+  fail "pi: a contract in the home .agents/skills passed the check"
+else
+  pass "pi: a contract in the home .agents/skills fails the check"
+fi
+echo "$err" | grep -q "$T/pihome/.agents/skills/g/SKILL.md" \
+  && pass "pi: the refusal names the home .agents skills file" || fail "pi: the refusal does not name it: $err"
+neutral_skill g > "$T/pihome/.agents/skills/g/SKILL.md"
+persona_text > "$T/pi-agent/skills/h/SKILL.md"
+err=$(HOME=$T/pihome PI_CODING_AGENT_DIR=$T/pi-agent KINGPIN_SKILLS_DIR=$T/pi-skills \
+  "$KP_BIN/kingpin-scope" check --harness pi --worktree "$T/pihome/proj/wt" --preamble "$T/pihome/proj/wt/pre.md" 2>&1 || true)
+if HOME=$T/pihome PI_CODING_AGENT_DIR=$T/pi-agent KINGPIN_SKILLS_DIR=$T/pi-skills \
+  "$KP_BIN/kingpin-scope" check --harness pi --worktree "$T/pihome/proj/wt" --preamble "$T/pihome/proj/wt/pre.md" >/dev/null 2>&1; then
+  fail "pi: a contract in the agent-directory skills passed the check"
+else
+  pass "pi: a contract in the agent-directory skills fails the check"
+fi
+echo "$err" | grep -q "$T/pi-agent/skills/h/SKILL.md" \
+  && pass "pi: the refusal names the agent-directory skill file" || fail "pi: the refusal does not name it: $err"
+neutral_skill h > "$T/pi-agent/skills/h/SKILL.md"
+
+HOME=$T/pihome "$KP_BIN/kingpin-scope" check --harness pi --worktree "$T/pihome/proj/wt" --preamble "$T/pihome/proj/wt/pre.md" \
+  && pass "pi: a neutral worktree with an appended preamble passes" || fail "pi: neutral worktree rejected"
+! grep -qxF "discovery	$T/pihome/proj/wt/pre.md" "$T/files-pi" \
+  && pass "pi: the preamble is not a discovered source (it arrives by --append-system-prompt)" || fail "pi: the preamble was listed as a source"
+
+persona_text > "$T/pihome/proj/wt/AGENTS.md"
+err=$(HOME=$T/pihome "$KP_BIN/kingpin-scope" check --harness pi --worktree "$T/pihome/proj/wt" --preamble "$T/pihome/proj/wt/pre.md" 2>&1 || true)
+echo "$err" | grep -q "$T/pihome/proj/wt/AGENTS.md" \
+  && pass "pi: the check names the leaking AGENTS.md" || fail "pi: check did not name AGENTS.md: $err"
+if HOME=$T/pihome "$KP_BIN/kingpin-scope" check --harness pi --worktree "$T/pihome/proj/wt" --preamble "$T/pihome/proj/wt/pre.md" >/dev/null 2>&1; then
+  fail "pi: a contract in AGENTS.md passed the check"
+else
+  pass "pi: a contract in AGENTS.md fails the check"
+fi
+printf '# proj\nneutral instructions\n' > "$T/pihome/proj/wt/AGENTS.md"
+
+# The doctor probe, driven by a stub: no pi binary is installed and no network is used.
+cat > "$T/pi-ready" << 'PIREADY'
+#!/usr/bin/env bash
+case "${1:-}" in
+  auth) printf '%s' '{"status":"ready","provider":"openrouter","authType":"api_key"}'; exit 0 ;;
+esac
+exit 1
+PIREADY
+cat > "$T/pi-notready" << 'PINOTREADY'
+#!/usr/bin/env bash
+case "${1:-}" in
+  auth) printf '%s' '{"status":"not_ready","provider":"openrouter","reason":"credentials_not_configured"}'; exit 1 ;;
+esac
+exit 1
+PINOTREADY
+chmod +x "$T/pi-ready" "$T/pi-notready"
+
+dr_rc=0
+dr_out=$(HOME=$T/pihome KINGPIN_PI=$T/pi-ready "$KP_BIN/kingpin-scope" doctor --harness pi --worktree "$T/pihome/proj/wt" --provider openrouter 2>&1) || dr_rc=$?
+[ "$dr_rc" -eq 0 ] && pass "doctor: a ready host exits 0" || fail "doctor ready rc=$dr_rc: $dr_out"
+echo "$dr_out" | grep -q "^pi: $T/pi-ready$" && pass "doctor: prints the pi binary" || fail "doctor binary line: $dr_out"
+echo "$dr_out" | grep -q "^credentials: ready (openrouter, api_key)$" && pass "doctor: prints ready credentials" || fail "doctor credentials line: $dr_out"
+echo "$dr_out" | grep -q "^skills: " && pass "doctor: prints the skills directory" || fail "doctor skills line: $dr_out"
+echo "$dr_out" | grep -q "^extension: .*worker/pi/kingpin-harness.ts$" && pass "doctor: prints the extension path" || fail "doctor extension line: $dr_out"
+echo "$dr_out" | grep -q "^discovery	$T/pihome/proj/wt/AGENTS.md$" && pass "doctor: prints the source list too" || fail "doctor source list: $dr_out"
+
+# Pi discovers a SKILL.md recursively, so a skill pack nested deeper than a direct
+# child still counts (issue #93 review, L5).
+mkdir -p "$T/doctor-skills/pack/one"
+neutral_skill one > "$T/doctor-skills/pack/one/SKILL.md"
+nested_rc=0
+nested_out=$(HOME=$T/pihome KINGPIN_SKILLS_DIR=$T/doctor-skills KINGPIN_PI=$T/pi-ready \
+  "$KP_BIN/kingpin-scope" doctor --harness pi --worktree "$T/pihome/proj/wt" --provider openrouter 2>&1) || nested_rc=$?
+[ "$nested_rc" -eq 0 ] && echo "$nested_out" | grep -qxF "skills: $T/doctor-skills (1 skills)" \
+  && pass "doctor: counts a nested SKILL.md recursively" || fail "doctor nested skill rc=$nested_rc: $nested_out"
+
+notready_rc=0
+notready_out=$(HOME=$T/pihome KINGPIN_PI=$T/pi-notready "$KP_BIN/kingpin-scope" doctor --harness pi --worktree "$T/pihome/proj/wt" --provider openrouter 2>&1) || notready_rc=$?
+[ "$notready_rc" -eq 1 ] && echo "$notready_out" | grep -q "^credentials: not_ready (credentials_not_configured)$" \
+  && pass "doctor: not_ready exits 1 and names the reason" || fail "doctor not_ready rc=$notready_rc: $notready_out"
+
+unverified_rc=0
+unverified_out=$(HOME=$T/pihome KINGPIN_PI=$T/pi-ready "$KP_BIN/kingpin-scope" doctor --harness pi --worktree "$T/pihome/proj/wt" 2>&1) || unverified_rc=$?
+[ "$unverified_rc" -eq 0 ] && echo "$unverified_out" | grep -q "^credentials: unverified (no provider; .*holds no credentials" \
+  && pass "doctor: no provider reports unverified, names the missing login and exits 0" || fail "doctor unverified rc=$unverified_rc: $unverified_out"
+
+# The provider and model fall back to the project env the spawn reads (issue #93
+# review, M1): the short form must check the pair the worker would launch with.
+cat > "$T/pi-args" << 'PIARGS'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "${PI_ARGS_LOG:?}"
+case "${1:-}" in
+  auth) printf '%s' '{"status":"ready","provider":"openrouter","authType":"api_key"}'; exit 0 ;;
+esac
+exit 1
+PIARGS
+chmod +x "$T/pi-args"
+env_rc=0
+env_out=$(HOME=$T/pihome PI_PROVIDER=openrouter PI_MODEL=anthropic/claude-sonnet-4.5 PI_ARGS_LOG=$T/pi-args.log \
+  KINGPIN_PI=$T/pi-args "$KP_BIN/kingpin-scope" doctor --harness pi --worktree "$T/pihome/proj/wt" 2>&1) || env_rc=$?
+[ "$env_rc" -eq 0 ] && echo "$env_out" | grep -q "^credentials: ready (openrouter, api_key)$" \
+  && pass "doctor: PI_PROVIDER from the environment is honoured" || fail "doctor env provider rc=$env_rc: $env_out"
+grep -qx -- "--model" "$T/pi-args.log" && grep -qx -- "anthropic/claude-sonnet-4.5" "$T/pi-args.log" \
+  && pass "doctor: PI_MODEL from the environment reaches pi auth check" || fail "doctor env model args: $(cat "$T/pi-args.log" 2>/dev/null)"
+
+# A host with no login and a logged-in host must not print the same line. Pi writes an
+# empty auth.json before the first login, so the empty object is still "no credentials".
+mkdir -p "$T/pihome/.pi/agent"
+printf '{}\n' > "$T/pihome/.pi/agent/auth.json"
+empty_rc=0
+empty_out=$(HOME=$T/pihome KINGPIN_PI=$T/pi-ready "$KP_BIN/kingpin-scope" doctor --harness pi --worktree "$T/pihome/proj/wt" 2>&1) || empty_rc=$?
+[ "$empty_rc" -eq 0 ] && echo "$empty_out" | grep -q "holds no credentials" \
+  && pass "doctor: an empty auth.json still reads as no login" || fail "doctor empty auth rc=$empty_rc: $empty_out"
+printf '{"openrouter": {"type": "api_key"}}\n' > "$T/pihome/.pi/agent/auth.json"
+login_rc=0
+login_out=$(HOME=$T/pihome KINGPIN_PI=$T/pi-ready "$KP_BIN/kingpin-scope" doctor --harness pi --worktree "$T/pihome/proj/wt" 2>&1) || login_rc=$?
+[ "$login_rc" -eq 0 ] && echo "$login_out" | grep -q "holds credentials" \
+  && pass "doctor: a credential-bearing auth.json differs from a logged-out host" || fail "doctor logged-in rc=$login_rc: $login_out"
+echo "$login_out" | grep -q "holds no credentials" && fail "doctor: a logged-in host still reports no credentials" || pass "doctor: the logged-in line does not claim no credentials"
+# PI_CODING_AGENT_DIR moves where that file is read from.
+agent_rc=0
+agent_out=$(HOME=$T/pihome PI_CODING_AGENT_DIR=$T/pi-agent-login KINGPIN_PI=$T/pi-ready \
+  "$KP_BIN/kingpin-scope" doctor --harness pi --worktree "$T/pihome/proj/wt" 2>&1) || agent_rc=$?
+echo "$agent_out" | grep -q "holds no credentials" \
+  && pass "doctor: PI_CODING_AGENT_DIR moves the auth.json it reads" || fail "doctor agent dir rc=$agent_rc: $agent_out"
+rm -rf "$T/pihome/.pi"
+
+# The issue's short form: no subcommand, with the harness.
+short_rc=0
+short_out=$(HOME=$T/pihome KINGPIN_PI=$T/pi-ready "$KP_BIN/kingpin-scope" --harness pi --provider openrouter --worktree "$T/pihome/proj/wt" 2>&1) || short_rc=$?
+[ "$short_rc" -eq 0 ] && echo "$short_out" | grep -q "^credentials: ready (openrouter, api_key)$" \
+  && pass "scope --harness pi with no subcommand runs the doctor" || fail "short doctor rc=$short_rc: $short_out"
+
+missing_rc=0
+missing_out=$(KINGPIN_PI=/nonexistent "$KP_BIN/kingpin-scope" doctor --harness pi 2>&1) || missing_rc=$?
+[ "$missing_rc" -eq 1 ] && echo "$missing_out" | grep -q "^pi: MISSING " \
+  && pass "doctor: a missing binary exits 1 and says MISSING" || fail "doctor missing rc=$missing_rc: $missing_out"
+
 # 4. Spawn writes the artifact each harness really reads, and refuses a leaky project
 echo "=== Test 4: spawn artifacts and refusal ==="
 "$KP_BIN/kingpin-spawn" demo-auto --issue 401 --id scope-oc --harness opencode >/dev/null

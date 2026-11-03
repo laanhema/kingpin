@@ -6,7 +6,7 @@
 
 Kingpin is a multi-worker fleet orchestrator for AI coding agents. It runs tasks in parallel git worktrees, isolates dependencies, prevents git pollution, serializes landing queues, and hands each task to you as a visual review dossier.
 
-Kingpin supports **Claude Code**, **Antigravity CLI (agy)**, and **OpenCode**.
+Kingpin supports **Claude Code**, **Antigravity CLI (agy)**, **OpenCode**, and **Pi**.
 
 ## The Ranks
 
@@ -21,11 +21,14 @@ Ensure the following tools are installed on your host:
 - `git` (2.30+)
 - `tmux`
 - `treehouse` (git worktree pool manager)
-- `node` (18+)
+- `node` (18+; Pi needs Node 22.19+)
 - At least one worker harness:
   - `claude` (Claude Code)
   - `agy` (Google Antigravity CLI)
   - `opencode` (OpenCode CLI)
+  - `pi` (Pi coding agent: `npm i -g @earendil-works/pi-coding-agent`)
+
+A Pi worker needs a model login done by hand: run `pi`, then `/login`, then `/model`. Kingpin does not provision credentials; it passes `PI_PROVIDER` and `PI_MODEL` from the project env only when they are set.
 
 Optional:
 - `lavish-axi` (for per-task review dossiers and their interactive actions)
@@ -68,7 +71,7 @@ Without `--harness`, no `HARNESS` is written and the project follows the default
 4. `DEFAULT_HARNESS` in `~/.kingpin/config.env`
 5. `claude`
 
-`kingpin lock acquire` finds the harness in this order: `--harness <name>` on `acquire`, the `KINGPIN_HARNESS` environment variable, the command name of the session process (`claude`, `agy`, `opencode`), then the calling agent's own marker (`CLAUDECODE=1`, `OPENCODE=1`). A session that matches none records nothing. `acquire` and `release` are serialized by a sibling `orchestrator.lock.mutex`, so sessions that start together get one `lock: acquired` and the rest exit 1 naming the holder, and the lock file is renamed into place whole, so `status`, `check` and `harness` never read a half-written file. `kingpin lock release` drops only the calling session's record and refuses, naming the holder, while another live session holds the lock; the record is ignored once the holder process is gone. Project files written by older versions of `kingpin init` contain `HARNESS=claude`, which counts as set; delete that line to let the lock holder decide.
+`kingpin lock acquire` finds the harness in this order: `--harness <name>` on `acquire`, the `KINGPIN_HARNESS` environment variable, the command name or argv of the session process (`claude`, `agy`, `opencode`, `pi`, including the `@earendil-works/pi-coding-agent` npm path), then the calling agent's own marker (`CLAUDECODE=1`, `OPENCODE=1`). A session that matches none records nothing. `acquire` and `release` are serialized by a sibling `orchestrator.lock.mutex`, so sessions that start together get one `lock: acquired` and the rest exit 1 naming the holder, and the lock file is renamed into place whole, so `status`, `check` and `harness` never read a half-written file. `kingpin lock release` drops only the calling session's record and refuses, naming the holder, while another live session holds the lock; the record is ignored once the holder process is gone. Project files written by older versions of `kingpin init` contain `HARNESS=claude`, which counts as set; delete that line to let the lock holder decide.
 
 ### 2. Run a task to completion in one command
 
@@ -116,7 +119,7 @@ Only one supervisor runs at a time. A second `kingpin watch` refuses to start an
 | `kingpin done` | Verifies merge, releases worktree lease, advances the queue, and archives the task record to `~/.kingpin/archive/<task-id>`. [Details](docs/cli.md#kingpin-done) |
 | `kingpin lock` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. [Details](docs/cli.md#kingpin-lock) |
 | `kingpin guard` | `kingpin guard [install\|check\|warn]` | Installs or verifies the orchestrator-only tool guard, a `PreToolUse` hook in `.claude/settings.local.json` (untracked), and the orchestrator contract described under [Initialize your project](#1-initialize-your-project-run-once-inside-any-git-repository); `install` also removes the deny rules that older versions wrote there, which leaked into workers, and keeps its three main-checkout contract excludes in a `# kingpin guard` … `# end kingpin guard` block of `.git/info/exclude`, which it rewrites on every run (adopting a loose line an older version appended), so that block is the only part of the file `install` rewrites; it may also append a plain `.claude/settings.local.json` line outside the block when the project does not already ignore that file; `--dir` points the command at another checkout instead of the one `bin/kingpin-guard` lives in; `check` names a stale contract copy; `warn` prints a stderr warning when the guard or the contract is missing or stale; `kingpin guard hook <orchestrator\|worker>` is the hook entry point; `list` and `wait` run it at startup, and `lock acquire` prints the same warning. |
-| `kingpin scope` | Names the instruction files a harness really loads for a worker: `files` prints `<kind>\t<path>` per source (`discovery`, a file the harness finds; `configured`, an `instructions` entry of the worktree's config, JSONC included; `ignored`, a rules file the harness skips; `global`, loaded from the user's config directory). [Details](docs/cli.md#kingpin-scope) |
+| `kingpin scope` | Names the instruction files a harness really loads for a worker: `files` prints `<kind>\t<path>` per source (`discovery`, a file the harness finds; `configured`, an `instructions` entry of the worktree's config, JSONC included; `ignored`, a rules file the harness skips; `global`, loaded from the user's config directory); `doctor --harness pi` reports the Pi binary, credentials, skills and extension in one command. [Details](docs/cli.md#kingpin-scope) |
 | `kingpin report` | Dossier helper for workers. [Details](docs/cli.md#kingpin-report) |
 | `kingpin curate` | Aggregates critique files from finished worker tasks and runs one curator in the skills directory. [Details](docs/cli.md#kingpin-curate) |
 

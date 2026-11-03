@@ -1,26 +1,28 @@
 #!/usr/bin/env bash
 # Start one worker for one task: lease a worktree, open a tmux window there,
-# and launch the chosen harness (claude, agy, opencode) with the worker
+# and launch the chosen harness (claude, agy, opencode, pi) with the worker
 # preamble and the turn-end Stop hook.
 #
-# Usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode]
+# Usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi]
 #   --issue    an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
 #   --text     a free-text request: the worker runs /create-issue first, then the same
 #   --mode     review (default) stops at a ready branch for the Lavish review; auto merges when green
 #   --id       task id; defaults to kp-<n>-<slug> (slug from the issue title) or kp-<slug>
 #              (slug from the request). The id is also the branch (kingpin/<id>) and the
 #              tmux window name. An explicit --id skips slug generation.
-#   --harness  worker harness: claude, agy, or opencode (overrides everything below)
+#   --harness  worker harness: claude, agy, opencode, or pi (overrides everything below)
 #
 # Default harness, first match wins: --harness > project HARNESS (only if set in
 # the project env) > the harness recorded by `kingpin lock acquire` for the live
 # orchestrator session > DEFAULT_HARNESS in $KINGPIN_HOME/config.env > claude.
 #
 # Project config: $KINGPIN_HOME/projects/<project>.env sets PROJECT_PATH (a git
-# clone), optionally HARNESS (claude|agy|opencode), and optionally SETUP_CMD
-# (run in the worktree before launch).
+# clone), optionally HARNESS (claude|agy|opencode|pi), optionally SETUP_CMD
+# (run in the worktree before launch), and for the pi harness optionally
+# PI_PROVIDER and PI_MODEL (passed to pi only when set, so a vendor `/login`
+# user keeps Pi's own default model).
 # KINGPIN_HOME defaults to ~/.kingpin.
-# Command overrides: KINGPIN_CLAUDE, KINGPIN_AGY, KINGPIN_OPENCODE, KINGPIN_GH.
+# Command overrides: KINGPIN_CLAUDE, KINGPIN_AGY, KINGPIN_OPENCODE, KINGPIN_PI, KINGPIN_GH.
 set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -34,6 +36,7 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 CLAUDE_CMD=${KINGPIN_CLAUDE:-claude}
 AGY_CMD=${KINGPIN_AGY:-agy}
 OPENCODE_CMD=${KINGPIN_OPENCODE:-opencode}
+PI_CMD=${KINGPIN_PI:-pi}
 GH_CMD=${KINGPIN_GH:-gh}
 # A hung gh call must degrade to the kp-<n> fallback, not stall the spawn.
 GH_TIMEOUT=; ! command -v timeout >/dev/null || GH_TIMEOUT="timeout 10"
@@ -62,20 +65,20 @@ resolve_tmux_session() {
 
 usage() {
   cat <<'HELP'
-usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode]
+usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi]
 
   --issue    an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
   --text     a free-text request: the worker runs /create-issue first, then the same
   --mode     review (default) stops at a ready branch for the review; auto merges when green
   --id       task id; defaults to kp-<n>-<slug> (issue title) or kp-<slug> (request)
-  --harness  worker harness: claude, agy, or opencode (overrides the project and the lock)
+  --harness  worker harness: claude, agy, opencode, or pi (overrides the project and the lock)
 HELP
 }
 
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac
-[ $# -ge 1 ] || die "usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode]"
+[ $# -ge 1 ] || die "usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi]"
 project=$1; shift
 issue='' text='' mode=review id='' harness_cli=''
 while [ $# -gt 0 ]; do
@@ -97,6 +100,7 @@ case $mode in review|auto) ;; *) die "--mode must be review or auto: $mode" ;; e
 conf=$KP_HOME/projects/$project.env
 [ -f "$conf" ] || die "no project config: $conf"
 PROJECT_PATH='' SETUP_CMD='' HARNESS=''
+PI_PROVIDER='' PI_MODEL=''
 # shellcheck source=/dev/null
 . "$conf"
 [ -n "$PROJECT_PATH" ] && git -C "$PROJECT_PATH" rev-parse --git-dir >/dev/null 2>&1 \
@@ -108,14 +112,15 @@ DEFAULT_HARNESS=''
 lock_harness=$("$KP_ROOT/bin/kingpin-lock" harness 2>/dev/null || true)
 harness=${harness_cli:-${HARNESS:-${lock_harness:-${DEFAULT_HARNESS:-claude}}}}
 case $harness in
-  claude|agy|opencode) ;;
-  *) die "unsupported harness: $harness (must be claude, agy, or opencode)" ;;
+  claude|agy|opencode|pi) ;;
+  *) die "unsupported harness: $harness (must be claude, agy, opencode, or pi)" ;;
 esac
 
 case $harness in
   claude) harness_bin=${CLAUDE_CMD%% *} ;;
   agy) harness_bin=${AGY_CMD%% *} ;;
   opencode) harness_bin=${OPENCODE_CMD%% *} ;;
+  pi) harness_bin=${PI_CMD%% *} ;;
 esac
 
 for tool in git tmux treehouse node "$harness_bin"; do
@@ -235,21 +240,41 @@ fi
 if [ -n "$issue" ]; then
   printf 'GitHub issue #%s\n' "$issue" > "$task_dir/brief.md"
   case $mode in
-    review) prompt="Run /issue-flow $issue." ;;
-    auto) prompt="Run /do $issue." ;;
+    review) prompt=$(kp_skill_command "$harness" issue-flow "$issue") ;;
+    auto) prompt=$(kp_skill_command "$harness" "do" "$issue") ;;
   esac
+  # Pi expands a skill only when the message starts with its command, so a pi job
+  # prompt is the bare `/skill:<name> <args>` line. The other harnesses keep the
+  # prose form they have always accepted (`Run /issue-flow 93.`).
+  [ "$harness" = pi ] || prompt="Run $prompt."
 else
   printf '%s\n' "$text" > "$task_dir/brief.md"
   case $mode in
-    review) next="/issue-flow" ;;
-    auto) next="/do" ;;
+    review) next=$(kp_skill_command "$harness" issue-flow) ;;
+    auto) next=$(kp_skill_command "$harness" "do") ;;
   esac
-  prompt="Run /create-issue on the request in $task_dir/brief.md (read it first; it is the user's own words). When the issue exists, run $next on it."
+  first=$(kp_skill_command "$harness" create-issue)
+  if [ "$harness" = pi ]; then
+    # The bare command comes first so Pi expands it; the follow-up follows in a
+    # second paragraph, because dropping it would lose the brief entirely.
+    # shellcheck disable=SC2016 # the apostrophe is literal text, not shell quoting
+    prompt=$(printf "%s\n\nWhen the issue exists, run %s on it. The request is in %s (read it first; it is the user's own words)." \
+      "$first" "$next" "$task_dir/brief.md")
+  else
+    prompt="Run $first on the request in $task_dir/brief.md (read it first; it is the user's own words). When the issue exists, run $next on it."
+  fi
 fi
 printf '%s\n' "$prompt" > "$task_dir/prompt.txt"
 
 sed -e "s|{{TASK_ID}}|$id|g" -e "s|{{TASK_DIR}}|$task_dir|g" -e "s|{{MODE}}|$mode|g" -e "s|{{WORKTREE}}|$worktree|g" -e "s|{{KP_ROOT}}|$KP_ROOT|g" \
   "$KP_ROOT/worker/preamble.md" > "$task_dir/preamble.md"
+# Pi ships no subagent tool (spike.md, Check 2): a delegating skill's steps run
+# inline, and /do's no-subagent branch otherwise stops to ask whether to continue.
+# The sentence lives in the pi preamble, not the job prompt, so the prompt can start
+# with the skill command Pi needs to see (issue #93 review, M2).
+if [ "$harness" = pi ]; then
+  printf '%s\n' '' 'This harness has no subagent tool: run every step of the skill inline in this session, and continue rather than asking whether to continue without subagents.' >> "$task_dir/preamble.md"
+fi
 : > "$task_dir/status"
 
 target_session=$(resolve_tmux_session)
@@ -422,6 +447,32 @@ export KINGPIN_TASK_DIR='$task_dir'
 export KINGPIN_ROOT='$KP_ROOT'
 exec $OPENCODE_CMD --standalone --auto --prompt "\$(cat '$task_dir/prompt.txt')"
 EOF
+    ;;
+  pi)
+    # Pi writes nothing into the worktree (Decision 3): the preamble arrives through
+    # --append-system-prompt and the extension loads from this checkout by absolute
+    # path, so there is no injected path and no task exclude file. The extension
+    # records the turn end and answers the project-trust prompt for this worktree.
+    [ -f "$KP_ROOT/worker/pi/kingpin-harness.ts" ] \
+      || die "missing harness extension: $KP_ROOT/worker/pi/kingpin-harness.ts"
+    pi_args=(--append-system-prompt "$task_dir/preamble.md" -e "$KP_ROOT/worker/pi/kingpin-harness.ts")
+    # Each flag is passed only when its own project key is set: a vendor `/login`
+    # host keeps Pi's default model, and an inconsistent pair fails in the pane
+    # rather than at spawn (no auth preflight here; `kingpin scope doctor` is that job).
+    [ -z "$PI_PROVIDER" ] || pi_args+=(--provider "$PI_PROVIDER")
+    [ -z "$PI_MODEL" ] || pi_args+=(--model "$PI_MODEL")
+    # %q on every argv word keeps a path with spaces intact; the prompt is read from
+    # its file at launch, so a long request is never re-quoted into the command line.
+    {
+      printf '#!/usr/bin/env bash\n'
+      printf 'export KINGPIN_TASK_DIR=%q\n' "$task_dir"
+      printf 'export KINGPIN_WORKTREE=%q\n' "$worktree"
+      printf 'export KINGPIN_ROOT=%q\n' "$KP_ROOT"
+      printf 'exec %s' "$PI_CMD"
+      printf ' %q' "${pi_args[@]}"
+      # shellcheck disable=SC2016 # the program text belongs to the generated launch script
+      printf ' "$(cat %q)"\n' "$task_dir/prompt.txt"
+    } > "$task_dir/launch.sh"
     ;;
 esac
 
