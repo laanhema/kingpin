@@ -18,7 +18,7 @@ each task back as a visual review dossier. This file describes the repository.
 ## Validation
 
 ```bash
-# bash -n, shellcheck, and the CI-matrix check
+# bash -n, shellcheck, the CI-matrix check, and the tracked .agents artifact check
 ./tests/lint.sh
 
 # One suite at a time (two suites briefly swap bin/kingpin-send)
