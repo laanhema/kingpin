@@ -6,7 +6,12 @@
 # not be a plain deny rule: Claude Code loads that file for the checkout's linked
 # worktrees too, so deny rules for Edit, Write, NotebookEdit and Agent would strip the
 # same tools from every leased worker. The hook sees the session's working directory
-# and denies only in the main checkout. The file must never be committed either.
+# and denies only in the main checkout; a session whose checkout it cannot resolve is
+# denied (fail closed). The file must never be committed either.
+#
+# A worker's hook (see worker/hooks.json) allows edits inside the worker's own worktree
+# and task folder. The worktree is pinned by KINGPIN_WORKTREE (or WORKTREE= in the task's
+# task.env), never by the session's working directory.
 #
 # Usage: kingpin-guard [install|check|warn] [--dir <kingpin-checkout>]
 #        kingpin-guard hook <orchestrator|worker>   (PreToolUse hook; JSON on stdin)
