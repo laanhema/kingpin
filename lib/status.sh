@@ -27,7 +27,7 @@ kp_status_last() {
 
 # kp_status_newest <status-file>
 # The newest line of any kind, notes included. Only for a caller that reports or
-# dispatches on the newest line itself (kingpin list, kingpin-watch).
+# acts on the newest line itself (kingpin list, kingpin-stop).
 kp_status_newest() {
   [ -f "${1:-}" ] || return 0
   tail -n 1 "$1" 2>/dev/null || true
