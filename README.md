@@ -222,7 +222,7 @@ Each supported harness uses native configuration and hook mechanisms without dir
 
 Kingpin-injected worktree configuration files (`.agents/rules/kingpin.md`, `.agents/hooks.json`, `.opencode/opencode.json`, `.opencode/plugins/package.json`, and `.opencode/plugins/kingpin-stop.js`) are added to `.git/info/exclude` in each leased worktree to guarantee zero uncommitted git pollution without hiding user-created artifacts in those directories. The main checkout's contract copies go through `.git/info/exclude` too, so your own `.agents/` and `.opencode/` files stay visible in `git status`.
 
-`.gitignore` ignores `.agents/plans/`, `.agents/reports/` and `.agents/reviews/`. They hold local working artifacts (plans, implementation reports, reviews and prototype patches) that agents write while they work, so they are not tracked. Other files under `.agents/`, such as a PRD, stay trackable.
+`.gitignore` ignores `.agents/plans/`, `.agents/reports/` and `.agents/reviews/`. They hold local working artifacts (plans, implementation reports, reviews and prototype patches) that agents write while they work, so they are not tracked. Other files under `.agents/`, such as a PRD, stay trackable. An ignore rule never untracks a path that is already in the index, so `./tests/lint.sh` fails on any tracked path under those three directories; the remedy it prints is `git rm --cached <path>`, which leaves the file on disk and ignored.
 
 ---
 
@@ -232,7 +232,8 @@ Run the lint and the full test suite from the repository root:
 
 ```bash
 # Lint: bash -n + shellcheck over bin/*, lib/*.sh and tests/*.sh (config in .shellcheckrc),
-# plus a check that every tests/test-*.sh is a leg of the CI matrix
+# a check that every tests/test-*.sh is a leg of the CI matrix, and a check that no
+# .agents plan, report or review file is tracked
 ./tests/lint.sh
 
 # Every suite, one after the other
@@ -262,6 +263,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-worker-scope.sh` | Worker instruction context: what each harness really loads, the spawn refusal, the installed contract |
 | `test-worker-settings.sh` | Orchestrator tool guard and worker edit boundary |
 | `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
+| `test-agents-paths.sh` | `.agents` artifact policy: nothing under `plans/`, `reports/` or `reviews/` is tracked, other `.agents/` files stay trackable, and the lint fails on a forced artifact |
 
 Run one suite with `./tests/test-<name>.sh`. Run suites one at a time in a checkout: `test-lifecycle.sh`, `test-acceptance.sh` and `test-landing-lane.sh` briefly replace `bin/kingpin-send` with a stub (restored on exit), so a second suite that sends keys to a worker during that window hits the stub and fails. CI legs do not clash, since each runs in its own checkout.
 
