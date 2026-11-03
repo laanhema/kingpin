@@ -8,6 +8,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 KP_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../lib/status.sh
 . "$KP_BIN/../lib/status.sh"
+# shellcheck source=../lib/landing.sh
+. "$KP_BIN/../lib/landing.sh"
 FORCE=0
 
 [ $# -ge 1 ] || { echo "usage: kingpin-done <task-id> [--force]" >&2; exit 1; }
@@ -32,28 +34,14 @@ env_file="$task_dir/task.env"
 
 release_landing_lock_and_advance_queue() {
   local project=${PROJECT:-default}
-  local lock_dir="$KP_HOME/projects"
-  local landing_lock="$lock_dir/$project.landing"
-  local queue_file="$lock_dir/$project.landing_queue"
 
   # Only the task that holds the landing lock releases it and advances the
   # queue; any other caller (e.g. a repeated refused cleanup) must leave the
-  # queue order alone.
-  local holder=""
-  [ -f "$landing_lock" ] && holder=$(cat "$landing_lock" 2>/dev/null || true)
-  [ "$holder" = "$id" ] || return 0
-  rm -f "$landing_lock"
-
-  local next_task=""
-  if [ -f "$queue_file" ] && [ -s "$queue_file" ]; then
-    next_task=$(head -n 1 "$queue_file")
-    sed -i '1d' "$queue_file"
-  fi
-
-  if [ -n "$next_task" ]; then
-    echo "kingpin-done: triggering queued task $next_task for project $project"
-    "$KP_BIN/kingpin-land" "$next_task" || true
-  fi
+  # queue order alone. The drain pops past entries that can no longer land
+  # (archived, missing, already dispatched), so a dead id in front of a live one
+  # does not swallow the rest of the line.
+  kp_landing_release "$KP_HOME" "$project" "$id" || return 0
+  kp_landing_drain "$KP_HOME" "$project" "$KP_BIN" || true
 }
 
 # Stop the task's background Lavish listener and its poll child, and drop the

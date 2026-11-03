@@ -12,6 +12,8 @@ KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$KP_ROOT/lib/status.sh"
+# shellcheck source=../lib/landing.sh
+. "$KP_ROOT/lib/landing.sh"
 KP_BIN="$KP_ROOT/bin"
 
 ONCE=0
@@ -117,6 +119,19 @@ retry_pending_cleanups() {
   done
 }
 
+# Advance a project's landing queue whose holder released or is gone. An entry
+# appended between kingpin-land's holder check and its claim would otherwise sit
+# in a queue with no holder, and nothing else picks it up; this is the recovery
+# path, so it needs no new fleet event.
+advance_landing_queues() {
+  local q project
+  for q in "$KP_HOME"/projects/*.landing_queue; do
+    [ -f "$q" ] || continue
+    project=$(basename "$q" .landing_queue)
+    kp_landing_drain "$KP_HOME" "$project" "$KP_BIN" || true
+  done
+}
+
 step_supervision() {
   local updates
   updates=$("$KP_BIN/kingpin-wait" --once 2>/dev/null || true)
@@ -134,6 +149,7 @@ step_supervision() {
 if [ "$ONCE" -eq 1 ]; then
   step_supervision || true
   retry_pending_cleanups
+  advance_landing_queues
   exit 0
 fi
 
@@ -147,4 +163,5 @@ while true; do
     done <<< "$updates"
   fi
   retry_pending_cleanups
+  advance_landing_queues
 done

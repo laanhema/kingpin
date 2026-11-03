@@ -15,9 +15,14 @@ echo "\$*" >> "$T/mock-lavish.log"
 cmd="\${1:-}"
 case "\$cmd" in
   poll)
-    if [ -f "$T/mock-lavish-response.txt" ]; then
-      cat "$T/mock-lavish-response.txt"
-      rm -f "$T/mock-lavish-response.txt"
+    # Answer only the poll for the task the queued answer was written for: the
+    # background listener for task-lavish-1 polls this same mock, and a shared
+    # answer file let it steal the prompt meant for another session.
+    task=\$(basename "\$(dirname "\${2:-}")")
+    resp="$T/mock-lavish-response-\$task.txt"
+    if [ -f "\$resp" ]; then
+      cat "\$resp"
+      rm -f "\$resp"
     else
       sleep 0.2
     fi
@@ -35,6 +40,9 @@ esac
 EOF
 chmod +x "$T/mock-lavish"
 export KINGPIN_LAVISH="$T/mock-lavish"
+
+# resp_file <task-dir>: where to queue this task's next poll answer.
+resp_file() { printf '%s/mock-lavish-response-%s.txt\n' "$T" "$(basename "$1")"; }
 
 # 1. Setup task in review mode with report.html
 t11_task="$KINGPIN_HOME/tasks/task-lavish-1"
@@ -77,7 +85,7 @@ list_out=$("$KP_BIN/kingpin" list)
 ! echo "$list_out" | grep -q "Orchestrator lock" && pass "kingpin list hides the lock line when free" || fail "kingpin list shows lock line when free"
 
 # 3. Simulate Approve & Land feedback via Lavish
-cat > "$T/mock-lavish-response.txt" << 'RESP'
+cat > "$(resp_file "$t11_task")" << 'RESP'
 session:
   status: feedback
 prompts[1]{prompt}:
@@ -114,7 +122,7 @@ EOF
 tmux new-window -d -t kingpin: -n task-lavish-2 cat
 echo "ready: branch=b review=APPROVE report=$t11_task2/report.html" >> "$t11_task2/status"
 
-cat > "$T/mock-lavish-response.txt" << 'RESP'
+cat > "$(resp_file "$t11_task2")" << 'RESP'
 session:
   status: feedback
 prompts[1]:
@@ -143,7 +151,7 @@ ISSUE=403
 TMUX_TARGET=kingpin:task-lavish-3
 EOF3
 echo "ready: branch=b review=APPROVE report=none" >> "$t11_task3/status"
-cat > "$T/mock-lavish-response.txt" << 'RESP'
+cat > "$(resp_file "$t11_task3")" << 'RESP'
 session:
   status: feedback
 prompts[2]{prompt,tag}:
@@ -193,7 +201,7 @@ ISSUE=406
 TMUX_TARGET=kingpin:task-lavish-state
 EOF8
 printf '%s\n' "ready: branch=b review=APPROVE report=none" "needs-input: which API shape?" > "$t11_state/status"
-printf '%s\n' "session:" "  status: feedback" "prompts[1]{prompt}:" "  kingpin land task-lavish-state" > "$T/mock-lavish-response.txt"
+printf '%s\n' "session:" "  status: feedback" "prompts[1]{prompt}:" "  kingpin land task-lavish-state" > "$(resp_file "$t11_state")"
 "$KP_BIN/kingpin" listen task-lavish-state --once >/dev/null
 [ ! -f "$t11_state/landing_sent" ] && pass "approve on needs-input: did not land" || fail "approve on needs-input: landed"
 ! grep -q "^approved:" "$t11_state/status" && pass "approve on needs-input: recorded no approved: note" || fail "approve on needs-input: logged an approval"
@@ -216,7 +224,7 @@ ISSUE=407
 TMUX_TARGET=kingpin:task-lavish-unknown
 EOF9
 printf '%s\n' "ready: branch=b review=LGTM report=r.md" > "$t11_unknown/status"
-printf '%s\n' "session:" "  status: feedback" "prompts[1]{prompt}:" "  kingpin land task-lavish-unknown" > "$T/mock-lavish-response.txt"
+printf '%s\n' "session:" "  status: feedback" "prompts[1]{prompt}:" "  kingpin land task-lavish-unknown" > "$(resp_file "$t11_unknown")"
 "$KP_BIN/kingpin" listen task-lavish-unknown --once >/dev/null
 [ ! -f "$t11_unknown/landing_sent" ] && pass "approve on an unreadable verdict: did not land" || fail "approve on an unreadable verdict: landed"
 ! grep -q "^approved:" "$t11_unknown/status" && pass "approve on an unreadable verdict: recorded no approved: note" || fail "approve on an unreadable verdict: logged an approval"
@@ -240,7 +248,7 @@ EOF5
 tmux new-window -d -t kingpin: -n task-lavish-repeat cat
 echo "ready: branch=b review=NEEDS CHANGES report=.agents/reviews/r5.md" > "$t11_rep/status"
 approve_resp() {
-  printf '%s\n' "session:" "  status: feedback" "prompts[1]{prompt}:" "  kingpin land task-lavish-repeat" > "$T/mock-lavish-response.txt"
+  printf '%s\n' "session:" "  status: feedback" "prompts[1]{prompt}:" "  kingpin land task-lavish-repeat" > "$(resp_file "$t11_rep")"
 }
 count_fix() { tmux capture-pane -pt kingpin:task-lavish-repeat -S -50 | grep -c "^/fix-findings "; }
 approve_resp; "$KP_BIN/kingpin" listen task-lavish-repeat --once >/dev/null
@@ -293,7 +301,7 @@ MODE=review
 WORKTREE=$T/proj
 EOF7
 echo "ready: branch=b review=APPROVE report=none" > "$t11_raw/status"
-printf '%s\n' "session:" "  status: feedback" "prompts[1]:" "  - weird: shape" > "$T/mock-lavish-response.txt"
+printf '%s\n' "session:" "  status: feedback" "prompts[1]:" "  - weird: shape" > "$(resp_file "$t11_raw")"
 "$KP_BIN/kingpin" listen task-lavish-raw --once >/dev/null
 grep -q "could not be parsed" "$t11_raw/listener.log" && grep -q "weird: shape" "$t11_raw/listener.log" && pass "unparsed prompts logged raw" || fail "unparsed prompts not logged"
 grep -q "reply $t11_raw/report.html --agent-reply I could not read" "$T/mock-lavish.log" && pass "user told to resend unreadable feedback" || fail "no resend reply"

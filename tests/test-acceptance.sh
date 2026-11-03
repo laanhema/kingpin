@@ -73,12 +73,13 @@ git commit -qm "feat: $task_id changes"
 echo "ready: branch=$(git branch --show-current) review=APPROVE report=none" >> "$task_dir/status"
 
 # Wait for land command via kingpin-send
-while true; do
-  sleep 0.5
-  # Check if prompt was updated or if a landing command was received
-  if [ -f "$task_dir/landed_signal" ]; then
-    break
-  fi
+while [ ! -f "$task_dir/landed_signal" ]; do
+  sleep 0.1
+done
+# Then wait for the test's go-ahead before merging, so the test's queue
+# assertions cannot race this worker's merge (a finished holder frees the lane).
+while [ ! -f "$task_dir/merge_go" ]; do
+  sleep 0.1
 done
 
 # Phase 2: Simulate /issue-flow-done (rebase onto origin/main, push to origin, fast-forward origin main)
@@ -134,23 +135,35 @@ pass "demo-alpha landing initiated"
 grep -qx "demo-beta" "$KINGPIN_HOME/projects/demo.landing_queue" && pass "demo-beta queued" || fail "beta not queued"
 grep -qx "demo-gamma" "$KINGPIN_HOME/projects/demo.landing_queue" && pass "demo-gamma queued" || fail "gamma not queued"
 
-# 6. Simulate demo-alpha completing merge, then kingpin-done demo-alpha
-sleep 2
-grep -q "^merged:" "$KINGPIN_HOME/tasks/demo-alpha/status" && pass "demo-alpha merged" || fail "alpha not merged"
+# 6. Let demo-alpha finish its landing, then kingpin-done demo-alpha.
+# Each worker merges only after the test says so, so the queue assertions above
+# and the handoff below are deterministic rather than racing the worker.
+merged_in() { # <task-id>: wait up to ~10 s for the worker's merged: line
+  local id=$1 n=0
+  while [ "$n" -lt 100 ]; do
+    grep -q "^merged:" "$KINGPIN_HOME/tasks/$id/status" 2>/dev/null && return 0
+    sleep 0.1
+    n=$((n + 1))
+  done
+  return 1
+}
+
+touch "$KINGPIN_HOME/tasks/demo-alpha/merge_go"
+merged_in demo-alpha && pass "demo-alpha merged" || fail "alpha not merged"
 
 "$KP_BIN/kingpin-done" demo-alpha >/dev/null
 pass "demo-alpha cleaned up and queue advanced"
 
 # Verify demo-beta received landing signal and merges
-sleep 2
-grep -q "^merged:" "$KINGPIN_HOME/tasks/demo-beta/status" && pass "demo-beta merged" || fail "beta not merged"
+touch "$KINGPIN_HOME/tasks/demo-beta/merge_go"
+merged_in demo-beta && pass "demo-beta merged" || fail "beta not merged"
 
 "$KP_BIN/kingpin-done" demo-beta >/dev/null
 pass "demo-beta cleaned up and queue advanced"
 
 # Verify demo-gamma received landing signal and merges
-sleep 2
-grep -q "^merged:" "$KINGPIN_HOME/tasks/demo-gamma/status" && pass "demo-gamma merged" || fail "gamma not merged"
+touch "$KINGPIN_HOME/tasks/demo-gamma/merge_go"
+merged_in demo-gamma && pass "demo-gamma merged" || fail "gamma not merged"
 
 "$KP_BIN/kingpin-done" demo-gamma >/dev/null
 pass "demo-gamma cleaned up"
