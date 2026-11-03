@@ -458,6 +458,9 @@ watch_fb=$("$KP_BIN/kingpin" watch --once 2>&1 || true)
 echo "$watch_fb" | grep -q "received review feedback" && pass "kingpin-watch reported review feedback" || fail "kingpin-watch did not report feedback: $watch_fb"
 
 # 5. Verify cleanup on kingpin-done
+# task-lavish-1's WORKTREE is the project checkout, which no treehouse pool manages:
+# stub the return so the cleanup is not refused as a lost lease (issue #75).
+kp_test_stub_treehouse
 [ -f "$t11_task/listener.pid" ] && pass "task-lavish-1 listener.pid present before done" || fail "listener.pid missing before done"
 "$KP_BIN/kingpin" "done" task-lavish-1 --force >/dev/null
 
