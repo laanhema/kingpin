@@ -8,6 +8,8 @@
 set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+# shellcheck source=../lib/status.sh
+. "$(dirname "$0")/../lib/status.sh"
 tasks_dir="$KP_HOME/tasks"
 
 ALL=0
@@ -60,13 +62,13 @@ ack_task() {
   # 3. If tmux window is no longer alive, touch seen_exited
   local tmux_target=""
   if [ -f "$task_env" ]; then
-    tmux_target=$(sed -n 's/^TMUX_TARGET=//p' "$task_env" 2>/dev/null || true)
+    tmux_target=$(kp_env_get "$task_env" TMUX_TARGET)
   fi
   [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
   # The window ID survives rename and move; older task.env files lack it.
   local window_id=""
   if [ -f "$task_env" ]; then
-    window_id=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$task_env" 2>/dev/null || true)
+    window_id=$(kp_env_get "$task_env" TMUX_WINDOW_ID)
   fi
   [ -n "$window_id" ] && tmux_target=$window_id
 

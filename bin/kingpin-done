@@ -6,6 +6,8 @@ set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 KP_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=../lib/status.sh
+. "$KP_BIN/../lib/status.sh"
 FORCE=0
 
 [ $# -ge 1 ] || { echo "usage: kingpin-done <task-id> [--force]" >&2; exit 1; }
@@ -77,25 +79,19 @@ stop_listener() {
 refuse_cleanup() {
   local reason=$1
   local line="cleanup-refused: $reason"
-  # The worker's own last status: the listener's approved:/feedback: notes are
-  # not worker events.
-  local last=""
-  [ -f "$task_dir/status" ] && last=$(grep -vE '^(approved|feedback):' "$task_dir/status" 2>/dev/null | tail -n 1 || true)
+  local last
+  last=$(kp_status_last "$task_dir/status")
   echo "kingpin-done: $reason" >&2
-  case "$last" in
-    merged:*|failed:*|cleanup-refused:*)
+  if kp_status_is_terminal "$last"; then
       # A finished task: report the refusal. An identical consecutive event is
       # not appended again: every new status line wakes the orchestrator, and
       # kingpin-watch retries the cleanup repeatedly.
       [ "$last" = "$line" ] || echo "$line" >> "$task_dir/status"
       # Nothing is left to review on a finished task.
       stop_listener
-      ;;
-    *)
-      # A worker that may still be live (needs-input:, ready:, ...) keeps its
-      # last status: a cleanup-refused line would hide what it is waiting on.
-      ;;
-  esac
+  fi
+  # Otherwise the worker may still be live (needs-input:, ready:, ...): it keeps
+  # its last status, because a cleanup-refused line would hide what it is waiting on.
   release_landing_lock_and_advance_queue
   exit 1
 }
@@ -108,14 +104,10 @@ for other_env in "$KP_HOME"/tasks/*/task.env; do
   other_dir=$(dirname "$other_env")
   other_id=$(basename "$other_dir")
   [ "$other_id" != "$id" ] || continue
-  other_wt=$(sed -n 's/^WORKTREE=//p' "$other_env" 2>/dev/null | tail -n 1 || true)
+  other_wt=$(kp_env_get "$other_env" WORKTREE)
   [ -n "$other_wt" ] && [ "$other_wt" = "$WORKTREE" ] || continue
-  other_last=""
-  [ -f "$other_dir/status" ] && other_last=$(tail -n 1 "$other_dir/status" 2>/dev/null || true)
-  case "$other_last" in
-    merged:*|failed:*|cleanup-refused:*) ;;
-    *) refuse_cleanup "worktree $WORKTREE is held by unfinished task $other_id; refusing to release it, even with --force" ;;
-  esac
+  kp_status_is_terminal "$(kp_status_last "$other_dir/status")" ||
+    refuse_cleanup "worktree $WORKTREE is held by unfinished task $other_id; refusing to release it, even with --force"
 done
 
 # Check uncommitted changes

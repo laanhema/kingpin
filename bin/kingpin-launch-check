@@ -19,6 +19,9 @@
 # KINGPIN_STATUS_GRACE sets it in seconds (default 30).
 set -euo pipefail
 
+# shellcheck source=../lib/status.sh
+. "$(dirname "$0")/../lib/status.sh"
+
 usage() { echo "usage: kingpin-launch-check <task-dir>" >&2; }
 
 [ $# -eq 1 ] || { usage; exit 2; }
@@ -47,7 +50,7 @@ if [ -n "$stop" ]; then
   since=$stop
   since_what="its last stop"
 else
-  created=$(sed -n 's/^CREATED=//p' "$env_file" | tail -n 1)
+  created=$(kp_env_get "$env_file" CREATED)
   # `date -d ""` is midnight, not an error: an empty CREATED must not pass.
   [ -n "$created" ] || exit 1
   since=$(date -d "$created" +%s 2>/dev/null) || exit 1
@@ -57,12 +60,12 @@ age=$((now - since))
 [ "$age" -ge "$grace" ] || exit 1
 
 id=$(basename "$task_dir")
-harness=$(sed -n 's/^HARNESS=//p' "$env_file" | tail -n 1)
+harness=$(kp_env_get "$env_file" HARNESS)
 [ -n "$harness" ] || harness=claude
-tmux_target=$(sed -n 's/^TMUX_TARGET=//p' "$env_file" | tail -n 1)
+tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
 [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
 # The window ID survives rename and move; older task.env files lack it.
-window_id=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$env_file" | tail -n 1)
+window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
 [ -z "$window_id" ] || tmux_target=$window_id
 
 # A tmux server that cannot be reached says nothing about the worker.

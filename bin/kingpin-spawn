@@ -25,6 +25,8 @@ set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+# shellcheck source=../lib/status.sh
+. "$KP_ROOT/lib/status.sh"
 CLAUDE_CMD=${KINGPIN_CLAUDE:-claude}
 AGY_CMD=${KINGPIN_AGY:-agy}
 OPENCODE_CMD=${KINGPIN_OPENCODE:-opencode}
@@ -82,7 +84,7 @@ PROJECT_PATH='' SETUP_CMD='' HARNESS=''
 
 global_conf=$KP_HOME/config.env
 DEFAULT_HARNESS=''
-[ -f "$global_conf" ] && DEFAULT_HARNESS=$(sed -n 's/^DEFAULT_HARNESS=//p' "$global_conf" 2>/dev/null || true)
+[ -f "$global_conf" ] && DEFAULT_HARNESS=$(kp_env_get "$global_conf" DEFAULT_HARNESS)
 lock_harness=$("$KP_ROOT/bin/kingpin-lock" harness 2>/dev/null || true)
 harness=${harness_cli:-${HARNESS:-${lock_harness:-${DEFAULT_HARNESS:-claude}}}}
 case $harness in

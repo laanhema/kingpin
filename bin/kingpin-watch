@@ -10,6 +10,8 @@ set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+# shellcheck source=../lib/status.sh
+. "$KP_ROOT/lib/status.sh"
 KP_BIN="$KP_ROOT/bin"
 
 ONCE=0
@@ -37,11 +39,13 @@ process_task_event() {
   [ -f "$env_file" ] || return 0
 
   local mode
-  mode=$(sed -n 's/^MODE=//p' "$env_file" 2>/dev/null || echo "review")
+  mode=$(kp_env_get "$env_file" MODE)
+  [ -n "$mode" ] || mode="review"
 
   local status_file="$task_dir/status"
-  local last_status=""
-  [ -f "$status_file" ] && last_status=$(tail -n 1 "$status_file" 2>/dev/null || true)
+  # The newest line, notes included: this dispatch reports approved: and feedback: too.
+  local last_status
+  last_status=$(kp_status_newest "$status_file")
 
   "$KP_BIN/kingpin-ack" "$id"
 
@@ -106,7 +110,7 @@ retry_pending_cleanups() {
     [ -f "$dir/task.env" ] || continue
     [ ! -f "$dir/done_cleaned" ] || continue
     id=$(basename "$dir")
-    last=$(tail -n 1 "$dir/status" 2>/dev/null || true)
+    last=$(kp_status_last "$dir/status")
     case "$last" in
       cleanup-refused:*) "$KP_BIN/kingpin-done" "$id" >/dev/null 2>&1 || true ;;
     esac

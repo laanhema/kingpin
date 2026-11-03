@@ -11,6 +11,8 @@
 set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+# shellcheck source=../lib/status.sh
+. "$(dirname "$0")/../lib/status.sh"
 
 usage() { echo "usage: kingpin-peek <task-id> [--lines N]" >&2; }
 
@@ -58,7 +60,7 @@ task_dir="$KP_HOME/tasks/$id"
 env_file="$task_dir/task.env"
 tmux_target="kingpin:$id"
 if [ -f "$env_file" ]; then
-  tmux_target=$(sed -n 's/^TMUX_TARGET=//p' "$env_file" 2>/dev/null || true)
+  tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
   [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
 fi
 
@@ -66,7 +68,7 @@ fi
 # it was recorded only have the name target.
 shown_target=$tmux_target
 if [ -f "$env_file" ]; then
-  window_id=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$env_file" 2>/dev/null || true)
+  window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
   if [ -n "$window_id" ]; then
     tmux_target=$window_id
     shown_target="$shown_target ($window_id)"

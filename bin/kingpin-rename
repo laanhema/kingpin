@@ -13,6 +13,8 @@ set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+# shellcheck source=../lib/status.sh
+. "$KP_ROOT/lib/status.sh"
 GH_CMD=${KINGPIN_GH:-gh}
 # kingpin-wait calls this synchronously: a hung gh call must not block fleet events.
 GH_TIMEOUT=; ! command -v timeout >/dev/null || GH_TIMEOUT="timeout 10"
@@ -25,16 +27,16 @@ env_file=$task_dir/task.env
 status_file=$task_dir/status
 [ -d "$task_dir" ] && [ -f "$env_file" ] || exit 0
 [ ! -f "$task_dir/renamed" ] || exit 0
-[ -z "$(sed -n 's/^ISSUE=//p' "$env_file")" ] || exit 0
+[ -z "$(kp_env_get "$env_file" ISSUE)" ] || exit 0
 [ -f "$status_file" ] || exit 0
 
 line=$(grep -E '^issue: #[0-9]+' "$status_file" | head -n 1 || true)
 [ -n "$line" ] || exit 0
 n=$(printf '%s\n' "$line" | sed -E 's/^issue: #([0-9]+).*/\1/')
 
-project_path=$(sed -n 's/^PROJECT_PATH=//p' "$env_file")
-target=$(sed -n 's/^TMUX_TARGET=//p' "$env_file")
-window_id=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$env_file")
+project_path=$(kp_env_get "$env_file" PROJECT_PATH)
+target=$(kp_env_get "$env_file" TMUX_TARGET)
+window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
 [ -n "$target" ] || target=kingpin:$id
 
 title=''
