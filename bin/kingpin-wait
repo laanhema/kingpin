@@ -2,12 +2,22 @@
 # Wait for task updates across the kingpin fleet.
 #
 # Inspects $KINGPIN_HOME/tasks/ for:
-#   1. New status lines (status line count > seen count)
-#   2. Unexpected window termination (tmux window gone without terminal status)
-#   3. Qualified quiet worker (stopped newer than status, pane not waiting on subagents/turns)
+#   1. New status lines (status line count > seen count). A purely informational
+#      `issue:` line does not wake the waiter; any other new line does.
+#   2. Unexpected window termination (tmux window gone without terminal status).
+#      A task whose `launching` marker is fresh (kingpin-spawn has not created the
+#      window yet) is not reported.
+#   3. Qualified quiet worker (stopped newer than status, pane not waiting on subagents/turns).
+#      A worker whose last status is an acknowledged `needs-input:` is not reported
+#      again until its status or its pane activity changes (`seen_activity`, written by ack).
 #
 # Outputs: one line per task update: "<task-id> <reason>" (status|quiet|exited)
-# Exit 0 if updates found, 1 on timeout or no updates (--once).
+# Exit codes:
+#   0  events found (lines printed), or the timeout passed with no events
+#      (nothing printed: a quiet fleet is not an error)
+#   1  --once and no events (scripts such as kingpin-watch rely on this), or an
+#      unusable fleet directory (message on stderr)
+#   2  bad arguments (message on stderr)
 #
 # Usage: kingpin-wait [--timeout <seconds>] [--once]
 set -euo pipefail
@@ -18,10 +28,22 @@ ONCE=0
 
 while [ $# -gt 0 ]; do
   case $1 in
-    --timeout) TIMEOUT=${2:?--timeout needs seconds}; shift 2 ;;
+    --timeout)
+      TIMEOUT=${2:-}
+      case $TIMEOUT in
+        ''|*[!0-9]*) echo "kingpin-wait: --timeout needs a whole number of seconds" >&2; exit 2 ;;
+      esac
+      shift 2 ;;
     --once) ONCE=1; shift ;;
     -h|--help)
-      echo "usage: kingpin-wait [--timeout <seconds>] [--once]"
+      cat <<'USAGE'
+usage: kingpin-wait [--timeout <seconds>] [--once]
+
+Prints "<task-id> <reason>" per event.
+Exit 0: events printed, or the timeout passed with no events (prints nothing).
+Exit 1: --once and no events, or the fleet directory is unusable.
+Exit 2: bad arguments.
+USAGE
       exit 0
       ;;
     *) echo "kingpin-wait: unknown argument $1" >&2; exit 2 ;;
@@ -29,7 +51,10 @@ while [ $# -gt 0 ]; do
 done
 
 tasks_dir="$KP_HOME/tasks"
-mkdir -p "$tasks_dir"
+if ! mkdir -p "$tasks_dir" 2>/dev/null || [ ! -d "$tasks_dir" ] || [ ! -r "$tasks_dir" ]; then
+  echo "kingpin-wait: cannot use fleet directory $tasks_dir" >&2
+  exit 1
+fi
 
 # Repeat the guard warning once at startup (stderr, non-fatal, silent when active).
 "$(dirname "$0")/kingpin-guard" warn || true
@@ -40,6 +65,30 @@ is_terminal_status() {
     merged:*|failed:*|cleanup-refused:*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# kingpin-spawn writes task.env before it creates the window and drops `launching`
+# once the window ID is recorded. A fresh marker means the window is still being
+# created; a stale one (a spawn that died) no longer hides a missing window.
+LAUNCH_GRACE=120
+is_launching() {
+  local marker="$1/launching"
+  [ -f "$marker" ] || return 1
+  local age
+  age=$(( $(date +%s) - $(stat -c %Y "$marker" 2>/dev/null || echo 0) ))
+  [ "$age" -lt "$LAUNCH_GRACE" ]
+}
+
+# True when the worker already reported `needs-input:` (acknowledged) and its pane
+# shows no activity since that ack: a stop in that state is the same idle wait.
+quiet_held() {
+  local dir=$1 target=$2 last=$3 count=$4 seen=$5
+  case "$last" in needs-input:*) ;; *) return 1 ;; esac
+  [ "$count" -eq "$seen" ] || return 1
+  [ -f "$dir/seen_activity" ] || return 1
+  local now_act
+  now_act=$(tmux display-message -p -t "$target" '#{window_activity}' 2>/dev/null || true)
+  [ "$now_act" = "$(tr -d ' \n' < "$dir/seen_activity")" ]
 }
 
 check_task() {
@@ -76,8 +125,11 @@ check_task() {
   if [ "$status_count" -gt "$seen_count" ]; then
     # A --text task learns its issue number here: rename its window (best effort).
     "$(dirname "$0")/kingpin-rename" "$id" >/dev/null 2>&1 || true
-    echo "$id status"
-    return 0
+    # `issue:` (and blank) lines are informational: wake only for another line.
+    if [ -n "$(tail -n +$((seen_count + 1)) "$status_file" | grep -vE '^(issue:|[[:space:]]*$)' || true)" ]; then
+      echo "$id status"
+      return 0
+    fi
   fi
 
   # Terminal tasks need no further checks
@@ -101,6 +153,9 @@ check_task() {
   fi
 
   if [ "$window_alive" -eq 0 ]; then
+    if is_launching "$dir"; then
+      return 0
+    fi
     if [ ! -f "$seen_exited_file" ]; then
       echo "$id exited"
       return 0
@@ -115,7 +170,7 @@ check_task() {
     local seen_stop=0
     [ -f "$seen_stopped_file" ] && seen_stop=$(cat "$seen_stopped_file" 2>/dev/null | tr -d ' ' || echo 0)
 
-    if [ "$stop_time" -gt "$seen_stop" ]; then
+    if [ "$stop_time" -gt "$seen_stop" ] && ! quiet_held "$dir" "$tmux_target" "$last_status" "$status_count" "$seen_count"; then
       local harness="claude"
       harness=$(sed -n 's/^HARNESS=//p' "$task_env" 2>/dev/null || echo "claude")
       [ -n "$harness" ] || harness="claude"
@@ -126,7 +181,7 @@ check_task() {
       # Working markers: keep in step with the copy in kingpin-launch-check.
       case "$harness" in
         claude)
-          if echo "$pane_tail" | grep -qE "Waiting for [0-9]+ background agent|Background agent"; then
+          if echo "$pane_tail" | grep -qE "Waiting for [0-9]+ background agent|Background agent|/tasks to see subagents"; then
             :
           else
             echo "$id quiet"
@@ -187,13 +242,13 @@ while true; do
   now=$(date +%s)
   elapsed=$((now - start_time))
   if [ "$elapsed" -ge "$TIMEOUT" ]; then
-    exit 1
+    exit 0
   fi
 
   remaining=$((TIMEOUT - elapsed))
   step=2
   [ "$remaining" -lt "$step" ] && step="$remaining"
-  [ "$step" -le 0 ] && exit 1
+  [ "$step" -le 0 ] && exit 0
 
   if command -v inotifywait >/dev/null 2>&1; then
     inotifywait -q -r -e modify,create,delete,attrib -t "$step" "$tasks_dir" >/dev/null 2>&1 || true

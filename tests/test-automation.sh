@@ -243,7 +243,10 @@ ack_exit=$?
 set -e
 [ "$ack_exit" -eq 1 ] && [ -z "$out_after_ack" ] && pass "kingpin-wait --once exits 1 with no events after ack" || fail "event printed again after ack"
 
-# Test quiet event
+# Test quiet event (the last status is an acknowledged needs-input, so the pane must show activity first)
+sleep 1.2
+tmux send-keys -t kingpin:test-wait-1 "echo activity" Enter
+sleep 1.2
 now_ts=$(date +%s)
 echo "$now_ts" > "$task_w_dir/stopped"
 quiet_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
@@ -275,6 +278,106 @@ seen_val_all=$(cat "$task_w_dir/seen" 2>/dev/null | tr -d ' ' || echo 0)
 [ "$seen_val_all" -eq 2 ] && pass "kingpin ack --all updated seen to 2" || fail "seen not updated on ack --all"
 
 rm -rf "$task_w_dir"
+
+# Test 6c: kingpin-wait ignores informational lines, holds repeated quiet, spares a launching window
+echo "=== Test 6c: kingpin-wait wake filtering (#45) ==="
+t45_dir="$KINGPIN_HOME/tasks/t45-wait"
+mkdir -p "$t45_dir"
+t45_wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n t45-wait)
+cat > "$t45_dir/task.env" << ENV
+PROJECT=demo-auto
+HARNESS=claude
+MODE=review
+TMUX_TARGET=kingpin:t45-wait
+TMUX_WINDOW_ID=$t45_wid
+ENV
+: > "$t45_dir/status"
+echo 0 > "$t45_dir/seen"
+
+# issue: lines alone do not wake the waiter; the next real line does
+echo "issue: #45 https://example/45" >> "$t45_dir/status"
+set +e; t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null); t45_rc=$?; set -e
+[ "$t45_rc" -eq 1 ] && [ -z "$t45_out" ] && pass "t45: a lone issue: line does not wake kingpin-wait" || fail "t45: issue: line woke the waiter (rc=$t45_rc out=$t45_out)"
+echo "ready: branch=b review=APPROVE report=r" >> "$t45_dir/status"
+t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$t45_out" | grep -q "^t45-wait status" && pass "t45: ready: after an issue: line still wakes" || fail "t45: ready: did not wake ($t45_out)"
+for t45_line in "needs-input: q" "fixed: high=0 report=r" "merged: pr=u" "cleanup-refused: x" "approved: x" "feedback: x"; do
+  : > "$t45_dir/status"; echo 0 > "$t45_dir/seen"
+  echo "$t45_line" >> "$t45_dir/status"
+  "$KP_BIN/kingpin" wait --once 2>/dev/null | grep -q "^t45-wait status" && pass "t45: '${t45_line%%:*}:' wakes" || fail "t45: '${t45_line%%:*}:' did not wake"
+done
+
+# An acknowledged needs-input is not reported quiet again until the pane changes
+: > "$t45_dir/status"; echo 0 > "$t45_dir/seen"; rm -f "$t45_dir/stopped" "$t45_dir/seen_stopped"
+echo "needs-input: q" >> "$t45_dir/status"
+"$KP_BIN/kingpin" ack t45-wait
+[ -s "$t45_dir/seen_activity" ] && pass "t45: ack records the pane activity" || fail "t45: ack wrote no seen_activity"
+sleep 1.2
+date +%s > "$t45_dir/stopped"
+set +e; t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null); t45_rc=$?; set -e
+[ "$t45_rc" -eq 1 ] && [ -z "$t45_out" ] && pass "t45: acked needs-input is not reported quiet" || fail "t45: quiet repeated after needs-input ($t45_out)"
+tmux send-keys -t "$t45_wid" "echo t45-activity" Enter
+sleep 1.2
+echo $(( $(date +%s) + 1 )) > "$t45_dir/stopped"
+t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$t45_out" | grep -q "^t45-wait quiet" && pass "t45: quiet returns once the pane shows activity" || fail "t45: quiet not reported after pane activity ($t45_out)"
+# A pane that still lists background subagents is not quiet
+tmux send-keys -t "$t45_wid" "echo '/tasks to see subagents'" Enter
+sleep 1.2
+tmux clear-history -t "$t45_wid" 2>/dev/null || true
+echo $(( $(date +%s) + 5 )) > "$t45_dir/stopped"
+t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$t45_out" | grep -q "^t45-wait quiet" && fail "t45: quiet reported while subagents run" || pass "t45: a pane with background subagents is not quiet"
+"$KP_BIN/kingpin" ack t45-wait
+echo "needs-input: again" >> "$t45_dir/status"
+"$KP_BIN/kingpin" wait --once 2>/dev/null | grep -q "^t45-wait status" && pass "t45: a new status line wakes after a hold" || fail "t45: new status did not wake"
+
+# A window that is still being created is not exited; a gone window still is
+"$KP_BIN/kingpin" ack t45-wait
+tmux kill-window -t "$t45_wid"
+sleep 0.2
+: > "$t45_dir/launching"
+set +e; t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null); t45_rc=$?; set -e
+[ "$t45_rc" -eq 1 ] && [ -z "$t45_out" ] && pass "t45: a launching task is not reported exited" || fail "t45: launching task reported ($t45_out)"
+touch -d '10 minutes ago' "$t45_dir/launching"
+"$KP_BIN/kingpin" wait --once 2>/dev/null | grep -q "^t45-wait exited" && pass "t45: a stale launching marker no longer hides a gone window" || fail "t45: stale marker hid exited"
+rm -f "$t45_dir/launching"
+"$KP_BIN/kingpin" wait --once 2>/dev/null | grep -q "^t45-wait exited" && pass "t45: a gone window is exited" || fail "t45: gone window not reported"
+rm -rf "$t45_dir"
+
+
+# Test 6b: kingpin-wait exit codes (timeout is not an error)
+echo "=== Test 6b: kingpin-wait exit codes ==="
+t6b_home="$T/kp-t6b"
+mkdir -p "$t6b_home/tasks"
+set +e
+t6b_out=$(KINGPIN_HOME="$t6b_home" "$KP_BIN/kingpin-wait" --timeout 1 2>"$T/t6b.err")
+t6b_exit=$?
+set -e
+[ "$t6b_exit" -eq 0 ] && [ -z "$t6b_out" ] && [ ! -s "$T/t6b.err" ] && pass "kingpin-wait timeout exits 0 with empty stdout and stderr" || fail "timeout: exit $t6b_exit, out '$t6b_out', err '$(cat "$T/t6b.err")'"
+set +e
+t6b_out=$(KINGPIN_HOME="$t6b_home" "$KP_BIN/kingpin-wait" --once 2>&1)
+t6b_exit=$?
+set -e
+[ "$t6b_exit" -eq 1 ] && [ -z "$t6b_out" ] && pass "kingpin-wait --once with no events exits 1" || fail "--once no events: exit $t6b_exit, out '$t6b_out'"
+set +e
+t6b_out=$(KINGPIN_HOME="$t6b_home" "$KP_BIN/kingpin-wait" --bogus 2>&1)
+t6b_exit=$?
+set -e
+[ "$t6b_exit" -ne 0 ] && echo "$t6b_out" | grep -q "^kingpin-wait: " && pass "kingpin-wait bad argument exits non-zero with a message" || fail "bad arg: exit $t6b_exit, out '$t6b_out'"
+set +e
+t6b_out=$(KINGPIN_HOME="$t6b_home" "$KP_BIN/kingpin-wait" --timeout abc 2>&1)
+t6b_exit=$?
+set -e
+[ "$t6b_exit" -ne 0 ] && echo "$t6b_out" | grep -q "^kingpin-wait: " && pass "kingpin-wait bad --timeout exits non-zero with a message" || fail "bad timeout: exit $t6b_exit, out '$t6b_out'"
+t6b_bad="$T/kp-t6b-bad"
+mkdir -p "$t6b_bad"
+echo "not a dir" > "$t6b_bad/tasks"
+set +e
+t6b_out=$(KINGPIN_HOME="$t6b_bad" "$KP_BIN/kingpin-wait" --timeout 1 2>&1)
+t6b_exit=$?
+set -e
+[ "$t6b_exit" -ne 0 ] && echo "$t6b_out" | grep -q "^kingpin-wait: " && pass "kingpin-wait unusable fleet dir exits non-zero with a message" || fail "bad fleet dir: exit $t6b_exit, out '$t6b_out'"
 
 # Test 7: kingpin lock lifecycle
 echo "=== Test 7: kingpin lock lifecycle ==="
@@ -1389,6 +1492,7 @@ grep -qx "TMUX_TARGET=kingpin:$t17_id" "$t17_env" && pass "t17: TMUX_TARGET is k
 tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "$t17_id" && pass "t17: tmux window is named $t17_id" || fail "t17: window name wrong"
 t17_wt=$(sed -n 's/^WORKTREE=//p' "$t17_env")
 [ "$(git -C "$t17_wt" branch --show-current)" = "kingpin/$t17_id" ] && pass "t17: worktree is on kingpin/$t17_id" || fail "t17: worktree branch wrong"
+[ ! -e "$KINGPIN_HOME/tasks/$t17_id/launching" ] && grep -q '^TMUX_WINDOW_ID=' "$t17_env" && pass "t45: spawn removes the launching marker" || fail "t45: launching marker left behind"
 "$KP_BIN/kingpin" send "$t17_id" "echo t17-ok" | grep -q "OK: sent to kingpin:$t17_id" && pass "t17: kingpin send reaches the slugged window" || fail "t17: kingpin send failed"
 "$KP_BIN/kingpin" done "$t17_id" --force >/dev/null
 ! tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "$t17_id" && [ ! -d "$KINGPIN_HOME/tasks/$t17_id" ] && pass "t17: kingpin done closed and archived the slugged task" || fail "t17: kingpin done left the task behind"
@@ -1634,21 +1738,129 @@ t20_err=$("$KP_BIN/kingpin" peek t20-peek 2>&1 >/dev/null) || t20_rc=$?
 
 rm -rf "$t20_dir" "$T/t20-shim" "$T/t20-tmux.log"
 
-# Test 21: a worker that stops without ever writing a status line is reported failed
-echo "=== Test 21: workers that die at launch ==="
+# ---------------------------------------------------------------------------
+# Test 21: kingpin sync fast-forwards the main checkout, never discards anything
+# ---------------------------------------------------------------------------
+echo "--- Test 21: kingpin sync ---"
+t21="$T/t21"
+mkdir -p "$t21"
+git init -q --bare "$t21/origin.git"
+git clone -q "$t21/origin.git" "$t21/main" 2>/dev/null
+git clone -q "$t21/origin.git" "$t21/other" 2>/dev/null
+for d in main other; do
+  git -C "$t21/$d" config user.email t@t
+  git -C "$t21/$d" config user.name t
+done
+(
+  cd "$t21/main"
+  git checkout -q -b main
+  echo one > f.txt
+  printf 'ignored.log\n' > .gitignore
+  git add f.txt .gitignore
+  git commit -qm "first"
+  git push -q -u origin main
+)
+git -C "$t21/other" fetch -q origin
+git -C "$t21/other" checkout -q -b main origin/main
+t21_push() { # <message>: commit from the second clone and push
+  (cd "$t21/other" && git pull -q --ff-only origin main && echo "$1" >> f.txt && git commit -qam "$1" && git push -q origin main)
+}
+t21_sync() { # run kingpin sync in $1; sets t21_out, t21_err, t21_rc
+  t21_rc=0
+  t21_out=$(cd "$1" && "$KP_BIN/kingpin" sync 2>"$t21/err") || t21_rc=$?
+  t21_err=$(cat "$t21/err")
+}
+
+t21_sync "$t21/main"
+[ "$t21_rc" -eq 0 ] && [ "$t21_out" = "already up to date" ] && pass "t21: up to date prints 'already up to date'" || fail "t21: up-to-date rc=$t21_rc out=$t21_out err=$t21_err"
+
+t21_push "second"
+t21_push "third"
+t21_old=$(git -C "$t21/main" rev-parse --short HEAD)
+t21_new_full=$(git -C "$t21/other" rev-parse HEAD)
+t21_sync "$t21/main"
+t21_new=$(git -C "$t21/main" rev-parse --short HEAD)
+if [ "$t21_rc" -eq 0 ] && [ "$(git -C "$t21/main" rev-parse HEAD)" = "$t21_new_full" ] \
+   && echo "$t21_out" | grep -q "$t21_old\.\.$t21_new" \
+   && echo "$t21_out" | grep -q " second$" && echo "$t21_out" | grep -q " third$" && ! echo "$t21_out" | grep -q " first$"; then
+  pass "t21: success pulls the commits and prints old/new SHAs and the log"
+else
+  fail "t21: success rc=$t21_rc out=$t21_out err=$t21_err"
+fi
+
+t21_push "fourth"
+echo "local edit" >> "$t21/main/f.txt"
+t21_head=$(git -C "$t21/main" rev-parse HEAD)
+t21_sync "$t21/main"
+if [ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "dirty" && [ "$(git -C "$t21/main" rev-parse HEAD)" = "$t21_head" ] && grep -q "local edit" "$t21/main/f.txt"; then
+  pass "t21: dirty tracked change is refused and left untouched"
+else
+  fail "t21: dirty rc=$t21_rc err=$t21_err"
+fi
+git -C "$t21/main" checkout -q -- f.txt
+
+echo scratch > "$t21/main/untracked.txt"
+t21_sync "$t21/main"
+if [ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "dirty" && [ -f "$t21/main/untracked.txt" ]; then
+  pass "t21: untracked file counts as dirty"
+else
+  fail "t21: untracked rc=$t21_rc err=$t21_err"
+fi
+rm -f "$t21/main/untracked.txt"
+
+echo noise > "$t21/main/ignored.log"
+t21_sync "$t21/main"
+[ "$t21_rc" -eq 0 ] && echo "$t21_out" | grep -q " fourth$" && [ -f "$t21/main/ignored.log" ] && pass "t21: ignored file does not block the sync" || fail "t21: ignored rc=$t21_rc out=$t21_out err=$t21_err"
+
+# Non-fast-forward: a local commit and a different remote commit.
+(cd "$t21/main" && echo local >> f.txt && git commit -qam "local only")
+t21_push "fifth"
+t21_head=$(git -C "$t21/main" rev-parse HEAD)
+t21_sync "$t21/main"
+if [ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "cannot fast-forward" && [ "$(git -C "$t21/main" rev-parse HEAD)" = "$t21_head" ] && [ -z "$(git -C "$t21/main" status --porcelain)" ]; then
+  pass "t21: non-fast-forward is refused without touching HEAD or the tree"
+else
+  fail "t21: non-ff rc=$t21_rc err=$t21_err"
+fi
+
+git -C "$t21/main" worktree add -q -b t21-wt "$t21/wt" HEAD
+t21_sync "$t21/wt"
+[ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "linked worktree" && pass "t21: linked worktree is refused" || fail "t21: worktree rc=$t21_rc err=$t21_err"
+
+git -C "$t21/main" checkout -q -b t21-noup
+t21_sync "$t21/main"
+[ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "no upstream" && pass "t21: branch without upstream is refused" || fail "t21: no-upstream rc=$t21_rc err=$t21_err"
+
+t21_sync "$t21"
+[ "$t21_rc" -ne 0 ] && echo "$t21_err" | grep -q "not a git repository" && pass "t21: non-repo directory is refused" || fail "t21: non-repo rc=$t21_rc err=$t21_err"
+
+t21_rc=0
+t21_out=$("$KP_BIN/kingpin" sync --help 2>&1) || t21_rc=$?
+[ "$t21_rc" -eq 0 ] && echo "$t21_out" | grep -q "usage: kingpin-sync" && pass "t21: --help exits 0 with usage" || fail "t21: --help rc=$t21_rc out=$t21_out"
+
+t21_rc=0
+(cd "$t21/main" && "$KP_BIN/kingpin" sync --bogus >/dev/null 2>&1) || t21_rc=$?
+[ "$t21_rc" -eq 2 ] && pass "t21: unknown argument exits 2" || fail "t21: unknown arg rc=$t21_rc"
+
+"$KP_BIN/kingpin" --help | grep -q "^  sync " && grep -q "^#   kingpin sync" "$KP_BIN/kingpin" && pass "t21: sync is in the kingpin help and header" || fail "t21: sync missing from kingpin help/header"
+
+rm -rf "$t21"
+
+# Test 22: a worker that stops without ever writing a status line is reported failed
+echo "=== Test 22: workers that die at launch ==="
 # A hand-made task: $1 name, $2 harness, $3 seconds since CREATED, $4 window command.
-mk_t21() {
+mk_t22() {
   local name=$1 harness=$2 age=$3 cmd=$4 d wid
   d="$KINGPIN_HOME/tasks/$name"
   mkdir -p "$d"
   wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n "$name" "$cmd")
   cat > "$d/task.env" << ENVEOF
 TASK_ID=$name
-PROJECT=demo-t21
+PROJECT=demo-t22
 HARNESS=$harness
 MODE=review
 PROJECT_PATH=$T/proj
-WORKTREE=$T/t21-missing-worktree-$name
+WORKTREE=$T/t22-missing-worktree-$name
 TMUX_TARGET=kingpin:$name
 TMUX_WINDOW_ID=$wid
 CREATED=$(date -Iseconds -d "-$age seconds")
@@ -1656,104 +1868,104 @@ ENVEOF
   : > "$d/status"
   echo 0 > "$d/seen"
 }
-t21_status_lines() { grep -c '' "$KINGPIN_HOME/tasks/$1/status" 2>/dev/null || true; }
+t22_status_lines() { grep -c '' "$KINGPIN_HOME/tasks/$1/status" 2>/dev/null || true; }
 
 # AC1+AC2+AC3: the process is gone and the grace period is over -> failed line naming task and harness
-mk_t21 t21-dead agy 120 'exit 1'
+mk_t22 t22-dead agy 120 'exit 1'
 sleep 0.5
-t21_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
-echo "$t21_out" | grep -q "^t21-dead status" && pass "t21: kingpin-wait reports the dead worker as a status event" || fail "t21: no status event for t21-dead (got: $t21_out)"
-t21_last=$(tail -n 1 "$KINGPIN_HOME/tasks/t21-dead/status")
-case "$t21_last" in "failed: no status: t21-dead (agy) "*) pass "t21: the failed line names the task and its harness" ;; *) fail "t21: unexpected status line: $t21_last" ;; esac
-echo "$t21_last" | grep -q "tmux window gone" && pass "t21: the failed line gives the cause (window gone)" || fail "t21: cause missing: $t21_last"
-t21_list=$("$KP_BIN/kingpin" list 2>/dev/null | grep '^t21-dead ')
-echo "$t21_list" | grep -q "failed: no status" && ! echo "$t21_list" | grep -q "(pending)" && pass "t21: kingpin list shows the task as failed, not pending" || fail "t21: list row: $t21_list"
-"$KP_BIN/kingpin" ack t21-dead
-t21_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
-echo "$t21_out" | grep -q "^t21-dead" && fail "t21: dead worker reported again after ack: $t21_out" || pass "t21: no repeat event after ack"
-[ "$(t21_status_lines t21-dead)" = 1 ] && pass "t21: the failed line is written once" || fail "t21: status has $(t21_status_lines t21-dead) lines"
+t22_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$t22_out" | grep -q "^t22-dead status" && pass "t22: kingpin-wait reports the dead worker as a status event" || fail "t22: no status event for t22-dead (got: $t22_out)"
+t22_last=$(tail -n 1 "$KINGPIN_HOME/tasks/t22-dead/status")
+case "$t22_last" in "failed: no status: t22-dead (agy) "*) pass "t22: the failed line names the task and its harness" ;; *) fail "t22: unexpected status line: $t22_last" ;; esac
+echo "$t22_last" | grep -q "tmux window gone" && pass "t22: the failed line gives the cause (window gone)" || fail "t22: cause missing: $t22_last"
+t22_list=$("$KP_BIN/kingpin" list 2>/dev/null | grep '^t22-dead ')
+echo "$t22_list" | grep -q "failed: no status" && ! echo "$t22_list" | grep -q "(pending)" && pass "t22: kingpin list shows the task as failed, not pending" || fail "t22: list row: $t22_list"
+"$KP_BIN/kingpin" ack t22-dead
+t22_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$t22_out" | grep -q "^t22-dead" && fail "t22: dead worker reported again after ack: $t22_out" || pass "t22: no repeat event after ack"
+[ "$(t22_status_lines t22-dead)" = 1 ] && pass "t22: the failed line is written once" || fail "t22: status has $(t22_status_lines t22-dead) lines"
 
 # AC4: inside the grace period nothing is failed; a live worker that is only slow is left alone
-mk_t21 t21-young agy 5 'exit 1'
-mk_t21 t21-slow claude 120 'cat'
+mk_t22 t22-young agy 5 'exit 1'
+mk_t22 t22-slow claude 120 'cat'
 sleep 0.5
 "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
-[ ! -s "$KINGPIN_HOME/tasks/t21-young/status" ] && pass "t21: a worker inside the grace period is not failed" || fail "t21: young worker failed: $(cat "$KINGPIN_HOME/tasks/t21-young/status")"
-[ ! -s "$KINGPIN_HOME/tasks/t21-slow/status" ] && pass "t21: a live worker with an empty status and no stop is not failed" || fail "t21: slow worker failed: $(cat "$KINGPIN_HOME/tasks/t21-slow/status")"
+[ ! -s "$KINGPIN_HOME/tasks/t22-young/status" ] && pass "t22: a worker inside the grace period is not failed" || fail "t22: young worker failed: $(cat "$KINGPIN_HOME/tasks/t22-young/status")"
+[ ! -s "$KINGPIN_HOME/tasks/t22-slow/status" ] && pass "t22: a live worker with an empty status and no stop is not failed" || fail "t22: slow worker failed: $(cat "$KINGPIN_HOME/tasks/t22-slow/status")"
 KINGPIN_STATUS_GRACE=1 "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
-tail -n 1 "$KINGPIN_HOME/tasks/t21-young/status" | grep -q "^failed: no status: t21-young" && pass "t21: KINGPIN_STATUS_GRACE shortens the grace period" || fail "t21: young worker not failed under a 1s grace"
-[ ! -s "$KINGPIN_HOME/tasks/t21-slow/status" ] && pass "t21: a short grace still leaves a live worker alone" || fail "t21: slow worker failed under a 1s grace"
+tail -n 1 "$KINGPIN_HOME/tasks/t22-young/status" | grep -q "^failed: no status: t22-young" && pass "t22: KINGPIN_STATUS_GRACE shortens the grace period" || fail "t22: young worker not failed under a 1s grace"
+[ ! -s "$KINGPIN_HOME/tasks/t22-slow/status" ] && pass "t22: a short grace still leaves a live worker alone" || fail "t22: slow worker failed under a 1s grace"
 
 # A worker that reported anything is never rewritten
-mk_t21 t21-reported agy 120 'exit 1'
-echo "issue: #1 https://example.invalid/1" >> "$KINGPIN_HOME/tasks/t21-reported/status"
+mk_t22 t22-reported agy 120 'exit 1'
+echo "issue: #1 https://example.invalid/1" >> "$KINGPIN_HOME/tasks/t22-reported/status"
 sleep 0.5
 "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
-[ "$(t21_status_lines t21-reported)" = 1 ] && pass "t21: a worker with a status line gets no failed line" || fail "t21: reported worker status: $(cat "$KINGPIN_HOME/tasks/t21-reported/status")"
+[ "$(t22_status_lines t22-reported)" = 1 ] && pass "t22: a worker with a status line gets no failed line" || fail "t22: reported worker status: $(cat "$KINGPIN_HOME/tasks/t22-reported/status")"
 
 # A stopped worker whose window stays open: failed only after the window has been silent for the grace period
-mk_t21 t21-idle opencode 600 'cat'
-echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t21-idle/stopped"
-mk_t21 t21-busy claude 600 'while :; do echo tick; sleep 0.3; done'
-echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t21-busy/stopped"
+mk_t22 t22-idle opencode 600 'cat'
+echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t22-idle/stopped"
+mk_t22 t22-busy claude 600 'while :; do echo tick; sleep 0.3; done'
+echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t22-busy/stopped"
 # Stopped and silent, but the pane shows the working marker that `quiet` skips for its harness
-mk_t21 t21-wclaude claude 600 'printf "Waiting for 1 background agent\n"; exec cat'
-echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t21-wclaude/stopped"
-mk_t21 t21-wagy agy 600 'printf "working\nesc to cancel\n"; exec cat'
-echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t21-wagy/stopped"
-mk_t21 t21-wopencode opencode 600 'printf "working\nInterrupt\n"; exec cat'
-echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t21-wopencode/stopped"
+mk_t22 t22-wclaude claude 600 'printf "Waiting for 1 background agent\n"; exec cat'
+echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t22-wclaude/stopped"
+mk_t22 t22-wagy agy 600 'printf "working\nesc to cancel\n"; exec cat'
+echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t22-wagy/stopped"
+mk_t22 t22-wopencode opencode 600 'printf "working\nInterrupt\n"; exec cat'
+echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t22-wopencode/stopped"
 sleep 3
-mk_t21 t21-justnow claude 600 'cat'
-date +%s > "$KINGPIN_HOME/tasks/t21-justnow/stopped"
+mk_t22 t22-justnow claude 600 'cat'
+date +%s > "$KINGPIN_HOME/tasks/t22-justnow/stopped"
 KINGPIN_STATUS_GRACE=2 "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
-tail -n 1 "$KINGPIN_HOME/tasks/t21-idle/status" | grep -q "^failed: no status: t21-idle (opencode) stopped and went silent.*kingpin peek t21-idle" && pass "t21: a stopped worker with a silent window is failed, with a peek hint" || fail "t21: idle worker status: $(cat "$KINGPIN_HOME/tasks/t21-idle/status")"
-[ ! -s "$KINGPIN_HOME/tasks/t21-busy/status" ] && pass "t21: a stopped worker whose window still prints is not failed" || fail "t21: busy worker failed: $(cat "$KINGPIN_HOME/tasks/t21-busy/status")"
-[ ! -s "$KINGPIN_HOME/tasks/t21-justnow/status" ] && pass "t21: a worker that stopped inside the grace period is not failed" || fail "t21: just-stopped worker failed"
-for t in t21-wclaude t21-wagy t21-wopencode; do
-  [ ! -s "$KINGPIN_HOME/tasks/$t/status" ] && pass "t21: a stopped, silent worker showing a working marker is not failed ($t)" || fail "t21: working worker $t failed: $(cat "$KINGPIN_HOME/tasks/$t/status")"
+tail -n 1 "$KINGPIN_HOME/tasks/t22-idle/status" | grep -q "^failed: no status: t22-idle (opencode) stopped and went silent.*kingpin peek t22-idle" && pass "t22: a stopped worker with a silent window is failed, with a peek hint" || fail "t22: idle worker status: $(cat "$KINGPIN_HOME/tasks/t22-idle/status")"
+[ ! -s "$KINGPIN_HOME/tasks/t22-busy/status" ] && pass "t22: a stopped worker whose window still prints is not failed" || fail "t22: busy worker failed: $(cat "$KINGPIN_HOME/tasks/t22-busy/status")"
+[ ! -s "$KINGPIN_HOME/tasks/t22-justnow/status" ] && pass "t22: a worker that stopped inside the grace period is not failed" || fail "t22: just-stopped worker failed"
+for t in t22-wclaude t22-wagy t22-wopencode; do
+  [ ! -s "$KINGPIN_HOME/tasks/$t/status" ] && pass "t22: a stopped, silent worker showing a working marker is not failed ($t)" || fail "t22: working worker $t failed: $(cat "$KINGPIN_HOME/tasks/$t/status")"
 done
 
 # remain-on-exit keeps the window of a dead process: the pane is dead
-mk_t21 t21-paneDead agy 120 'sleep 1; exit 3'
-tmux set-window-option -t "$(sed -n 's/^TMUX_WINDOW_ID=//p' "$KINGPIN_HOME/tasks/t21-paneDead/task.env")" remain-on-exit on
+mk_t22 t22-paneDead agy 120 'sleep 1; exit 3'
+tmux set-window-option -t "$(sed -n 's/^TMUX_WINDOW_ID=//p' "$KINGPIN_HOME/tasks/t22-paneDead/task.env")" remain-on-exit on
 sleep 2
 "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
-tail -n 1 "$KINGPIN_HOME/tasks/t21-paneDead/status" | grep -q "tmux pane dead" && pass "t21: a dead pane in a kept window is failed" || fail "t21: pane-dead status: $(cat "$KINGPIN_HOME/tasks/t21-paneDead/status")"
+tail -n 1 "$KINGPIN_HOME/tasks/t22-paneDead/status" | grep -q "tmux pane dead" && pass "t22: a dead pane in a kept window is failed" || fail "t22: pane-dead status: $(cat "$KINGPIN_HOME/tasks/t22-paneDead/status")"
 
 # An unreachable tmux server says nothing about the worker
-mk_t21 t21-notmux agy 120 'exit 1'
-mkdir -p "$T/t21-notmux-bin"
-printf '#!/usr/bin/env bash\nexit 1\n' > "$T/t21-notmux-bin/tmux"
-chmod +x "$T/t21-notmux-bin/tmux"
+mk_t22 t22-notmux agy 120 'exit 1'
+mkdir -p "$T/t22-notmux-bin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$T/t22-notmux-bin/tmux"
+chmod +x "$T/t22-notmux-bin/tmux"
 sleep 0.5
-PATH="$T/t21-notmux-bin:$PATH" "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
-[ ! -s "$KINGPIN_HOME/tasks/t21-notmux/status" ] && pass "t21: nothing is recorded when tmux cannot be asked" || fail "t21: failed written without tmux: $(cat "$KINGPIN_HOME/tasks/t21-notmux/status")"
+PATH="$T/t22-notmux-bin:$PATH" "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
+[ ! -s "$KINGPIN_HOME/tasks/t22-notmux/status" ] && pass "t22: nothing is recorded when tmux cannot be asked" || fail "t22: failed written without tmux: $(cat "$KINGPIN_HOME/tasks/t22-notmux/status")"
 
-for t in t21-dead t21-young t21-slow t21-reported t21-idle t21-busy t21-justnow t21-wclaude t21-wagy t21-wopencode t21-paneDead t21-notmux; do
+for t in t22-dead t22-young t22-slow t22-reported t22-idle t22-busy t22-justnow t22-wclaude t22-wagy t22-wopencode t22-paneDead t22-notmux; do
   tmux kill-window -t "$(sed -n 's/^TMUX_WINDOW_ID=//p' "$KINGPIN_HOME/tasks/$t/task.env")" 2>/dev/null || true
   rm -rf "$KINGPIN_HOME/tasks/$t"
 done
-rm -rf "$T/t21-notmux-bin"
+rm -rf "$T/t22-notmux-bin"
 
 # End to end: a real spawn whose harness exits at once, then kingpin done releases the slot
-cat > "$T/t21-dead-harness" << 'DH'
+cat > "$T/t22-dead-harness" << 'DH'
 #!/usr/bin/env bash
 exit 1
 DH
-chmod +x "$T/t21-dead-harness"
-KINGPIN_AGY=$T/t21-dead-harness "$KP_BIN/kingpin" spawn demo-auto --issue 246 --id t21-spawn --mode review >/dev/null
+chmod +x "$T/t22-dead-harness"
+KINGPIN_AGY=$T/t22-dead-harness "$KP_BIN/kingpin" spawn demo-auto --issue 246 --id t22-spawn --mode review >/dev/null
 sleep 2
-t21_out=$(KINGPIN_STATUS_GRACE=1 "$KP_BIN/kingpin" wait --once 2>/dev/null || true)
-echo "$t21_out" | grep -q "^t21-spawn status" && pass "t21: a spawned worker that exits at once is reported" || fail "t21: spawned dead worker not reported (got: $t21_out)"
-"$KP_BIN/kingpin" list 2>/dev/null | grep '^t21-spawn ' | grep -q "failed: no status: t21-spawn (agy)" && pass "t21: list shows the spawned worker as failed" || fail "t21: list row for t21-spawn: $("$KP_BIN/kingpin" list 2>/dev/null | grep '^t21-spawn ')"
-"$KP_BIN/kingpin" done t21-spawn >/dev/null 2>&1 && [ -d "$KINGPIN_HOME/archive/t21-spawn" ] && pass "t21: kingpin done releases the failed task without --force" || fail "t21: kingpin done refused the dead task"
+t22_out=$(KINGPIN_STATUS_GRACE=1 "$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$t22_out" | grep -q "^t22-spawn status" && pass "t22: a spawned worker that exits at once is reported" || fail "t22: spawned dead worker not reported (got: $t22_out)"
+"$KP_BIN/kingpin" list 2>/dev/null | grep '^t22-spawn ' | grep -q "failed: no status: t22-spawn (agy)" && pass "t22: list shows the spawned worker as failed" || fail "t22: list row for t22-spawn: $("$KP_BIN/kingpin" list 2>/dev/null | grep '^t22-spawn ')"
+"$KP_BIN/kingpin" done t22-spawn >/dev/null 2>&1 && [ -d "$KINGPIN_HOME/archive/t22-spawn" ] && pass "t22: kingpin done releases the failed task without --force" || fail "t22: kingpin done refused the dead task"
 
 # kingpin run stops on a worker that died at launch instead of polling forever
-t21_run_rc=0
-t21_run_out=$(KINGPIN_AGY=$T/t21-dead-harness KINGPIN_STATUS_GRACE=1 timeout 60 "$KP_BIN/kingpin" run demo-auto --issue 247 --id t21-run --mode review 2>&1) || t21_run_rc=$?
-[ "$t21_run_rc" -eq 1 ] && echo "$t21_run_out" | grep -q "FAILED: t21-run failed: failed: no status:" && pass "t21: kingpin run exits 1 with the failed line for a worker that died at launch" || fail "t21: kingpin run rc=$t21_run_rc: $t21_run_out"
-"$KP_BIN/kingpin" done t21-run >/dev/null 2>&1 || true
+t22_run_rc=0
+t22_run_out=$(KINGPIN_AGY=$T/t22-dead-harness KINGPIN_STATUS_GRACE=1 timeout 60 "$KP_BIN/kingpin" run demo-auto --issue 247 --id t22-run --mode review 2>&1) || t22_run_rc=$?
+[ "$t22_run_rc" -eq 1 ] && echo "$t22_run_out" | grep -q "FAILED: t22-run failed: failed: no status:" && pass "t22: kingpin run exits 1 with the failed line for a worker that died at launch" || fail "t22: kingpin run rc=$t22_run_rc: $t22_run_out"
+"$KP_BIN/kingpin" done t22-run >/dev/null 2>&1 || true
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"

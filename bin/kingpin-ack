@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Acknowledge task events across the kingpin fleet.
 #
-# Advances seen status line counts, seen_stopped timestamps, and sets seen_exited
-# for specified task IDs or all tasks (--all).
+# Advances seen status line counts, seen_stopped timestamps, records the pane
+# activity time (seen_activity), and sets seen_exited for specified task IDs or all tasks (--all).
 #
 # Usage: kingpin-ack <task-id>... | --all
 set -euo pipefail
@@ -72,6 +72,10 @@ ack_task() {
 
   if ! tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
     touch "$task_dir/seen_exited"
+  else
+    # 4. Remember the pane activity time: kingpin-wait holds a repeated `quiet`
+    # for an acknowledged needs-input until it changes.
+    tmux display-message -p -t "$tmux_target" '#{window_activity}' > "$task_dir/seen_activity" 2>/dev/null || rm -f "$task_dir/seen_activity"
   fi
 }
 
