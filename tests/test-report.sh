@@ -114,6 +114,70 @@ printf '<html><body><div class="kp-diff"></div><p>The patch is small.</p></body>
 "$KP_BIN/kingpin" report check --prose-only "$T/page-empty-container.html" >/dev/null 2>&1 && pass "--prose-only ignores an empty diff container" || fail "--prose-only failed an empty diff container"
 "$KP_BIN/kingpin" report check "$T/page-empty-container.html" >/dev/null 2>&1 && fail "full check accepted an empty diff container" || pass "full check still rejects an empty diff container"
 
+echo "=== kingpin report check: layout ==="
+FIX="$KP_ROOT/tests/fixtures/dossier-layout.html"
+"$KP_BIN/kingpin-report" --help | grep -q 'layout' && pass "--help documents the layout pass" || fail "--help does not mention the layout pass"
+out=$("$KP_BIN/kingpin" report check "$FIX" 2>&1) && pass "check accepts the corrected dossier" || fail "check rejected the corrected dossier: $out"
+echo "$out" | grep -q 'has renderable diffs and clean prose' && pass "the fixture keeps the existing OK line" || fail "unexpected OK line: $out"
+
+# Each page below is a full document: the layout pass applies. The line numbers are the line of the
+# element or rule the failure must name, so a verdict without a location cannot pass here.
+cat > "$T/pre-bare.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<pre>./tests/test-report.sh --filter a-line-that-never-wraps</pre>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/pre-bare.html" 2>&1) && fail "check accepted a <pre> with no wrap rule" || pass "check rejects a <pre> with no wrap rule"
+echo "$out" | grep -q 'pre-bare.html:6: <pre> has no wrap rule' && pass "the <pre> failure names its line" || fail "no file:line for the <pre>: $out"
+
+cat > "$T/table-bare.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body>
+<table><tbody><tr><td><code>tests/test-report.sh</code></td></tr></tbody></table>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/table-bare.html" 2>&1) && fail "check accepted a table with no wrap rule" || pass "check rejects a table with no wrap rule"
+echo "$out" | grep -q 'table-bare.html:6: <table> has no wrap rule' && pass "the table failure names its line" || fail "no file:line for the table: $out"
+
+cat > "$T/grid-bare.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  code { overflow-wrap: anywhere; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; }
+</style></head><body>
+<div class="grid"><p>left</p><p>right</p></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/grid-bare.html" 2>&1) && fail "check accepted a grid with no shrink guard" || pass "check rejects a grid with no shrink guard"
+echo "$out" | grep -q 'grid-bare.html:4: grid/flex layout has no shrink guard' && pass "the grid failure names its line" || fail "no file:line for the grid: $out"
+
+printf '<!DOCTYPE html>\n<html><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body>\n<img src="/home/lauri/kingpin.jpg" alt="banner" />\n</body></html>\n' > "$T/abs-src.html"
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/abs-src.html" 2>&1) && fail "check accepted an absolute asset path" || pass "check rejects an absolute asset path"
+echo "$out" | grep -q 'abs-src.html:6: absolute asset path: /home/lauri/kingpin.jpg' && pass "the absolute path failure names its line" || fail "no file:line for the absolute path: $out"
+
+printf '<!DOCTYPE html>\n<html><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body>\n<img src="../kingpin.jpg" alt="banner" />\n</body></html>\n' > "$T/climb-src.html"
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/climb-src.html" 2>&1) && fail "check accepted an asset path climbing out of the folder" || pass "check rejects an asset path that climbs out of the folder"
+echo "$out" | grep -q 'climb-src.html:6: asset path climbs out of the page folder: ../kingpin.jpg' && pass "the climbing path failure names its line" || fail "no file:line for the climbing path: $out"
+
+# A diff fragment is not a page: it has no viewport and no layout of its own, so the pass stays out
+# of it. This is what keeps the generated diffs fragment and DESIGN.md-style files passing.
+printf '<div><pre>a line the host page must wrap</pre></div>\n' > "$T/fragment-pre.html"
+"$KP_BIN/kingpin" report check --prose-only "$T/fragment-pre.html" >/dev/null 2>&1 && pass "a fragment is not layout-checked" || fail "a fragment was treated as a full page"
+
+# The fixture with its guards stripped is the page that used to reach review looking broken.
+sed -e 's/min-width: 0;//' -e 's/ overflow-wrap: anywhere;//g' -e 's/table-layout: fixed;//' -e 's/white-space: pre-wrap;//g' -e 's/overflow-x: auto;//' "$FIX" > "$T/stripped.html"
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/stripped.html" 2>&1) && fail "check accepted the stripped fixture" || pass "check rejects the stripped fixture"
+echo "$out" | grep -q 'stripped.html:[0-9]*: <pre> has no wrap rule' && pass "the stripped fixture names a <pre>" || fail "no <pre> hit in the stripped fixture: $out"
+echo "$out" | grep -q 'stripped.html:[0-9]*: <table> has no wrap rule' && pass "the stripped fixture names a table" || fail "no table hit in the stripped fixture: $out"
+echo "$out" | grep -q 'stripped.html:[0-9]*: <code> has no wrap rule' && pass "the stripped fixture names the inline code" || fail "no code hit in the stripped fixture: $out"
+
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL REPORT TESTS PASSED"
 else

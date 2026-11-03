@@ -3,8 +3,9 @@
 #
 # Usage:
 #   kingpin-report diffs [--repo <dir>] [--base <ref>]   print the HTML fragment for Section 3
-#   kingpin-report check [--prose-only] <report.html>    fail when a diff would render blank or
-#                                                        the prose carries an AI tell
+#   kingpin-report check [--prose-only] <report.html>    fail when a diff would render blank, the
+#                                                        page would overflow, or the prose carries
+#                                                        an AI tell
 set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -21,14 +22,21 @@ usage: kingpin-report diffs [--repo <dir>] [--base <ref>]
          FileDiff render call that passes oldFile/newFile. Paste it into report.html.
   check  Exit 1 when report.html would show a blank diff: `patch:` used, FileDiff
          without oldFile/newFile, no FileDiff at all, or an empty diff container.
+         It also runs a layout pass over a full page (`*.html` with an `<html>`
+         element): a `<pre>` with no `white-space: pre-wrap` or `overflow-x`, inline
+         `<code>` with no `overflow-wrap`, a `<table>` whose cells set no wrap rule and
+         which has no `table-layout: fixed`, a grid/flex layout with no `min-width: 0`
+         or `minmax(0, ...)` guard, and a `src`/`href`/`url()` that is an absolute path
+         or climbs out with `..`. Each failure names the offending line, like the prose
+         pass. A fragment has no page layout, so it is not judged.
          It also runs a prose pass (the mechanical slice of the `unslop` skill) and
          fails with file:line and the offending line on an AI tell: em dash,
          "testament to", "it's not just", "delve", "seamless", "in order to",
          "let me know", "I hope this helps". Code blocks, diff output, script/style
          bodies and HTML attributes are ignored. `<!-- unslop:ignore -->` on a line
          keeps a word that is genuinely wanted.
-  --prose-only  Check only the prose, for an artifact with no diff section (a plan
-         or comparison page); the FileDiff, kp-diff-data and empty-container
+  --prose-only  Check only the prose and layout, for an artifact with no diff section
+         (a plan or comparison page); the FileDiff, kp-diff-data and empty-container
          checks are skipped.
 HELP
     ;;

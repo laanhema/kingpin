@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dossier layout fixture</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0d1117;
+    --panel: #161b22;
+    --text: #e6edf3;
+    --muted: #9da7b3;
+    --line: #30363d;
+    --ok: #3fb950;
+    --bad: #f85149;
+  }
+  /* The layout block a dossier carries: every grid and flex child may shrink, and text
+     breaks inside its box instead of pushing the page wider. */
+  * { box-sizing: border-box; min-width: 0; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 16px;
+    line-height: 1.55;
+  }
+  .shell { max-width: 1180px; margin: 0 auto; padding: 24px 20px 64px; }
+  h1, h2, h3 { line-height: 1.2; margin: 0 0 8px; }
+  h1 { font-size: 28px; }
+  h2 { font-size: 20px; margin-top: 28px; }
+  p { margin: 0 0 12px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13.5px; overflow-wrap: anywhere; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px 20px; margin: 0 0 20px; }
+  .muted { color: var(--muted); }
+  .badge { display: inline-block; border: 1px solid var(--line); border-radius: 999px; padding: 1px 10px; font-size: 12.5px; color: var(--muted); }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 14.5px; }
+  th { text-align: left; color: var(--muted); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; border-bottom: 1px solid var(--line); padding: 0 10px 8px 0; }
+  td { vertical-align: top; padding: 9px 10px 9px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  pre { margin: 0; padding: 12px 14px; background: #0b0f14; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto; }
+  .kp-fallback { white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <h1>Dossier layout fixture</h1>
+  <p class="muted">A worker dossier built from the layout block in <code>worker/preamble.md</code>. The long paths and the long code line below wrap inside their boxes, and the page keeps its width at 1280 and 1024.</p>
+
+  <section class="panel">
+    <h2>Changed files</h2>
+    <table>
+      <thead>
+        <tr><th>File</th><th>Change</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>tests/test-watch-supervisor.sh</code></td>
+          <td>Adds a watchdog case that starts a second supervisor and expects the duplicate to be refused with the running pid named.</td>
+        </tr>
+        <tr>
+          <td><code>lib/report-diffs.mjs</code></td>
+          <td>The layout pass runs over a full document and reports the offending line, the same way the prose pass does.</td>
+        </tr>
+        <tr>
+          <td><code>worker/preamble.md</code></td>
+          <td>Carries the layout block and the two-width check a capo runs before reporting ready.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="panel">
+    <h2>Long line</h2>
+    <pre>$ ./tests/test-report.sh --filter /home/lauri/.treehouse/kingpin-edca9a/3/kingpin/tests/test-watch-supervisor-2026-11-03T16-02-odd-and-very-long-run-identifier-0123456789abcdef.sh</pre>
+  </section>
+
+  <div class="grid">
+    <section class="panel">
+      <h2>Verdict</h2>
+      <p><span class="badge">APPROVE</span></p>
+      <p>One finding, already fixed: the noir template's code and table cells now carry the same wrap rule.</p>
+    </section>
+    <section class="panel">
+      <h2>Widest cell</h2>
+      <table>
+        <tbody>
+          <tr>
+            <td><code>archive//home/lauri/.treehouse/kingpin-edca9a/3/kingpin/tests/test-watch-supervisor-2026-11-03T16-02-odd-and-very-long-run-identifier-0123456789abcdef.sh</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+  </div>
+
+  <section id="kp-diffs">
+    <div class="kp-diff-file">
+      <h3 class="kp-diff-title"><code>worker/preamble.md</code> <small>modified</small></h3>
+      <div class="kp-diff" data-index="0"><pre class="kp-fallback">@@ -1,2 +1,6 @@
++## Dossier layout
++
++Every dossier carries this block.
+</pre></div>
+    </div>
+    <script type="application/json" id="kp-diff-data">[{"name":"worker/preamble.md","oldName":"worker/preamble.md","oldContents":"# Kingpin worker\n","newContents":"# Kingpin worker\n\n## Dossier layout\n","binary":false}]</script>
+    <script type="module">
+      import { FileDiff } from "https://esm.sh/@pierre/diffs@1.2.10?bundle";
+      const files = JSON.parse(document.getElementById("kp-diff-data").textContent);
+      const options = { theme: { light: "github-light", dark: "github-dark" }, themeType: "dark", overflow: "wrap", diffStyle: "split" };
+      files.forEach((f, i) => {
+        const box = document.querySelector('.kp-diff[data-index="' + i + '"]');
+        const host = document.createElement("div");
+        box.appendChild(host);
+        new FileDiff(options).render({
+          containerWrapper: host,
+          oldFile: { name: f.oldName, contents: f.oldContents },
+          newFile: { name: f.name, contents: f.newContents },
+        });
+      });
+    </script>
+  </section>
+
+</div>
+</body>
+</html>
