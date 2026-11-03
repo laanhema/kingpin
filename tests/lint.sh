@@ -76,4 +76,6 @@ if [ -n "$tracked" ]; then
   exit 1
 fi
 
+if [ -x tests/readme-cli-reference.sh ]; then ./tests/readme-cli-reference.sh; fi
+
 echo "lint: ${#files[@]} shell files and ${#node_files[@]} node files clean"

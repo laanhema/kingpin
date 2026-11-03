@@ -41,7 +41,8 @@ done
 [ "$(grep -c '^\.agents' "$KP_ROOT/.gitignore")" = 3 ] && pass ".gitignore carries no broader .agents rule" || fail ".gitignore carries .agents rules beyond the three directories"
 
 # The fixture: this checkout's lint inputs, committed, with nothing under .agents/ yet.
-cp -a "$KP_ROOT"/bin "$KP_ROOT"/lib "$KP_ROOT"/tests "$KP_ROOT"/.github "$KP_ROOT"/.gitignore "$FIX"/
+# README.md and docs/ are inputs too: the CLI-reference check reads them.
+cp -a "$KP_ROOT"/bin "$KP_ROOT"/lib "$KP_ROOT"/tests "$KP_ROOT"/.github "$KP_ROOT"/.gitignore "$KP_ROOT"/README.md "$KP_ROOT"/docs "$FIX"/
 (
   cd "$FIX" || exit 1
   git init -q .

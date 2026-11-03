@@ -13,13 +13,14 @@ each task back as a visual review dossier. This file describes the repository.
 | `worker/` | `preamble.md`, the text a spawned worker receives, and `hooks.json`, its Claude Code settings |
 | `orchestrator/contract.md` | The orchestrator contract. `kingpin guard install` copies it into the main checkout's untracked instruction sources; no harness loads this tracked file directly |
 | `tests/` | One shell suite per feature, with shared setup in `tests/lib.sh` |
+| `docs/` | The long-form pages `README.md` links to: per-command usage, flags and exit codes (`cli.md`), fleet overview, worker permissions, harness wiring, and testing |
 | `assets/` | Images for `README.md` |
 
 ## Validation
 
 ```bash
-# bash -n, shellcheck, node --check over lib/*.mjs, the CI-matrix check, and the tracked
-# .agents artifact check
+# bash -n, shellcheck, node --check over lib/*.mjs, the CI-matrix check, the README/docs
+# CLI-reference check, and the tracked .agents artifact check
 ./tests/lint.sh
 
 # One suite at a time (two suites briefly swap bin/kingpin-send)

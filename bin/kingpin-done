@@ -16,9 +16,26 @@ KP_BIN=$(cd "$(dirname "$0")" && pwd)
 . "$KP_BIN/../lib/exclude.sh"
 FORCE=0
 
+usage() {
+  cat <<'HELP'
+usage: kingpin-done <task-id> [--force]
+
+Verify the merge, release the worktree lease, advance the landing queue and
+archive the task record. --force bypasses a recorded lease-lost refusal.
+HELP
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
 [ $# -ge 1 ] || die "usage: kingpin-done <task-id> [--force]"
+[ $# -le 2 ] || die "unknown argument: $3"
 id=$1
-[ "${2:-}" = "--force" ] && FORCE=1
+if [ "${2:-}" = "--force" ]; then
+  FORCE=1
+elif [ $# -ge 2 ]; then
+  die "unknown argument: $2"
+fi
 
 task_dir="$KP_HOME/tasks/$id"
 if [ ! -d "$task_dir" ] && [ -d "$KP_HOME/archive/$id" ]; then

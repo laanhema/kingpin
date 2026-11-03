@@ -14,8 +14,6 @@ The fleet runs on a four-rank fiction that lives in conversation. The **kingpin*
 
 The voice stays in the room. Commits, PRs, issues, code, status fields, review reports and dossiers stay neutral and machine-readable.
 
----
-
 ## Prerequisites
 
 Ensure the following tools are installed on your host:
@@ -32,8 +30,6 @@ Ensure the following tools are installed on your host:
 Optional:
 - `lavish-axi` (for per-task review dossiers and their interactive actions)
 - `shellcheck` (contributors only, for `./tests/lint.sh`; `pip install shellcheck-py==0.11.0.1` into a venv, which is the version CI pins, or your package manager at shellcheck 0.11.0)
-
----
 
 ## Quick Start (Two Commands)
 
@@ -84,8 +80,6 @@ kingpin run my-repo --issue 42 --mode auto
 kingpin run my-repo --text "refactor authentication service" --harness agy
 ```
 
----
-
 ## Automated Fleet Supervision (`kingpin watch`)
 
 `kingpin watch` is the fleet's supervisor: one process per fleet, started once and left running, in the background or in a separate terminal:
@@ -103,185 +97,43 @@ It loops, so it keeps handling events after it handles one; there is nothing to 
 
 Only one supervisor runs at a time. A second `kingpin watch` refuses to start and names the running pid (recorded in `~/.kingpin/supervisor.pid`), and a pidfile left by a supervisor that died is reclaimed by the next one. `kingpin list` prints `Supervisor: running (pid 12345, since 14:03)` or `Supervisor: none - run kingpin watch`, and `kingpin lock acquire` warns when none is running. `kingpin watch --once` runs a single pass without claiming the pidfile; `kingpin wait` is the one-shot primitive underneath, for scripts that want to read fleet events themselves.
 
----
-
 ## CLI Command Reference
 
-| Command | Usage | Description |
-|---|---|---|
-| `kingpin init` | `kingpin init [name] [path] [--harness <name>]` | Auto-configures a project from current directory or path. |
-| `kingpin run` | `kingpin run <proj> (--issue <n> \| --text <req>) [--mode auto\|review]` | Single command that spawns, monitors, and completes a task. In `review` mode it exits 0 when the worker reports `ready:` and prints the dossier path. A worker blocked on a human (`needs-input:`, or the Stop hook's `waiting:` line) ends it with exit 0 too, printing where the question is. A worker that reported a status line and whose window is gone before a terminal line ends it with exit 1 naming `exited` and the last status: the supervisor records the dead window in `seen_exited` and `run` stops on that marker. In `auto` mode that includes a `ready:` worker whose window died, because only the worker can finish the landing. `merged:`, `failed:` and `cleanup-refused:` keep the exits they had. |
-| `kingpin watch` | `kingpin watch [--once] [--interval <sec>]` | The fleet's one supervisor: a continuous supervision and auto-landing loop. Each cycle also advances a project's landing queue whose holder released or is gone, so an ownerless queue recovers on its own, and re-arms a review task's dossier listener that died (missing or dead `listener.pid`) unless the reviewer ended the session, the task finished, a landing is under way, the task runs in `auto` mode, or its last worker event is not `ready:`/`fixed:`. `--interval` takes a whole number of seconds, at least 1 and at most nine digits; anything else exits 2, and a `kingpin wait` that fails is retried after one warning on stderr and a two-second pause, so an unusable fleet directory cannot spin the loop. It claims `~/.kingpin/supervisor.pid`, refuses a second copy with the running pid named, reclaims a pidfile left by a dead supervisor, and `--once` runs one pass without claiming it (that is the path `kingpin run` and the tests use). `kingpin wait` is the primitive it drives. |
-| `kingpin spawn` | `kingpin spawn <proj> (--issue <n> \| --text <req>) [--harness <name>]` | Starts a worker on a background tmux window and records its tmux window ID (`TMUX_WINDOW_ID` in `task.env`), so renaming a worker window or moving it to another session is safe; `task.env` files without it fall back to `TMUX_TARGET`. The window is pinned with `automatic-rename off` and `allow-rename off`, so ambient tmux settings and worker child commands cannot rename it; only `kingpin-wait` renames it. The task ID, branch (`kingpin/<id>`) and window share one slug: `kp-<n>-<slug>` from the issue title for `--issue`, `kp-<slug>` from the request for `--text` (`--id` overrides). For `--text`, `kingpin-wait` renames the window and `TMUX_TARGET` to `kp-<n>-<slug>` once the worker reports its issue; the task ID and branch keep the first name. |
-| `kingpin list` | `kingpin list [--all]` | Displays active fleet tasks and states in the terminal: a `STATE` column (`WAITING`, `SILENT`, `Unseen: N`), plus a `Supervisor: running (pid <n>, since <HH:MM>)` or `Supervisor: none - run kingpin watch` line; `--all` also shows finished (archived) tasks. |
-| `kingpin send` | `kingpin send <task-id> "<text>"` | Types the text literally into a worker window, then presses Enter. |
-| `kingpin peek` | `kingpin peek <task-id> [--lines N]` | Read-only view of a worker: prints the last 20 non-empty lines of its tmux pane (`--lines N` changes the count), scrollback included. It finds the pane from the recorded window ID (`TMUX_WINDOW_ID`), so it works after the window is renamed or moved, and falls back to `TMUX_TARGET` for older `task.env` files. It sends no keys and changes no state. Exits 1 for an unknown task or a window that is gone, 2 for a bad argument. Use it to see why a worker is stuck (an unsubmitted pasted message, a usage-limit banner, a permission prompt). |
-| `kingpin sync` | `kingpin sync` | Fast-forwards the main checkout from its upstream branch with `git pull --ff-only`, so the orchestrator never runs raw git against project files. Run it in the main checkout; it prints the old and new short SHAs plus the commits pulled, or `already up to date`. It never merges, rebases, resets or stashes. Exits 1 with a message on stderr in a linked worktree, on a dirty tree (any `git status --porcelain` output; ignored files do not count), with a detached HEAD or no upstream, or when a fast-forward is not possible; 2 for an argument. |
-| `kingpin listen` | `kingpin listen <task-id> [--once] [--background]` | Keeps a Lavish listener attached to a task's review dossier (`report.html`): opens the dossier once, then polls it and routes what the reviewer does. **Approve & Land** runs `kingpin land` and, once the gate accepts the line, appends an `approved:` note to the task's `status`; a task whose last worker event is not `ready:` or `fixed:` (or whose verdict `kingpin land` refuses) is answered with its current state, and records no approval. **Request Changes** appends the text to `feedback.md` plus a `feedback:` note, and both notes wake `kingpin wait`. A poll whose prompts the parser cannot read is parked as `unparsed-poll-*.txt` in the task directory and its `prompt:` values are still forwarded as feedback; a `feedback:` note that names a parked response means the poll could not be parsed, and the raw response is in that file. `--background` starts one detached listener per task (concurrent launches start only one; pid in `listener.pid`, output in `listener.log`) and returns at once; `kingpin watch` starts it when a review-mode worker reports `ready:`. `--once` stops after one poll. Without `lavish-axi` (or `KINGPIN_LAVISH`) it prints a note on stderr and exits 0. Exits 1 for an unknown task or one without `report.html`, 2 for a bad argument. `kingpin done` stops the listener. |
-| `kingpin wait` | `kingpin wait [--timeout <sec>] [--once]` | Prints one `<task-id> <reason>` line (`status`, `quiet` or `exited`) per fleet event that needs action. Exits 0 on events and on a plain timeout (nothing printed); `--once` with no events exits 1; 2 for a bad argument. See [Fleet Overview](#fleet-overview--visual-review-dossiers). |
-| `kingpin ack` | `kingpin ack <task-id>... \| --all` | Marks a task's events as seen, so `kingpin wait` reports only newer ones. |
-| `kingpin land` | `kingpin land <task-id>` (alias: `kingpin approve <task-id>`) | Serializes project landing and triggers merge. The review gate fails closed: it reads `review=` from the worker's last `ready:` line whatever the field order, and only `APPROVE` lands. `APPROVE WITH NITS` and `NEEDS CHANGES` (any case; `NEEDS_CHANGES` and `NEEDS-CHANGES` too) run `/fix-findings` first and say so; landing continues after the worker reports `fixed:`. An unrecognized verdict, a line with no `review=` field (or an empty or repeated one), a `fixed:` line without a numeric `high=<n>`, or a `fixed:` line whose `review=` is not `APPROVE` prints the line it could not parse and exits 1 without taking the landing lock. When the review is clean it says that landing is starting. The project lane is claimed atomically, so two concurrent runs for different tasks cannot both dispatch. A `kingpin-send` failure (a dead worker window, for example) clears `landing_sent`, releases the project landing lock and exits 1, so the lane advances instead of wedging; if the release itself cannot take the lane's mutex it says so on stderr and names `kingpin done <id> --force`. A queued landing is skipped when the task is gone, archived, finished or already dispatched. |
-| `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, advances the queue, and archives the task record to `~/.kingpin/archive/<task-id>`. Cleanup is single-flight per task: a second run while one is in progress says so and exits 0, so two concurrent runs call `treehouse return` once and archive once. A failed `treehouse return` refuses the cleanup, names the worktree and treehouse's reason in the `cleanup-refused:` line, and leaves the record in `tasks/` instead of archiving a task whose lease is gone. The supervisor still retries a refused cleanup, but a task whose lease was lost carries a `lease-lost` marker in its task directory, so every retry re-reports that refusal with no network call and no external command until the owner runs `kingpin done <task-id> --force`, which bypasses the marker and re-attempts the full cleanup. The merge check resolves the default branch from the remote's `HEAD` (a read-only `git ls-remote --symref`, when the remote is reachable), then `origin/HEAD`, then `origin/master`, then `origin/main`, then the checkout's own `HEAD`, and a failed `git fetch` is reported on stderr rather than read as an unmerged commit: cleanup still succeeds when the last-known refs prove the merge, and the refusal names the fetch failure when they cannot. The handoff to the next queued task skips entries that can no longer land (gone, archived, finished or already dispatched) and lands the next live one. Refuses, even with `--force`, when another unfinished task records the same worktree. A refusal is recorded as a `cleanup-refused:` status line only for a finished task (`merged:`, `failed:`); a worker that may still be live keeps its last status (for example `needs-input:`), and the reason goes to stderr. `done` also stops the task's dossier listener, and `kingpin ack` of an archived task is a no-op that exits 0 with a note. |
-| `kingpin lock` | `kingpin lock [status\|check\|acquire [--harness <name>]\|release\|harness]` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. `acquire` also warns on stderr when no fleet supervisor is running. |
-| `kingpin guard` | `kingpin guard [install\|check\|warn]` | Installs or verifies the orchestrator-only tool guard, a `PreToolUse` hook in `.claude/settings.local.json` (untracked), and the orchestrator contract described under [Initialize your project](#1-initialize-your-project-run-once-inside-any-git-repository); `install` also removes the deny rules that older versions wrote there, which leaked into workers, and keeps its three main-checkout contract excludes in a `# kingpin guard` … `# end kingpin guard` block of `.git/info/exclude`, which it rewrites on every run (adopting a loose line an older version appended), so that block is the only part of the file `install` rewrites; it may also append a plain `.claude/settings.local.json` line outside the block when the project does not already ignore that file; `check` names a stale contract copy; `warn` prints a stderr warning when the guard or the contract is missing or stale; `kingpin guard hook <orchestrator\|worker>` is the hook entry point; `list` and `wait` run it at startup, and `lock acquire` prints the same warning. |
-| `kingpin scope` | `kingpin scope files\|check --harness <claude\|agy\|opencode> --worktree <dir> [--preamble <file>]` | Names the instruction files a harness really loads for a worker: `files` prints `<kind>\t<path>` per source (`discovery`, a file the harness finds; `configured`, an `instructions` entry of the worktree's config, JSONC included; `ignored`, a rules file the harness skips; `global`, loaded from the user's config directory). `check` exits 1 naming the file when any source carries the orchestrator contract, including a global file in your own config directory (`KINGPIN_ALLOW_GLOBAL_CONTRACT=1` downgrades that one to a warning), and, for OpenCode and agy, when the preamble is not among the sources the harness loads (Claude Code gets it through `--append-system-prompt-file`, which `check` does not verify); nothing is edited. `kingpin spawn` runs `check` before it opens a window. |
-| `kingpin report` | `kingpin report diffs [--repo <dir>] [--base <ref>]` / `kingpin report check [--prose-only] <report.html>` | Dossier helper for workers. `diffs` prints the HTML for the file-diff section (every committed, uncommitted and untracked change, each with a static fallback and a `@pierre/diffs` call that passes `oldFile`/`newFile`). `check` exits 1 when a dossier would show blank diffs (`patch:` used, `FileDiff` without `oldFile`/`newFile`, or an empty diff container), and runs a layout pass over a full page: it fails, naming the line, on a `<pre>` or inline `code` with no wrap rule, an `<img>` with no `max-width` rule, a table whose cells have no wrap rule, a grid/flex layout with no `min-width: 0` or `minmax(0, ...)` guard, and a `src`/`href`/`url()` that is an absolute path or climbs out with `..`. It also runs a prose pass over the page: it fails with `file:line` and the offending line on the mechanical slice of the `unslop` skill (em dash, "testament to", "it's not just", "delve", "seamless", "in order to", "let me know", "I hope this helps"), ignoring code, diff output, script/style bodies and attributes. `<!-- unslop:ignore -->` on a line is the single escape. `--prose-only` runs everything but the diff section (the layout and prose passes), for an artifact with no diff section. The worker preamble and `AGENTS.md` require both the pass and the check before `ready:` and before an orchestrator artifact is served. |
-| `kingpin curate` | `kingpin curate [--dry-run]` | Aggregates critique files from finished worker tasks and runs one curator in the skills directory. It records trust for that directory with the same helper `kingpin spawn` uses, so the first run on an untrusted host shows no folder-trust dialog; `--help` prints usage without launching anything, and an unknown flag exits 2. A curator window whose panes have all exited is reaped instead of reported as `already active`, so a failed launch cannot block the next run. A critique applied by a successful run is stamped beside the file (`critique.consumed`) and is not collected again, including after `kingpin done` archives the task; a critique rewritten while the curator is running is left pending, so the next run collects the new bytes. A failed, reaped or non-zero run leaves every critique pending. `--dry-run` writes no file and leaves the previous run's `curator-input.txt`, `batch-critiques.txt` and `launch.sh` byte-identical. Concurrent runs are serialized, so one curator is published and launched at a time. |
+| Command | Description |
+|---|---|
+| `kingpin init` | Auto-configures a project from current directory or path. [Details](docs/cli.md#kingpin-init) |
+| `kingpin run` | Single command that spawns, monitors, and completes a task. [Details](docs/cli.md#kingpin-run) |
+| `kingpin watch` | The fleet's one supervisor: a continuous supervision and auto-landing loop. [Details](docs/cli.md#kingpin-watch) |
+| `kingpin spawn` | Starts a worker on a background tmux window and records its tmux window ID (`TMUX_WINDOW_ID` in `task.env`), so renaming a worker window or moving it to another session is safe; `task.env` files without it fall back to `TMUX_TARGET`. [Details](docs/cli.md#kingpin-spawn) |
+| `kingpin list` | Displays active fleet tasks and states in the terminal: a `STATE` column (`WAITING`, `SILENT`, `Unseen: N`), plus a `Supervisor: running (pid <n>, since <HH:MM>)` or `Supervisor: none - run kingpin watch` line; `--all` (or `-a`) also shows finished (archived) tasks. [Details](docs/cli.md#kingpin-list) |
+| `kingpin send` | Types the text literally into a worker window, then presses Enter. [Details](docs/cli.md#kingpin-send) |
+| `kingpin peek` | Read-only view of a worker: prints the last 20 non-empty lines of its tmux pane (`--lines N` changes the count), scrollback included. [Details](docs/cli.md#kingpin-peek) |
+| `kingpin sync` | Fast-forwards the main checkout from its upstream branch with `git pull --ff-only`, so the orchestrator never runs raw git against project files. [Details](docs/cli.md#kingpin-sync) |
+| `kingpin listen` | Keeps a Lavish listener attached to a task's review dossier (`report.html`): opens the dossier once, then polls it and routes what the reviewer does. [Details](docs/cli.md#kingpin-listen) |
+| `kingpin wait` | Prints one `<task-id> <reason>` line (`status`, `quiet` or `exited`) per fleet event that needs action. [Details](docs/cli.md#kingpin-wait) |
+| `kingpin ack` | Marks a task's events as seen, so `kingpin wait` reports only newer ones; `--through <line>` sets the seen cursor to that line instead of the file's length, for a caller that dispatches a batch one line at a time (`kingpin-watch`). [Details](docs/cli.md#kingpin-ack) |
+| `kingpin land` | Serializes project landing and triggers merge. [Details](docs/cli.md#kingpin-land) |
+| `kingpin done` | Verifies merge, releases worktree lease, advances the queue, and archives the task record to `~/.kingpin/archive/<task-id>`. [Details](docs/cli.md#kingpin-done) |
+| `kingpin lock` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. [Details](docs/cli.md#kingpin-lock) |
+| `kingpin guard` | `kingpin guard [install\|check\|warn]` | Installs or verifies the orchestrator-only tool guard, a `PreToolUse` hook in `.claude/settings.local.json` (untracked), and the orchestrator contract described under [Initialize your project](#1-initialize-your-project-run-once-inside-any-git-repository); `install` also removes the deny rules that older versions wrote there, which leaked into workers, and keeps its three main-checkout contract excludes in a `# kingpin guard` … `# end kingpin guard` block of `.git/info/exclude`, which it rewrites on every run (adopting a loose line an older version appended), so that block is the only part of the file `install` rewrites; it may also append a plain `.claude/settings.local.json` line outside the block when the project does not already ignore that file; `--dir` points the command at another checkout instead of the one `bin/kingpin-guard` lives in; `check` names a stale contract copy; `warn` prints a stderr warning when the guard or the contract is missing or stale; `kingpin guard hook <orchestrator\|worker>` is the hook entry point; `list` and `wait` run it at startup, and `lock acquire` prints the same warning. |
+| `kingpin scope` | Names the instruction files a harness really loads for a worker: `files` prints `<kind>\t<path>` per source (`discovery`, a file the harness finds; `configured`, an `instructions` entry of the worktree's config, JSONC included; `ignored`, a rules file the harness skips; `global`, loaded from the user's config directory). [Details](docs/cli.md#kingpin-scope) |
+| `kingpin report` | Dossier helper for workers. [Details](docs/cli.md#kingpin-report) |
+| `kingpin curate` | Aggregates critique files from finished worker tasks and runs one curator in the skills directory. [Details](docs/cli.md#kingpin-curate) |
 
-### Internal helpers
-
-Two scripts in `bin/` are not `kingpin` subcommands. `kingpin wait` calls them as it scans tasks (`kingpin-launch-check` for a task with an empty `status`, `kingpin-rename` when a task has new status lines); run them by hand only to debug.
-
-- `bin/kingpin-launch-check <task-dir>`: finds a worker that died at launch (its `status` file is still empty). Once the task is older than the grace period (`KINGPIN_STATUS_GRACE`, 30 seconds, counted from the last stop or from launch) and its tmux window or pane is gone, or the Stop hook fired and the window stayed silent without a working marker, it appends and prints `failed: no status: ...`. Exits 0 when it recorded that line, 1 when it recorded nothing, 2 for a bad argument.
-- `bin/kingpin-rename <task-id>`: renames the tmux window and `TMUX_TARGET` of a `--text` task to `kp-<n>-<slug>` once the worker has reported `issue: #<n>`. The task ID, folder, branch and worktree keep their first name. It is idempotent (a `renamed` marker in the task folder) and a no-op for tasks that already have an issue or no `issue:` line.
-
----
+Every command in the table exits 0 and prints its usage on `--help` (or `-h`), and an unknown flag exits non-zero: `kingpin curate --help` prints usage without launching a curator, and `kingpin run --help` prints `spawn`'s usage without starting a worker. `kingpin <command> --help` is the fastest way to see one command's flags.
 
 ## Fleet Overview & Visual Review Dossiers
 
-Kingpin is CLI-first for fleet monitoring and visual-first for code review:
-
-### 1. Terminal Fleet Overview (`kingpin list`)
-
-Monitor all active workers, leased worktrees, and current statuses:
-
-```bash
-kingpin list
-```
-
-When a task finishes in `review` mode, `kingpin list` displays its review dossier link directly below the task row.
-
-The `STATE` column describes a live pane: `WAITING` means the worker is blocked on a human (`needs-input:`, a listener's `feedback:` note, or the Stop hook's `waiting:` line), `SILENT` means it stopped without reporting (`failed: no status:`), and `Unseen: N` counts status lines written since the supervisor last acknowledged the task. `-` is a worker that is running normally or whose window is gone.
-
-`kingpin wait` wakes the orchestrator only for events that need action: a new status line other than the informational `issue:` line, a worker that stopped (`quiet`), or a window that is gone (`exited`). A worker whose last acknowledged status is `needs-input:` is not reported `quiet` again until its status or pane activity changes, and a task that `kingpin spawn` is still launching (its `launching` marker is fresh) is not reported `exited`.
-
-A worker that stops without writing a status line gets one at the moment it stops. The Stop hook (`bin/kingpin-stop`, wired into all three harnesses) appends `failed: no status: stopped without reporting` when no status line was written since the previous stop and the pane shows no working marker (a running background agent, for example), or `waiting: needs-input <question path>` when the worker stopped again while its last line was `needs-input:` or a listener's `feedback:` note. It never overwrites a status written in that turn, and it fails soft: an unwritable task folder prints a warning on stderr and the session still stops. A harness that dies before its Stop hook fires is caught after the grace period by `kingpin wait`, and so by `kingpin watch` and `kingpin run`, with `failed: no status: <task> (<harness>) ...`; `kingpin list` then shows that line instead of `(pending)`. A worker that wrote only `issue:` and then died is the case neither catches: `kingpin wait` skips the launch check as soon as the status file has any non-blank line, and the Stop hook counts any worker line as a report in the first turn, so no `failed: no status:` line is written and the task surfaces as `exited` or `quiet` in `kingpin wait`, with no state marker in `kingpin list`; `kingpin run` ends that task with exit 1 naming `exited` and the last status. "Stopped" means the tmux window or pane is gone, or the Stop hook fired and the window stayed silent for the grace period without showing a working marker (such as a wait on background agents). The grace period is 30 seconds from launch (or from the last stop), and `KINGPIN_STATUS_GRACE` sets it in seconds. A worker that is only slow to start is left alone. `kingpin peek <task-id>` shows the pane while the window is open, and `kingpin done <task-id>` releases the worktree.
-
-To see why a worker is quiet or stuck, look at the tail of its pane without touching it:
-
-```bash
-kingpin peek <task-id>              # last 20 non-empty lines
-kingpin peek <task-id> --lines 50   # more context
-```
-
-To pick up merged changes in the main checkout, fast-forward it without raw git:
-
-```bash
-kingpin sync    # old..new short SHAs and the commits pulled, or "already up to date"
-```
-
-Finished tasks are archived by `kingpin done` and hidden from `kingpin list`; run `kingpin list --all` to include them. `kingpin curate` still collects skill critiques from archived tasks.
-
-### 2. Task Review Dossiers (`lavish-axi`)
-
-When a worker completes a task, it compiles a visual review dossier (`report.html`) containing problem context, verification tables, independent review verdicts, and syntax-highlighted split code diffs. Open it with Lavish:
-
-```bash
-lavish-axi ~/.kingpin/tasks/<task-id>/report.html
-```
-
-Review the changes and click **Approve & Land** on the dossier or run:
-
-```bash
-kingpin land <task-id>
-```
-
-### 3. Handover Artifacts (noir dossier template)
-
-Pages handed to the boss for a decision (proposals, plans, comparisons, review summaries) start from the noir dossier template that ships with the repo:
-
-```
-assets/lavish/noir-dossier/
-  template.html   the page: exhibits A-F, inline-SVG diagrams, @pierre/diffs, two working decision forms
-  kingpin.jpg     the banner, the same image as assets/kingpin.jpg, referenced relatively
-  DESIGN.md       the rules the look depends on, beside the file they describe
-```
-
-Copy the folder into the artifact's directory (`.lavish/`), rename the html, swap the content, and keep the chrome. `DESIGN.md` lists the rules (paper on ink, one accent, one display face, exhibit labels, forms for decisions) and the two widths to check, 1180 px and 480 px, with nothing scrolling sideways. Then open it:
-
-```bash
-lavish-axi .lavish/<artifact>.html
-```
-
-Worker review dossiers are not made from this template: `worker/preamble.md` and `kingpin report diffs` own their layout. `tests/test-noir-template.sh` fails when the folder loses one of the three files, when `template.html` points at a file with an absolute path or through `..`, when a diff block loses its static fallback, or when the page stops passing the full `kingpin report check` (renderable diffs, contained layout and clean prose).
-
-
----
+Kingpin is CLI-first for fleet monitoring and visual-first for code review. When a task finishes in `review` mode, `kingpin list` displays its review dossier link directly below the task row. When a worker completes a task, it compiles a visual review dossier (`report.html`) containing problem context, verification tables, independent review verdicts, and syntax-highlighted split code diffs. The full overview, including terminal monitoring, review dossiers and the noir dossier template, is in [docs/fleet-overview.md](docs/fleet-overview.md).
 
 ## Worker permissions
 
-**What a Claude Code worker may edit.** A worker runs in its own leased worktree with every tool. `worker/hooks.json` adds a `PreToolUse` hook (`kingpin guard hook worker`) for `Edit`, `Write` and `NotebookEdit`: it allows files inside the worker's worktree and its task folder (`~/.kingpin/tasks/<id>/`, where it writes `status`, `question.md` and `report.html`), and denies every other path, including the main checkout. The hook decides before the permission prompt or the auto-mode classifier, so these edits need no human approval. It does not sandbox `Bash`. The worktree it allows is pinned by `KINGPIN_WORKTREE` (set by the launch script) or by `WORKTREE=` in the task's `task.env`, never by the session's working directory, so a worker that `cd`s to the main checkout gains nothing and one that `cd`s to its task folder keeps its worktree. Both hooks fail closed: if `kingpin-guard` cannot run (for example `KINGPIN_ROOT` is unset), or the decision cannot be made (a payload it cannot read, a worker tool call with no file path, a worker with no resolvable worktree, or an orchestrator session whose working directory cannot be resolved to a git worktree), the edit is denied. The orchestrator hook decides on the session's checkout rather than the target, so a path-less call such as `Agent` is still allowed from a linked worktree.
-
-**Why workers used to lose `Edit`, `Write` and `Agent` (issue #40).** Claude Code loads the main checkout's `.claude/settings.local.json` for its linked worktrees. The orchestrator guard used to be `permissions.deny` rules for `Edit`, `Write`, `NotebookEdit` and `Agent` in that file, so every worker started without those tools, and fell back to `Bash` heredocs that the auto-mode classifier sometimes denied. A deny rule beats any allow rule, so a worker cannot override it. To reproduce: in a throwaway repo, put those four deny rules in `.claude/settings.local.json` of the main checkout, add a linked worktree with `git worktree add`, and run `claude -p "List your tools"` in the worktree; the four tools are missing, and they come back when the file is moved away. The guard is now a hook that denies only when the session runs in the main checkout, or when it cannot resolve the session's directory to a git worktree (fail closed).
-
-**Why a worker never sees the orchestrator contract (issue #96).** The contract used to live in the tracked `AGENTS.md`, which every harness loads, while the file the spawn pointed at was silently ignored: OpenCode reads `opencode.json`, not `.opencode/config.json`, and agy skips a rules file with no `trigger:` frontmatter. A worker could wake up reading only the orchestrator's job description and spend its first turn reporting fleet status. The contract now lives in `orchestrator/contract.md` and is installed only into instruction sources that exist in the main checkout, while `AGENTS.md` describes the repository. Before opening a worker window, `kingpin spawn` runs `kingpin scope check --harness <h> --worktree <wt> --preamble <task>/preamble.md` and refuses to launch, naming the file, when a source the worker would load carries a contract marker. For OpenCode and agy it also refuses when the preamble is not a source the harness loads; Claude Code receives it through `--append-system-prompt-file`, which the check does not verify. A hit in a global instruction file (`~/.config/opencode/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.gemini/AGENTS.md`) refuses too, naming the file: that file is yours, Kingpin does not edit it, and a worker that may wake up as the orchestrator is not worth a warning. Set `KINGPIN_ALLOW_GLOBAL_CONTRACT=1` when you keep the contract there on purpose. On OpenCode, the spawn merges the preamble into an existing `.opencode/opencode.json` instead of overwriting it, and refuses when the project tracks that file, because an edit to a tracked config could be committed by the worker. A JSONC config (comments) is read with its comments stripped; `kingpin guard install` refuses to rewrite one, so the main checkout's `.opencode/opencode.json` must be plain JSON. To see what a harness really loads, run `kingpin scope files --harness opencode --worktree <dir>`; it prints one `<kind>\t<path>` line per source (`discovery`, `configured`, `ignored`, `global`).
-
-**Unblocking a worker.**
-- *No `Edit`/`Write`/`Agent` tool:* run `kingpin guard check` in the main checkout. If it reports stale deny rules, run `kingpin guard install` (it removes them) and respawn the worker; a running session keeps the tool list it started with.
-- *A `Bash` command denied as "dangerous":* the worker stops with `needs-input`. Approve the command in the worker's tmux window, or add a Bash permission rule with `/permissions`. Workers should edit with `Edit`/`Write`, which the hook allows.
-- *An edit denied for being outside the worktree:* the path belongs to the main checkout or another place. Put that change in a task of its own.
+A worker runs in its own leased worktree with every tool. `worker/hooks.json` adds a `PreToolUse` hook (`kingpin guard hook worker`) for `Edit`, `Write` and `NotebookEdit`: it allows files inside the worker's worktree and its task folder (`~/.kingpin/tasks/<id>/`, where it writes `status`, `question.md` and `report.html`), and denies every other path, including the main checkout. The full permission model, including why workers used to lose tools and how to unblock one, is in [docs/worker-permissions.md](docs/worker-permissions.md).
 
 ## Multi-Harness Architecture
 
-Each supported harness uses native configuration and hook mechanisms without dirtying repository tracking:
-
-- **Claude Code**: Workspace trust in `~/.claude.json`. System prompt via `--append-system-prompt-file`. Turn end via `worker/hooks.json`, whose Stop command runs `bin/kingpin-stop`.
-- **Antigravity CLI**: Workspace trust in `~/.gemini/antigravity-cli/settings.json`. Rules in `.agents/rules/kingpin.md`, which needs a `trigger: always_on` frontmatter: agy skips a rules file without one, without a word. Turn end via `.agents/hooks.json`, whose Stop command runs `bin/kingpin-stop`.
-- **OpenCode**: Autonomous permissions via `--auto`. Instructions in `.opencode/opencode.json`: OpenCode reads `opencode.json` or `.opencode/opencode.json`. Turn end via `.opencode/plugins/kingpin-stop.js`, which calls `bin/kingpin-stop`.
-- **The orchestrator contract** (issue #96): tracked as `orchestrator/contract.md` and installed only in the main checkout, into `~/.kingpin/orchestrator.md`, `.claude/rules/kingpin-orchestrator.md` and `.agents/rules/kingpin.md`, with `.opencode/opencode.json` pointing at `~/.kingpin/orchestrator.md`. A spawned worker gets `worker/preamble.md` and none of these files.
-
-`bin/kingpin-scope` (`kingpin scope files`) lists the instruction files a harness really loads for a worktree, and `kingpin scope check` exits 1 naming the file when one of them carries the contract; `kingpin spawn` runs it before it opens a window.
-
-Kingpin-injected worktree configuration files (`.agents/rules/kingpin.md`, `.agents/hooks.json`, `.opencode/opencode.json`, `.opencode/plugins/package.json`, and `.opencode/plugins/kingpin-stop.js`) stay out of `git status` in a leased worktree through an exclude file Kingpin owns (`~/.kingpin/tasks/<task-id>/exclude`), which that worktree reads through a worktree-scoped `core.excludesFile` (`lib/exclude.sh`). The file the worktree would otherwise inherit is mirrored into the task's file, because the worktree-scoped setting replaces it; a configured ignore file that exists but cannot be read refuses the spawn instead of dropping your rules without a word. The main checkout's `.git/info/exclude` is your file: a linked worktree shares the common dir, so a spawn that appended to it changed your repository on every task and deleted lines it never wrote, and it never writes it now. The only part of it `kingpin guard install` rewrites is the `# kingpin guard` … `# end kingpin guard` block that it writes for its three main-checkout contract copies: the install rewrites the block on every run, and it adopts a loose copy an older version left in the file instead of adding a second line, so one install silences the warning. It may also append a plain `.claude/settings.local.json` line outside the block, when your project does not already ignore that file. `kingpin spawn` names every Kingpin-shaped line outside that block (a broad `.agents/` or `.opencode/` one, or an unmaintained exact path such as `.agents/hooks.json` or the `.opencode/plugins/*` pair) and leaves it for you to remove; it skips the block. The worktree-scoped setting needs git's `extensions.worktreeConfig` flag, which `kingpin spawn` sets once in the project repository; the flag changes no ignore rule by itself. `kingpin done` removes the pointer, the harness files that spawn injected and the task's exclude file, so a pool slot goes back clean for the next lease. Your own `.agents/` and `.opencode/` files stay visible in `git status`, because no broad line is written for you.
-
-`.gitignore` ignores `.agents/plans/`, `.agents/reports/` and `.agents/reviews/`. They hold local working artifacts (plans, implementation reports, reviews and prototype patches) that agents write while they work, so they are not tracked. Other files under `.agents/`, such as a PRD, stay trackable. An ignore rule never untracks a path that is already in the index, so `./tests/lint.sh` fails on any tracked path under those three directories; the remedy it prints is `git rm --cached <path>`, which leaves the file on disk and ignored.
-
----
+Each supported harness uses native configuration and hook mechanisms without dirtying repository tracking. `bin/kingpin-scope` (`kingpin scope files`) lists the instruction files a harness really loads for a worktree, and `kingpin scope check` exits 1 naming the file when one of them carries the contract; `kingpin spawn` runs it before it opens a window. The per-harness wiring and the worktree exclude rules are in [docs/harnesses.md](docs/harnesses.md).
 
 ## Running Automated Tests
 
-Run the lint and the full test suite from the repository root:
-
-```bash
-# Lint: bash -n + shellcheck over bin/*, lib/*.sh and tests/*.sh (config in .shellcheckrc),
-# node --check over lib/*.mjs, a check that every tests/test-*.sh is a leg of the CI matrix,
-# and a check that no .agents plan, report or review file is tracked. Pass --root <dir> to
-# lint another checkout instead of this one
-./tests/lint.sh
-
-# Every suite, one after the other
-for s in tests/test-*.sh; do "./$s" || break; done
-```
-
-The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmux server, scratch repo, helpers):
-
-| Suite | Covers |
-|---|---|
-| `test-lifecycle.sh` | `init`, `list`, `watch` auto-lifecycle, `run`, tmux session targeting |
-| `test-wait.sh` | `wait` and `ack`: blocking, wake filtering, exit codes |
-| `test-watch-supervisor.sh` | `watch`: single supervisor with a pidfile, stale reclaim, `list` line, `lock acquire` warning, events handled across turns |
-| `test-lock.sh` | `lock`: lifecycle, collisions, stale locks, recorded harness, parallel acquire race, atomic publish, release ownership |
-| `test-curate.sh` | `curate` |
-| `test-land.sh` | `land`: review-gate verdicts, fix pass, re-review, output wording |
-| `test-landing-lane.sh` | land lane: dead worker window, dead queue entry, concurrent lands, append-after-release |
-| `test-done.sh` | `done`: refused cleanup, archive, slot guard, branch cleanup, single-flight, default-branch resolution |
-| `test-listen.sh` | `listen`: dossier opening, live listener, prompt routing |
-| `test-send-peek.sh` | `send` and `peek` |
-| `test-spawn.sh` | `spawn`: window ID tracking, descriptive slugs, pinned window names |
-| `test-sync.sh` | `sync` |
-| `test-launch-check.sh` | `kingpin-launch-check`: workers that die at launch |
-| `test-worker-stop.sh` | `bin/kingpin-stop`: the outcome a Stop leaves (`failed:`/`waiting:`), fail-soft, `WAITING`/`SILENT`/`Unseen` in `list`, all three harnesses |
-| `test-status.sh` | `lib/status.sh`, the shared status protocol |
-| `test-report.sh` | `report`: generated diffs are renderable, blank-diff reports are rejected |
-| `test-ranks.sh` | rank voice: the contract's Ranks section, the capo preamble, and the neutral status lines |
-| `test-noir-template.sh` | noir dossier template: the three files ship together, every ref stays inside the folder, the diffs keep static fallbacks, the prose stays clean |
-| `test-harnesses.sh` | Multi-harness contract and isolation |
-| `test-worker-scope.sh` | Worker instruction context: what each harness really loads, the spawn refusal, the installed contract |
-| `test-worker-settings.sh` | Orchestrator tool guard and worker edit boundary |
-| `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
-| `test-agents-paths.sh` | `.agents` artifact policy: nothing under `plans/`, `reports/` or `reviews/` is tracked, other `.agents/` files stay trackable, and the lint fails on a forced artifact |
-| `test-lint.sh` | the lint itself: a syntax error in a shell script or a `lib/*.mjs` module fails it by name, and a suite with no CI leg fails the matrix check |
-
-Run one suite with `./tests/test-<name>.sh`. Run suites one at a time in a checkout: `test-lifecycle.sh`, `test-acceptance.sh` and `test-landing-lane.sh` briefly replace `bin/kingpin-send` with a stub (restored on exit), so a second suite that sends keys to a worker during that window hits the stub and fails. CI legs do not clash, since each runs in its own checkout.
-
-CI (`.github/workflows/ci.yml`) runs the lint plus one matrix leg per suite on every PR and push to `main`. The suites need `git`, `tmux`, `node`, `treehouse` and a git identity (the suites set one themselves). They use fake agents, so no harness binary is required. A new suite needs a matrix leg; `./tests/lint.sh` fails until it has one.
+Run the lint and the full test suite from the repository root: [docs/testing.md](docs/testing.md).
