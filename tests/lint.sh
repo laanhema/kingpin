@@ -25,4 +25,23 @@ if [ "$ci_suites" != "$disk_suites" ]; then
   exit 1
 fi
 
+# The .agents/ artifact directories are in .gitignore, and an ignore rule never applies to a
+# path that is already in the index: a force-add, or a branch cut before the rules landed,
+# keeps the file tracked on every clone (issue #84). Catch it here, before it spreads.
+if ! tracked=$(git ls-files -- .agents/plans .agents/reports .agents/reviews 2>&1); then
+  # $tracked holds git's own stderr here, and it prints under the named line so the usage hint
+  # is what the operator reads first, rather than a bare `fatal: not a git repository`.
+  echo "lint: cannot list tracked paths (run this inside a git checkout)" >&2
+  printf '%s\n' "$tracked" >&2
+  exit 1
+fi
+if [ -n "$tracked" ]; then
+  echo "lint: .agents/plans, .agents/reports and .agents/reviews must never be tracked; these are:" >&2
+  while IFS= read -r p; do
+    echo "  $p" >&2
+  done <<< "$tracked"
+  echo "lint: run 'git rm --cached <path>' (the file stays on disk and is ignored)" >&2
+  exit 1
+fi
+
 echo "lint: ${#files[@]} files clean"

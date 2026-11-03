@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [report, noir-template, worker-settings, worker-scope, harnesses, acceptance, lifecycle, landing-lane, wait, lock, curate, land, done, listen, send-peek, spawn, sync, launch-check, status]
+        suite: [report, noir-template, worker-settings, worker-scope, harnesses, acceptance, lifecycle, landing-lane, wait, lock, curate, land, done, listen, send-peek, spawn, sync, launch-check, status, agents-paths]
     steps:
       - uses: actions/checkout@v4
       - name: Install tmux
