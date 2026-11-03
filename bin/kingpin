@@ -194,9 +194,12 @@ case "$cmd" in
     }
 
     # Live tasks: finished ones (cleanup done) are hidden unless --all.
+    # An archived task keeps a symlink at tasks/<id> so its dossier path still
+    # resolves (issue #115); it is not a live record, and --all shows it once,
+    # from archive/.
     live_dirs=()
     for d in "$KP_HOME/tasks"/*; do
-      [ -d "$d" ] || continue
+      kp_task_is_live "$d" || continue
       if [ "$show_all" -eq 0 ] && [ -f "$d/done_cleaned" ]; then continue; fi
       live_dirs+=("$d")
     done
@@ -252,10 +255,11 @@ case "$cmd" in
       # Step supervision loop
       "$KP_BIN/kingpin-watch" --once >/dev/null 2>&1 || true
 
-      # kingpin-watch may already have cleaned up and archived the task. The
-      # directory is the signal: an archive of an earlier task with the same id
-      # must not count.
-      if [ ! -d "$task_dir" ]; then
+      # kingpin-watch may already have cleaned up and archived the task. The task
+      # path is the signal: it is gone, or it is the link kingpin-done leaves for
+      # the archive (issue #115). An archive of an earlier task with the same id
+      # must not count as this task's.
+      if ! kp_task_is_live "$task_dir"; then
         echo "OK: $task_id merged and cleaned up successfully."
         exit 0
       fi

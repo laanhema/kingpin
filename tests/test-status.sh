@@ -170,4 +170,19 @@ t71_kind "NEEDS CHANGES" findings
 t71_kind LGTM unknown
 t71_kind "" unknown
 
+# The archived-task readers (#115): kingpin done replaces a cleaned-up task's path
+# with a symlink to its archive, and every fleet reader asks these two.
+echo "=== Test t115: live-versus-archived task path readers ==="
+t115_home=$T/t115-home; mkdir -p "$t115_home/tasks" "$t115_home/archive"
+mkdir -p "$t115_home/tasks/live" "$t115_home/archive/gone" "$t115_home/archive/unlinked"
+ln -s "$t115_home/archive/gone" "$t115_home/tasks/gone"
+kp_task_is_live "$t115_home/tasks/live" && pass "t115: a real task directory is live" || fail "t115: a real task directory is not live"
+kp_task_is_live "$t115_home/tasks/gone" && fail "t115: a dossier link counted as live" || pass "t115: a dossier link is not live"
+kp_task_is_live "$t115_home/tasks/missing" && fail "t115: a missing task counted as live" || pass "t115: a missing task is not live"
+[ "$(kp_task_archive_dir "$t115_home" gone)" = "$t115_home/archive/gone" ] && pass "t115: the link resolves to its archive" || fail "t115: archive dir = $(kp_task_archive_dir "$t115_home" gone)"
+[ "$(kp_task_archive_dir "$t115_home" unlinked)" = "$t115_home/archive/unlinked" ] && pass "t115: a task archived before the link existed still resolves" || fail "t115: unlinked archive = $(kp_task_archive_dir "$t115_home" unlinked)"
+kp_task_archive_dir "$t115_home" live >/dev/null && fail "t115: a live task reported as archived" || pass "t115: a live task is not archived"
+kp_task_archive_dir "$t115_home" nope >/dev/null && fail "t115: an unknown id reported as archived" || pass "t115: an unknown id is not archived"
+rm -rf "$t115_home"
+
 kp_test_finish STATUS

@@ -110,7 +110,7 @@ t17_wt=$(sed -n 's/^WORKTREE=//p' "$t17_env")
 [ ! -e "$KINGPIN_HOME/tasks/$t17_id/launching" ] && grep -q '^TMUX_WINDOW_ID=' "$t17_env" && pass "t45: spawn removes the launching marker" || fail "t45: launching marker left behind"
 "$KP_BIN/kingpin" send "$t17_id" "echo t17-ok" | grep -q "OK: sent to kingpin:$t17_id" && pass "t17: kingpin send reaches the slugged window" || fail "t17: kingpin send failed"
 "$KP_BIN/kingpin" "done" "$t17_id" --force >/dev/null
-! tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "$t17_id" && [ ! -d "$KINGPIN_HOME/tasks/$t17_id" ] && pass "t17: kingpin done closed and archived the slugged task" || fail "t17: kingpin done left the task behind"
+! tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "$t17_id" && [ -L "$KINGPIN_HOME/tasks/$t17_id" ] && pass "t17: kingpin done closed and archived the slugged task" || fail "t17: kingpin done left the task behind"
 
 # gh failing: the spawn degrades to kp-<n>
 touch "$T/t17-gh-fail"

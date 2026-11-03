@@ -209,7 +209,7 @@ EOF12
 t12_make_task t12-merged "$t12_slot_a" "merged: pr=x"
 echo "critique from archived task" > "$KINGPIN_HOME/tasks/t12-merged/critique"
 "$KP_BIN/kingpin-done" t12-merged --force >/dev/null
-[ ! -d "$KINGPIN_HOME/tasks/t12-merged" ] && [ -f "$KINGPIN_HOME/archive/t12-merged/task.env" ] && [ -f "$KINGPIN_HOME/archive/t12-merged/done_cleaned" ] && pass "kingpin-done moved the task dir into the archive" || fail "task dir not archived"
+[ -L "$KINGPIN_HOME/tasks/t12-merged" ] && [ -f "$KINGPIN_HOME/archive/t12-merged/task.env" ] && [ -f "$KINGPIN_HOME/archive/t12-merged/done_cleaned" ] && pass "kingpin-done moved the task dir into the archive behind a dossier link" || fail "task dir not archived"
 
 # 12.2 list hides finished tasks by default; --all shows them
 t12_make_task t12-live "$t12_slot_b" "ready: branch=b review=APPROVE report=none"
@@ -243,7 +243,7 @@ mkdir -p "$KINGPIN_HOME/archive/t12-reuse"
 echo "earlier" > "$KINGPIN_HOME/archive/t12-reuse/marker"
 t12_make_task t12-reuse "$t12_slot_a" "merged: pr=r"
 "$KP_BIN/kingpin-done" t12-reuse --force >/dev/null 2>&1
-[ ! -d "$KINGPIN_HOME/tasks/t12-reuse" ] && [ -f "$KINGPIN_HOME/archive/t12-reuse/marker" ] && [ -f "$KINGPIN_HOME/archive/t12-reuse.2/done_cleaned" ] && pass "reused task id archived beside the earlier record" || fail "reused task id was not archived safely"
+[ -L "$KINGPIN_HOME/tasks/t12-reuse" ] && [ -f "$KINGPIN_HOME/archive/t12-reuse/marker" ] && [ -f "$KINGPIN_HOME/archive/t12-reuse.2/done_cleaned" ] && pass "reused task id archived beside the earlier record" || fail "reused task id was not archived safely"
 
 rm -rf "$KINGPIN_HOME/archive/t12-reuse" "$KINGPIN_HOME/archive/t12-reuse.2" "$KINGPIN_HOME/tasks/t12-live" "$KINGPIN_HOME/archive/t12-merged" "$KINGPIN_HOME/archive/t12-old" "$t12_repo" "$t12_slot_a" "$t12_slot_b"
 unset KINGPIN_SKILLS_DIR
@@ -401,7 +401,7 @@ tmux kill-window -t kingpin:t19-approved 2>/dev/null || true
 
 # (c) ack on an archived task is a no-op with a note; an unknown task is still an error
 "$KP_BIN/kingpin" "done" t19-merged --force >/dev/null 2>&1 || true
-[ -d "$KINGPIN_HOME/archive/t19-merged" ] && [ ! -d "$KINGPIN_HOME/tasks/t19-merged" ] && pass "t19: done --force archived the task" || fail "t19: task not archived"
+[ -d "$KINGPIN_HOME/archive/t19-merged" ] && [ -L "$KINGPIN_HOME/tasks/t19-merged" ] && pass "t19: done --force archived the task behind its dossier link" || fail "t19: task not archived"
 t19_ack_rc=0
 t19_ack=$("$KP_BIN/kingpin" ack t19-merged 2>&1) || t19_ack_rc=$?
 [ "$t19_ack_rc" -eq 0 ] && echo "$t19_ack" | grep -qi "archived" && pass "t19: ack on an archived task exits 0 with a note" || fail "t19: ack on an archived task (rc=$t19_ack_rc): $t19_ack"

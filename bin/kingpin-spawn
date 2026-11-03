@@ -139,14 +139,25 @@ if [ -z "$id" ]; then
     base=kp-${slug:-task}
     id=$base
     n=2
-    # Two live text tasks with the same opening words must not collide.
-    while [ -e "$KP_HOME/tasks/$id" ]; do id=$base-$n; n=$((n + 1)); done
+    # Two live text tasks with the same opening words must not collide, and a
+    # dossier link left for an archived task is a taken name even when its archive
+    # is gone: [ -e ] is false for a dangling link, and the spawn below would then
+    # abort on it instead of trying the next suffix.
+    while [ -e "$KP_HOME/tasks/$id" ] || [ -L "$KP_HOME/tasks/$id" ]; do id=$base-$n; n=$((n + 1)); done
   fi
 fi
 [[ $id =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "task id must be lowercase letters, digits, and dashes: $id"
 
 task_dir=$KP_HOME/tasks/$id
 mkdir -p "$KP_HOME/tasks"
+# A finished task keeps a symlink at its old path (kingpin done, issue #115), and
+# mkdir fails on it. Name what is there: a spawn must never write its harness
+# files through that link into the archive. An archive with no link at the task
+# path is harmless to reuse: the record lives elsewhere under archive/<id>.
+if [ -L "$task_dir" ]; then
+  archived=$(kp_task_archive_dir "$KP_HOME" "$id" || true)
+  die "task $id is already finished and archived at ${archived:-$KP_HOME/archive/$id}; choose another --id"
+fi
 mkdir "$task_dir" 2>/dev/null || die "task $id already exists: $task_dir"
 
 worktree=''

@@ -200,7 +200,10 @@ check_task() {
 check_all() {
   local updates=0
   for dir in "$tasks_dir"/*; do
-    [ -d "$dir" ] || continue
+    # A finished task keeps a symlink at tasks/<id> so its dossier path resolves
+    # (issue #115). It is not live: reporting an event for it would wake the
+    # orchestrator about work that is already merged and cleaned up.
+    kp_task_is_live "$dir" || continue
     local res
     res=$(check_task "$dir")
     if [ -n "$res" ]; then

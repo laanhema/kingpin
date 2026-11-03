@@ -52,6 +52,13 @@ done
 [ -n "$id" ] || usage
 
 task_dir="$KP_HOME/tasks/$id"
+# The dossier of a task that already landed stays readable at this path: kingpin
+# done leaves a symlink to the archive (issue #115). A link here means the task is
+# finished, not that the id was wrong, so name that instead of a missing task.
+if archived=$(kp_task_archive_dir "$KP_HOME" "$id"); then
+  echo "OK: task $id is finished; its dossier is archived at $archived/report.html"
+  exit 0
+fi
 [ -d "$task_dir" ] || { echo "kingpin-listen: task $id not found: $task_dir" >&2; exit 1; }
 [ -f "$task_dir/report.html" ] || { echo "kingpin-listen: report.html not found in $task_dir" >&2; exit 1; }
 
@@ -195,6 +202,15 @@ handle_feedback() {
 # Poll loop: re-poll after every response; only an ended session stops it.
 fails=0
 while true; do
+  # The task was archived while this listener ran (a cleanup whose listener stop
+  # missed it, or an archive made by hand). The dossier link keeps the page
+  # readable (issue #115), so answer the session once, naming where it went, and
+  # stop polling a task that is no longer live.
+  if [ -L "$task_dir" ]; then
+    archived=$(kp_task_archive_dir "$KP_HOME" "$id" || true)
+    reply "Task $id landed. The review dossier is archived at ${archived:-$task_dir}."
+    break
+  fi
   [ -d "$task_dir" ] || break
   [ -f "$task_dir/report.html" ] || break
 

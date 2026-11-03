@@ -33,6 +33,12 @@ esac
 id=$1
 
 task_dir="$KP_HOME/tasks/$id"
+# A finished task answers from its archive instead of failing as an unknown id:
+# kingpin done keeps the dossier path as a symlink to it (issue #115).
+if archived=$(kp_task_archive_dir "$KP_HOME" "$id"); then
+  echo "OK: task $id is already finished; nothing to land (dossier archived at $archived/report.html)"
+  exit 0
+fi
 [ -d "$task_dir" ] || { echo "kingpin-land: task $id not found: $task_dir" >&2; exit 1; }
 
 env_file="$task_dir/task.env"

@@ -38,8 +38,12 @@ elif [ $# -ge 2 ]; then
 fi
 
 task_dir="$KP_HOME/tasks/$id"
-if [ ! -d "$task_dir" ] && [ -d "$KP_HOME/archive/$id" ]; then
-  echo "OK: task $id already cleaned up (archived)"
+# A finished task keeps its path: `kingpin done` leaves a symlink at tasks/<id>
+# for the archive, so a dossier link a Lavish session still holds resolves. The
+# link is the marker of that cleanup, and a repeat run answers from it here,
+# before it reads a task.env, calls treehouse or moves anything.
+if archived=$(kp_task_archive_dir "$KP_HOME" "$id"); then
+  echo "OK: task $id already cleaned up (archived at $archived)"
   exit 0
 fi
 [ -d "$task_dir" ] || die "task $id not found: $task_dir"
@@ -124,12 +128,13 @@ case "$lock_rc" in
 esac
 trap cleanup_lock_release EXIT
 
-# Re-check under the lock: the run we lost the race to may have archived it.
-if [ ! -d "$task_dir" ]; then
-  [ -d "$KP_HOME/archive/$id" ] || die "task $id disappeared while cleanup started: $task_dir"
-  echo "OK: task $id already cleaned up (archived)"
+# Re-check under the lock: the run we lost the race to may have archived it, and
+# that run leaves its symlink at the task path.
+if archived=$(kp_task_archive_dir "$KP_HOME" "$id"); then
+  echo "OK: task $id already cleaned up (archived at $archived)"
   exit 0
 fi
+[ -d "$task_dir" ] || die "task $id disappeared while cleanup started: $task_dir"
 
 # shellcheck source=/dev/null
 . "$env_file"
@@ -204,9 +209,12 @@ fi
 
 # Slot guard: never release a worktree that another unfinished task holds, not
 # even with --force. A stale record may still point at a slot that has since
-# been leased to a live worker.
+# been leased to a live worker. An archived task is not such a record: its
+# dossier link (issue #115) still resolves tasks/<id>/task.env, but it holds no
+# lease and never did once it was cleaned up.
 for other_env in "$KP_HOME"/tasks/*/task.env; do
   [ -f "$other_env" ] || continue
+  kp_task_is_live "$(dirname "$other_env")" || continue
   other_dir=$(dirname "$other_env")
   other_id=$(basename "$other_dir")
   [ "$other_id" != "$id" ] || continue
@@ -303,13 +311,12 @@ tmux kill-window -t "$tmux_target" 2>/dev/null || true
 # note the still-open listener appended while the cleanup ran. kingpin-watch
 # owns the cursor once the merged: dispatch returns.
 
-# Clean up background lavish listener and session
+# Clean up background lavish listener. Its session is answered and ended at the
+# end of this run, once the archive path is known and the dossier link is in
+# place: the final reply names where the page now lives.
 stop_listener
 
 LAVISH_CMD=${KINGPIN_LAVISH:-lavish-axi}
-if command -v "$LAVISH_CMD" >/dev/null 2>&1 && [ -f "$task_dir/report.html" ]; then
-  "$LAVISH_CMD" end "$task_dir/report.html" >/dev/null 2>&1 || true
-fi
 
 # 1b. Undo the spawn's per-worktree excludes (issue #77): the pointer, the harness files
 # it injected, and the task's exclude file. It runs before the return, so a slot that the
@@ -374,4 +381,30 @@ done
 mv "$task_dir" "$archive_dir" || die "could not archive $task_dir to $archive_dir"
 touch "$archive_dir/done_cleaned" 2>/dev/null \
   || die "archived $id to $archive_dir but could not write its done_cleaned marker"
+
+# 5b. Put the task path back as a link to the archive (issue #115). A Lavish
+# session, and a link the orchestrator pasted into chat, hold
+# tasks/<id>/report.html; without the link a reload after the merge renders a
+# blank page. The link is not a live task: every fleet reader skips a symlinked
+# tasks/* entry (kp_task_is_live), so nothing lists, lands or cleans it twice. A
+# link that cannot be written costs the page, not the cleanup: the archive is
+# already the record, so this only warns.
+# The target is resolved to an absolute path first: $archive_dir is relative when
+# KINGPIN_HOME is, and a relative target would resolve against tasks/ and dangle.
+archive_target=$(cd "$archive_dir" && pwd -P) \
+  || die "archived $id to $archive_dir but could not resolve its absolute path"
+if ! ln -s "$archive_target" "$task_dir" 2>/dev/null; then
+  echo "kingpin-done: archived $id but could not link $task_dir to $archive_dir; the dossier path will not resolve" >&2
+fi
+
+# 5c. Answer the review dossier once, then close its session. The link makes the
+# path in the reply resolve, and the reply is the difference between a reviewer
+# seeing "this landed" and a session that went silent on a file that vanished.
+if command -v "$LAVISH_CMD" >/dev/null 2>&1 && [ -f "$task_dir/report.html" ]; then
+  "$LAVISH_CMD" reply "$task_dir/report.html" \
+    --agent-reply "Task $id landed. The review dossier is archived at $archive_dir, and this path still opens it." \
+    >/dev/null 2>&1 || true
+  "$LAVISH_CMD" end "$task_dir/report.html" >/dev/null 2>&1 || true
+fi
+
 echo "OK: cleaned up task $id (archived to $archive_dir)"

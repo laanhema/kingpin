@@ -77,6 +77,15 @@ expect_rc 0 "holder_live: a ready: holder is live" kp_landing_holder_live "$unit
 expect_rc 1 "task_landable: a missing task is not landable" kp_landing_task_landable "$unit_home" unit-missing
 mkdir -p "$unit_home/archive/unit-archived"
 expect_rc 1 "task_landable: an archived-only task is not landable" kp_landing_task_landable "$unit_home" unit-archived
+# The link `kingpin done` leaves at tasks/<id> resolves a record that already
+# landed. Everything the checks read through it still answers (task.env, a ready
+# status), so only the link itself says the task is finished.
+mkdir -p "$unit_home/archive/unit-link"
+printf 'TASK_ID=unit-link\n' > "$unit_home/archive/unit-link/task.env"
+printf 'ready: branch=b review=APPROVE report=none\n' > "$unit_home/archive/unit-link/status"
+ln -s "$unit_home/archive/unit-link" "$unit_home/tasks/unit-link"
+expect_rc 1 "holder_live: an archived dossier link is not live" kp_landing_holder_live "$unit_home" unit-link
+expect_rc 1 "task_landable: an archived dossier link is not landable" kp_landing_task_landable "$unit_home" unit-link
 unit_task unit-cleaned
 touch "$unit_home/tasks/unit-cleaned/done_cleaned"
 expect_rc 1 "task_landable: a cleaned-up task is not landable" kp_landing_task_landable "$unit_home" unit-cleaned
@@ -109,6 +118,15 @@ unit_next=$(kp_landing_pop "$unit_home" unit-pop 2>"$T/unit-pop.err")
 [ "$unit_next" = "unit-ready" ] && pass "pop: prints the next landable id" || fail "pop: printed '$unit_next', want unit-ready"
 [ "$(tr '\n' '|' < "$unit_home/projects/unit-pop.landing_queue")" = "unit-ready2|" ] && pass "pop: removes the popped id and keeps the rest" || fail "pop: queue is $(tr '\n' '|' < "$unit_home/projects/unit-pop.landing_queue")"
 grep -q "dropping unit-gone from the unit-pop queue" "$T/unit-pop.err" && pass "pop: names the dropped id on stderr" || fail "pop: no drop line: $(cat "$T/unit-pop.err")"
+
+# A dossier link is dropped for being archived, not for a missing task dir: the
+# reason is what tells an operator the task already landed.
+printf 'unit-link\n' > "$unit_home/projects/unit-pop-link.landing_queue"
+unit_link_next=$(kp_landing_pop "$unit_home" unit-pop-link 2>"$T/unit-pop-link.err")
+[ -z "$unit_link_next" ] && pass "pop: an archived dossier link yields nothing to land" || fail "pop: printed '$unit_link_next' for an archived link"
+grep -qx "kingpin-landing: dropping unit-link from the unit-pop-link queue: archived" "$T/unit-pop-link.err" \
+  && pass "pop: the drop line says the task is archived" \
+  || fail "pop: drop line for an archived link: $(cat "$T/unit-pop-link.err")"
 
 # A mutex left behind by a dead process is reclaimed instead of wedging the lane
 unit_task unit-stale

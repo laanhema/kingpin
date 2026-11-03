@@ -212,7 +212,10 @@ process_task_event() {
   # $2 is the kingpin-wait reason (status|quiet|exited); every reason is acked.
   local id=$1
   local task_dir="$KP_HOME/tasks/$id"
-  [ -d "$task_dir" ] || return 0
+  # A task kingpin-done archived keeps a symlink at its old path (issue #115).
+  # Its events are already dispatched (or moot): a ready: there must not start a
+  # listener, and a merged: there must not clean it up a second time.
+  kp_task_is_live "$task_dir" || return 0
 
   local env_file="$task_dir/task.env"
   [ -f "$env_file" ] || return 0
@@ -272,7 +275,7 @@ process_task_event() {
 retry_pending_cleanups() {
   local dir id last
   for dir in "$KP_HOME"/tasks/*; do
-    [ -d "$dir" ] || continue
+    kp_task_is_live "$dir" || continue
     [ -f "$dir/task.env" ] || continue
     [ ! -f "$dir/done_cleaned" ] || continue
     id=$(basename "$dir")
@@ -307,7 +310,7 @@ rearm_listeners() {
   # so a host without it does not relaunch one listener per task per cycle.
   command -v "${KINGPIN_LAVISH:-lavish-axi}" >/dev/null 2>&1 || return 0
   for dir in "$KP_HOME"/tasks/*; do
-    [ -d "$dir" ] || continue
+    kp_task_is_live "$dir" || continue
     [ -f "$dir/task.env" ] || continue
     [ -f "$dir/report.html" ] || continue
     [ ! -f "$dir/lavish_ended" ] || continue      # the reviewer ended the session

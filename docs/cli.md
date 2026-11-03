@@ -80,6 +80,8 @@ The window is pinned with `automatic-rename off` and `allow-rename off`, so ambi
 
 The task ID, branch (`kingpin/<id>`) and window share one slug: `kp-<n>-<slug>` from the issue title for `--issue`, `kp-<slug>` from the request for `--text` (`--id` overrides).
 
+An `--id` whose task path is the dossier link of an archived task is refused, naming the archive: a finished task keeps that link (see [`kingpin done`](#kingpin-done)), and a spawn must never write its harness files through it into the archive. An archive left without such a link is harmless to reuse.
+
 ### `--text` tasks
 
 For `--text`, `kingpin-wait` renames the window and `TMUX_TARGET` to `kp-<n>-<slug>` once the worker reports its issue; the task ID and branch keep the first name.
@@ -97,6 +99,8 @@ A `pi` spawn writes nothing into the worktree. The launch runs `pi --append-syst
 **Environment:** `KINGPIN_HOME`
 
 `kingpin status` is the same command under its older name.
+
+A finished task is shown from `archive/` (with `--all`), never from the dossier link `kingpin done` leaves at its old `tasks/` path: that path resolves a review page, it is not a live task.
 
 ## kingpin send
 
@@ -172,6 +176,8 @@ Without `lavish-axi` (or `KINGPIN_LAVISH`) it prints a note on stderr and exits 
 
 Exits 1 for an unknown task or one without `report.html`, 2 for a bad argument. `kingpin done` stops the listener.
 
+An archived task resolves: `kingpin listen <task-id>` on one prints `OK: task <task-id> is finished` with the archived dossier path and exits 0. A listener that finds its own task archived out from under it (a cleanup whose listener stop missed it) posts one final reply naming the archive and stops polling.
+
 ## kingpin wait
 
 **Usage:** `kingpin wait [--timeout <sec>] [--once]`
@@ -183,6 +189,8 @@ Exits 1 for an unknown task or one without `report.html`, 2 for a bad argument. 
 ### Exit codes
 
 Exits 0 on events and on a plain timeout (nothing printed); `--once` with no events exits 1; 2 for a bad argument.
+
+An archived task raises no event: its leftover dossier link is not a live task, so it cannot wake the orchestrator twice.
 
 ### See also
 
@@ -196,13 +204,17 @@ See [Fleet Overview](fleet-overview.md#fleet-overview--visual-review-dossiers).
 
 **Environment:** `KINGPIN_HOME`
 
-The cursor never moves backwards and is clamped to the file.
+The cursor never moves backwards and is clamped to the file. An archived task is a no-op that exits 0 with a note, and no cursor is written into the archive.
 
 ## kingpin land
 
 **Usage:** `kingpin land <task-id>` (alias: `kingpin approve <task-id>`)
 
 **Environment:** `KINGPIN_HOME`
+
+### An archived task
+
+`kingpin land <task-id>` on a task that already landed resolves its archive, prints `OK: task <task-id> is already finished; nothing to land` and exits 0, so a stale queue entry or a paste of an old id says why instead of claiming the id is unknown. A queued entry for such a task is dropped by the lane with the reason `archived`.
 
 ### The review gate
 
@@ -263,6 +275,10 @@ Refuses, even with `--force`, when another unfinished task records the same work
 ### Status lines and the listener
 
 A refusal is recorded as a `cleanup-refused:` status line only for a finished task (`merged:`, `failed:`); a worker that may still be live keeps its last status (for example `needs-input:`), and the reason goes to stderr. `done` also stops the task's dossier listener, and `kingpin ack` of an archived task is a no-op that exits 0 with a note.
+
+### The dossier link
+
+After a successful archive, `done` leaves a symlink at `~/.kingpin/tasks/<task-id>` pointing at `~/.kingpin/archive/<task-id>`. A Lavish session, and a link handed to someone in chat, keep resolving `report.html` and the dossier's sibling assets through that path, where before the merge the page went blank. The link is not a live task: every fleet reader treats a symlinked `tasks/` entry as finished (it has no list row, raises no `wait` event, is never dispatched by `watch`, landed, listened to or cleaned again), and `kingpin done` answers a repeat run from it without touching treehouse. Before it ends the session, `done` posts one final reply saying the task landed and where the dossier is archived. The archive itself is never pruned: it is the record.
 
 ## kingpin lock
 
