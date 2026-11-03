@@ -277,8 +277,9 @@ case "$cmd" in
           ;;
         ready:*)
           if [ "$mode" = "auto" ]; then
-            # Waiting for auto-landing and merge
-            sleep 1
+            # Waiting for auto-landing and merge. The marker check below ends the
+            # loop if the worker's window goes away first.
+            :
           else
             echo "OK: $task_id is READY for review."
             if [ -f "$task_dir/report.html" ]; then
@@ -288,14 +289,38 @@ case "$cmd" in
             exit 0
           fi
           ;;
+        needs-input:*)
+          echo "OK: $task_id needs input."
+          echo "  Question: $task_dir/question.md"
+          echo "  To answer: kingpin send $task_id \"<answer>\""
+          exit 0
+          ;;
+        waiting:*)
+          # The Stop hook's line for a worker blocked on a human: kind and file.
+          echo "OK: $task_id is waiting: ${last_st#waiting: }"
+          exit 0
+          ;;
         failed:*)
           echo "FAILED: $task_id failed: $last_st" >&2
           exit 1
           ;;
-        *)
-          sleep 1
-          ;;
+        *) : ;;
       esac
+
+      # A worker that wrote a status line and then died never reports again.
+      # kingpin-ack records the dead window as `seen_exited` when the supervisor
+      # above acks the `exited` event, so the marker is how that event reaches this
+      # loop (the watch output that carried it is discarded). A terminal line is
+      # left to its own arm above: cleanup-refused: must stay the reported reason.
+      # A worker that wrote no line at all is the launch death #102 covers:
+      # kingpin-launch-check records `failed: no status:` after its grace period,
+      # and that arm reports it, so the empty status keeps waiting for that line.
+      if [ -s "$task_dir/status" ] && ! kp_status_is_terminal "$last_st" \
+         && [ -f "$task_dir/seen_exited" ]; then
+        echo "FAILED: $task_id exited: the worker window is gone (last status: ${last_st:-none})" >&2
+        exit 1
+      fi
+      sleep 1
     done
     ;;
   -h|--help)

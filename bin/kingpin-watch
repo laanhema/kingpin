@@ -32,7 +32,26 @@ INTERVAL=300
 while [ $# -gt 0 ]; do
   case $1 in
     --once) ONCE=1; shift ;;
-    --interval) INTERVAL=${2:?--interval needs seconds}; shift 2 ;;
+    --interval)
+      # A missing value is caught by the digit case, not by bash's own `${2:?}`
+      # message: every bad --interval exits 2, as kingpin-wait does.
+      INTERVAL=${2:-}
+      case "$INTERVAL" in
+        ''|*[!0-9]*) echo "kingpin-watch: --interval needs a whole number of seconds" >&2; exit 2 ;;
+      esac
+      # Bound the digits before the numeric compare: `[ ... -lt ... ]` fails with
+      # "integer expected" past the shell's range, and a failing test inside an
+      # `if` is just false, so an overflowing value would pass validation and then
+      # leave kingpin-wait --timeout unable to ever time out.
+      if [ "${#INTERVAL}" -gt 9 ]; then
+        echo "kingpin-watch: --interval is too large (at most 9 digits)" >&2
+        exit 2
+      fi
+      if [ "$INTERVAL" -lt 1 ]; then
+        echo "kingpin-watch: --interval must be at least 1 second" >&2
+        exit 2
+      fi
+      shift 2 ;;
     -h|--help)
       cat <<'USAGE'
 usage: kingpin-watch [--once] [--interval <seconds>]
@@ -41,6 +60,8 @@ Loops as the fleet's supervisor: dispatches landing, fix passes, cleanup and
 review listeners. Refuses to start a second copy (it names the running pid) and
 reclaims a stale $KINGPIN_HOME/supervisor.pid. --once runs one pass, without
 claiming the pidfile. `kingpin list` shows whether a supervisor is running.
+--interval takes a whole number of seconds, at least 1 and at most 9 digits
+(default 300); anything else exits 2.
 USAGE
       exit 0
       ;;
@@ -61,6 +82,7 @@ release_supervisor() {
   fi
   rm -f "$CLAIM_TMP"
   [ -z "${EVENTS_FILE:-}" ] || rm -f "$EVENTS_FILE"
+  [ -z "${WAIT_ERR:-}" ] || rm -f "$WAIT_ERR"
 }
 
 # Claim the supervisor slot, or refuse. The pidfile is the lock: it is written to a
@@ -222,6 +244,43 @@ advance_landing_queues() {
   done
 }
 
+# A review task's dossier listener runs until kingpin-done stops it, but it can die
+# on its own: kingpin-listen gives up after 20 consecutive poll failures and its EXIT
+# trap removes the pid file, and a killed listener leaves the file naming a dead pid.
+# Nothing re-armed it before, so the reviewer's clicks queued in a session nobody read.
+# This is a sweep, not an event branch, because the task's ready: line is already acked.
+rearm_listeners() {
+  local dir id pid mode last
+  # Without lavish-axi kingpin-listen only prints a note and exits 0; skip the sweep
+  # so a host without it does not relaunch one listener per task per cycle.
+  command -v "${KINGPIN_LAVISH:-lavish-axi}" >/dev/null 2>&1 || return 0
+  for dir in "$KP_HOME"/tasks/*; do
+    [ -d "$dir" ] || continue
+    [ -f "$dir/task.env" ] || continue
+    [ -f "$dir/report.html" ] || continue
+    [ ! -f "$dir/lavish_ended" ] || continue      # the reviewer ended the session
+    [ ! -f "$dir/done_cleaned" ] || continue      # finished
+    [ ! -f "$dir/landing_sent" ] || continue      # the review is decided
+    [ ! -f "$dir/landing_in_progress" ] || continue
+    mode=$(kp_env_get "$dir/task.env" MODE)
+    [ -n "$mode" ] || mode="review"               # the same default process_task_event uses
+    [ "$mode" = "review" ] || continue            # auto mode never had a listener
+    last=$(kp_status_last "$dir/status")
+    case "$last" in
+      # The dossier is live only once the worker has reported for review; the
+      # listener's own approval gate uses the same two lines.
+      ready:*|fixed:*) ;;
+      *) continue ;;
+    esac
+    id=$(basename "$dir")
+    pid=''
+    if [ -f "$dir/listener.pid" ]; then pid=$(cat "$dir/listener.pid" 2>/dev/null || true); fi
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then continue; fi
+    echo "[kingpin-watch] $id: dossier listener is gone; re-arming"
+    "$KP_BIN/kingpin-listen" "$id" --background >/dev/null 2>&1 || true
+  done
+}
+
 step_supervision() {
   local updates
   updates=$("$KP_BIN/kingpin-wait" --once 2>/dev/null || true)
@@ -240,6 +299,7 @@ if [ "$ONCE" -eq 1 ]; then
   step_supervision || true
   retry_pending_cleanups
   advance_landing_queues
+  rearm_listeners
   exit 0
 fi
 
@@ -251,6 +311,12 @@ echo "[kingpin-watch] Watching fleet events (pid $$)..."
 # `kill` for up to --interval (300 s by default). `wait` is interruptible.
 WAIT_CHILD=''
 EVENTS_FILE=''
+WAIT_ERR=''
+# One warning per failure streak, then a fixed pause: a wait that cannot scan the
+# fleet (an unusable fleet directory, for example) will not recover by polling
+# faster, and the supervisor must stay alive instead of burning a core.
+WARNED=0
+BACKOFF=2
 stop_waiter() {
   [ -z "$WAIT_CHILD" ] || kill "$WAIT_CHILD" 2>/dev/null || true
   exit 0
@@ -259,13 +325,32 @@ trap stop_waiter INT TERM
 
 while true; do
   EVENTS_FILE=$(mktemp "$KP_HOME/watch-events.XXXXXX")
-  "$KP_BIN/kingpin-wait" --timeout "$INTERVAL" >"$EVENTS_FILE" 2>/dev/null &
+  WAIT_ERR=$(mktemp "$KP_HOME/watch-wait-err.XXXXXX")
+  "$KP_BIN/kingpin-wait" --timeout "$INTERVAL" >"$EVENTS_FILE" 2>"$WAIT_ERR" &
   WAIT_CHILD=$!
-  wait "$WAIT_CHILD" || true
+  wait_rc=0
+  wait "$WAIT_CHILD" || wait_rc=$?
   WAIT_CHILD=''
   updates=$(cat "$EVENTS_FILE" 2>/dev/null || true)
-  rm -f "$EVENTS_FILE"
+  if [ "$wait_rc" -ne 0 ]; then
+    # kingpin-wait exits 0 on a quiet fleet and prints a reason on stderr only when
+    # the scan itself failed. Warn once per streak, then back off.
+    if [ "$WARNED" -eq 0 ]; then
+      wait_msg=$(head -n 1 "$WAIT_ERR" 2>/dev/null || true)
+      [ -n "$wait_msg" ] || wait_msg='(no message)'
+      echo "[kingpin-watch] kingpin-wait failed (exit $wait_rc): $wait_msg; retrying every ${BACKOFF} s" >&2
+      WARNED=1
+    fi
+    rm -f "$EVENTS_FILE" "$WAIT_ERR"
+    EVENTS_FILE=''
+    WAIT_ERR=''
+    sleep "$BACKOFF"
+    continue
+  fi
+  WARNED=0
+  rm -f "$EVENTS_FILE" "$WAIT_ERR"
   EVENTS_FILE=''
+  WAIT_ERR=''
   if [ -n "$updates" ]; then
     while IFS=' ' read -r id reason; do
       [ -n "$id" ] || continue
@@ -274,4 +359,5 @@ while true; do
   fi
   retry_pending_cleanups
   advance_landing_queues
+  rearm_listeners
 done

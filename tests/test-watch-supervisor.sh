@@ -217,5 +217,140 @@ elapsed=$(( $(date +%s) - start ))
 kill -9 "$stop_test_pid" 2>/dev/null || true
 wait "$stop_test_pid" 2>/dev/null || true
 
+# Test 11: --interval is validated before anything is claimed. Every run is bounded:
+# a value the validation lets through starts the supervisor and blocks, and a
+# regression must fail this suite rather than hang it until CI times out.
+echo "=== Test 11: --interval is validated ==="
+iv_rc=0; iv_err=$(timeout 5 "$KP_BIN/kingpin-watch" --interval abc 2>&1 >/dev/null) || iv_rc=$?
+[ "$iv_rc" -eq 2 ] && echo "$iv_err" | grep -q "kingpin-watch: --interval" \
+  && pass "--interval abc exits 2 with a message" || fail "--interval abc: rc $iv_rc, $iv_err"
+iv_rc=0; iv_err=$(timeout 5 "$KP_BIN/kingpin-watch" --interval 0 2>&1 >/dev/null) || iv_rc=$?
+[ "$iv_rc" -eq 2 ] && pass "--interval 0 exits 2" || fail "--interval 0: rc $iv_rc, $iv_err"
+# Past bash's integer range `[ -lt ]` errors instead of comparing, so the digit
+# count is what must reject it.
+iv_rc=0; iv_err=$(timeout 5 "$KP_BIN/kingpin-watch" --interval 99999999999999999999 2>&1 >/dev/null) || iv_rc=$?
+[ "$iv_rc" -eq 2 ] && echo "$iv_err" | grep -q "kingpin-watch: --interval is too large" \
+  && pass "--interval past the shell's integer range exits 2" || fail "--interval huge: rc $iv_rc, $iv_err"
+iv_rc=0; iv_err=$(timeout 5 "$KP_BIN/kingpin-watch" --interval 2>&1 >/dev/null) || iv_rc=$?
+[ "$iv_rc" -eq 2 ] && echo "$iv_err" | grep -q "kingpin-watch: --interval needs a whole number of seconds" \
+  && pass "--interval without a value exits 2 with the command's own message" \
+  || fail "--interval with no value: rc $iv_rc, $iv_err"
+[ ! -f "$PID_FILE" ] && pass "a bad --interval claims no pidfile" || fail "bad --interval wrote $PID_FILE"
+
+# Test 12: a failing kingpin-wait warns once and backs off instead of spinning
+echo "=== Test 12: a failing kingpin-wait backs off ==="
+BACKOFF_LOG="$T/backoff.log"
+WAIT_CALLS="$T/wait-calls"
+export KP_TEST_WAIT_CALLS="$WAIT_CALLS"
+cp -p "$KP_BIN/kingpin-wait" "$T/kingpin-wait.orig"
+cat > "$KP_BIN/kingpin-wait" << 'WK'
+#!/usr/bin/env bash
+echo "call" >> "$KP_TEST_WAIT_CALLS"
+echo "kingpin-wait: cannot use fleet directory /nonexistent/tasks" >&2
+exit 1
+WK
+chmod +x "$KP_BIN/kingpin-wait"
+rm -f "$WAIT_CALLS"
+"$KP_BIN/kingpin-watch" --interval 1 >> "$BACKOFF_LOG" 2>&1 &
+backoff_pid=$!
+wait_until 80 pidfile_names "$backoff_pid" || fail "supervisor did not start against a failing wait"
+sleep 3
+kill "$backoff_pid" 2>/dev/null || true
+wait "$backoff_pid" 2>/dev/null || true
+calls=0
+[ -f "$WAIT_CALLS" ] && calls=$(wc -l < "$WAIT_CALLS" | tr -d ' ')
+[ "$calls" -ge 1 ] && [ "$calls" -le 3 ] \
+  && pass "a failing wait ran $calls times in 3 s (it backs off)" \
+  || fail "a failing wait ran $calls times in 3 s (it spins)"
+warns=$(grep -cF "kingpin-wait failed" "$BACKOFF_LOG" 2>/dev/null || true)
+[ "$warns" = "1" ] && pass "the supervisor warned exactly once per failure streak" || fail "warnings for a failing wait: $warns"
+grep -qF "cannot use fleet directory" "$BACKOFF_LOG" \
+  && pass "the warning carries kingpin-wait's reason" \
+  || fail "warning lost the reason: $(cat "$BACKOFF_LOG")"
+# --once keeps its one-shot contract: the sweeps run and the command exits 0.
+once_rc=0
+"$KP_BIN/kingpin-watch" --once >/dev/null 2>&1 || once_rc=$?
+[ "$once_rc" -eq 0 ] && pass "--once keeps its exit 0 one-shot contract" || fail "--once exited $once_rc against a failing wait"
+cp -p "$T/kingpin-wait.orig" "$KP_BIN/kingpin-wait"
+
+# Test 13: a dossier listener that dies is re-armed, and every blocker holds
+echo "=== Test 13: a dead dossier listener is re-armed ==="
+kp_test_stub_lavish
+mk_task t-arm
+echo '<html><body>review</body></html>' > "$KINGPIN_HOME/tasks/t-arm/report.html"
+printf 'ready: branch=b review=APPROVE report=none\n' >> "$KINGPIN_HOME/tasks/t-arm/status"
+"$KP_BIN/kingpin-ack" t-arm
+
+listener_alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
+listener_dead() { [ -z "${1:-}" ] || ! kill -0 "$1" 2>/dev/null; }
+
+# A real listener, killed the way a crash kills one: the sweep must replace it.
+"$KP_BIN/kingpin-listen" t-arm --background
+started_pid=$(cat "$KINGPIN_HOME/tasks/t-arm/listener.pid" 2>/dev/null || true)
+listener_alive "$started_pid" && pass "the listener started (pid $started_pid)" || fail "no live listener before the kill"
+kill -- "-$started_pid" 2>/dev/null || kill "$started_pid" 2>/dev/null || true
+wait_until 40 listener_dead "$started_pid" && pass "the listener was killed" || fail "listener $started_pid survived the kill"
+arm_out=$("$KP_BIN/kingpin-watch" --once 2>&1)
+echo "$arm_out" | grep -q "t-arm: dossier listener is gone; re-arming" \
+  && pass "watch reports the dead listener" || fail "no re-arming line: $arm_out"
+arm_pid=$(cat "$KINGPIN_HOME/tasks/t-arm/listener.pid" 2>/dev/null || true)
+[ -n "$arm_pid" ] && [ "$arm_pid" != "$started_pid" ] && listener_alive "$arm_pid" \
+  && pass "watch re-armed a live listener (pid $arm_pid)" || fail "listener pid after --once: $arm_pid"
+kill -- "-$arm_pid" 2>/dev/null || kill "$arm_pid" 2>/dev/null || true
+wait_until 40 listener_dead "$arm_pid"
+
+# A task.env without MODE is a review task, exactly as process_task_event reads it.
+reset_arm_task() {
+  printf 'PROJECT=demo\nHARNESS=claude\nMODE=review\nTMUX_TARGET=kingpin:t-arm\nTMUX_WINDOW_ID=%s\n' \
+    "$probe_wid" > "$KINGPIN_HOME/tasks/t-arm/task.env"
+  printf 'issue: #74\nready: branch=b review=APPROVE report=none\n' > "$KINGPIN_HOME/tasks/t-arm/status"
+  echo '<html><body>review</body></html>' > "$KINGPIN_HOME/tasks/t-arm/report.html"
+  rm -f "$KINGPIN_HOME/tasks/t-arm/lavish_ended" "$KINGPIN_HOME/tasks/t-arm/landing_sent" \
+    "$KINGPIN_HOME/tasks/t-arm/landing_in_progress" "$KINGPIN_HOME/tasks/t-arm/done_cleaned"
+  printf '999999\n' > "$KINGPIN_HOME/tasks/t-arm/listener.pid"
+}
+
+assert_no_rearm() {
+  local out
+  out=$("$KP_BIN/kingpin-watch" --once 2>&1)
+  if echo "$out" | grep -q "re-arming"; then
+    fail "$1: watch re-armed a task it must leave alone: $out"
+  elif [ "$(cat "$KINGPIN_HOME/tasks/t-arm/listener.pid" 2>/dev/null || true)" != "999999" ]; then
+    fail "$1: listener.pid no longer names the dead pid"
+  else
+    pass "$1: re-arm refused"
+  fi
+}
+
+reset_arm_task
+printf 'PROJECT=demo\nHARNESS=claude\nTMUX_TARGET=kingpin:t-arm\nTMUX_WINDOW_ID=%s\n' "$probe_wid" \
+  > "$KINGPIN_HOME/tasks/t-arm/task.env"
+default_out=$("$KP_BIN/kingpin-watch" --once 2>&1)
+echo "$default_out" | grep -q "t-arm: dossier listener is gone; re-arming" \
+  && pass "a task.env without MODE defaults to review and is re-armed" \
+  || fail "a missing MODE skipped the re-arm: $default_out"
+default_pid=$(cat "$KINGPIN_HOME/tasks/t-arm/listener.pid" 2>/dev/null || true)
+[ -n "$default_pid" ] && [ "$default_pid" != "999999" ] && listener_alive "$default_pid" \
+  && pass "the default-mode task got a live listener (pid $default_pid)" \
+  || fail "listener pid after the default-mode sweep: $default_pid"
+kill -- "-$default_pid" 2>/dev/null || kill "$default_pid" 2>/dev/null || true
+wait_until 40 listener_dead "$default_pid"
+
+# Every blocker keeps the dead pid in place.
+reset_arm_task; touch "$KINGPIN_HOME/tasks/t-arm/lavish_ended"; assert_no_rearm "a reviewer-ended session"
+reset_arm_task; touch "$KINGPIN_HOME/tasks/t-arm/landing_sent"; assert_no_rearm "a decided review"
+reset_arm_task; touch "$KINGPIN_HOME/tasks/t-arm/landing_in_progress"; assert_no_rearm "a landing in progress"
+reset_arm_task
+printf 'PROJECT=demo\nHARNESS=claude\nMODE=auto\nTMUX_TARGET=kingpin:t-arm\nTMUX_WINDOW_ID=%s\n' "$probe_wid" \
+  > "$KINGPIN_HOME/tasks/t-arm/task.env"
+assert_no_rearm "auto mode"
+reset_arm_task; printf 'needs-input: probe\n' >> "$KINGPIN_HOME/tasks/t-arm/status"; assert_no_rearm "a task that is not at ready:/fixed:"
+reset_arm_task; touch "$KINGPIN_HOME/tasks/t-arm/done_cleaned"; assert_no_rearm "a finished task"
+reset_arm_task; rm -f "$KINGPIN_HOME/tasks/t-arm/report.html"; assert_no_rearm "a task without report.html"
+reset_arm_task; rm -f "$KINGPIN_HOME/tasks/t-arm/task.env"; assert_no_rearm "a task without task.env"
+
+rm -rf "$KINGPIN_HOME/tasks/t-arm"
+unset KINGPIN_LAVISH
+
 tmux kill-window -t "$probe_wid" 2>/dev/null || true
 kp_test_finish WATCH-SUPERVISOR
