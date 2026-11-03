@@ -27,6 +27,8 @@ KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$KP_ROOT/lib/status.sh"
+# shellcheck source=../lib/exclude.sh
+. "$KP_ROOT/lib/exclude.sh"
 CLAUDE_CMD=${KINGPIN_CLAUDE:-claude}
 AGY_CMD=${KINGPIN_AGY:-agy}
 OPENCODE_CMD=${KINGPIN_OPENCODE:-opencode}
@@ -128,7 +130,12 @@ worktree=''
 launched=0
 cleanup() {
   [ "$launched" = 1 ] && return
-  [ -n "$worktree" ] && (cd "$PROJECT_PATH" && treehouse return "$worktree" >/dev/null 2>&1) || true
+  if [ -n "$worktree" ]; then
+    # A failed spawn must not leave its harness files or ignore pointer for the next
+    # task that leases the slot (issue #77).
+    kp_exclude_clear "$worktree" "$task_dir" || true
+    (cd "$PROJECT_PATH" && treehouse return "$worktree" >/dev/null 2>&1) || true
+  fi
   rm -rf "$task_dir"
 }
 trap cleanup EXIT
@@ -141,31 +148,37 @@ worktree=$(cd "$PROJECT_PATH" && treehouse get --lease -b "$branch") || die "tre
   || die "refusing to launch: $worktree is not a linked worktree"
 [ "$(git -C "$worktree" branch --show-current)" = "$branch" ] || die "worktree is not on $branch"
 
-exclude_path() {
-  local rel=$1 excl
-  excl=$(git -C "$worktree" rev-parse --git-path info/exclude 2>/dev/null || true)
-  [ -n "$excl" ] || return 0
-  case "$excl" in
-    /*) ;;
-    *) excl="$worktree/$excl" ;;
-  esac
-  mkdir -p "$(dirname "$excl")"
-  grep -qxF "$rel" "$excl" 2>/dev/null || echo "$rel" >> "$excl"
-}
+# The harness files this spawn writes into the worktree must not show up in its
+# `git status`, and the file that says so must not be the main checkout's: see
+# lib/exclude.sh and issue #77. Each harness below records the paths it injects.
+task_exclude_paths=()
 
-migrate_legacy_excludes() {
-  local excl
-  excl=$(git -C "$worktree" rev-parse --git-path info/exclude 2>/dev/null || true)
-  [ -n "$excl" ] || return 0
-  case "$excl" in
-    /*) ;;
-    *) excl="$worktree/$excl" ;;
-  esac
-  if [ -f "$excl" ]; then
-    sed -i -E '/^\/?\.agents\/?$/d; /^\/?\.opencode\/?$/d' "$excl"
-  fi
+# Older Kingpin versions appended entries to the shared .git/info/exclude. That file
+# belongs to the user and this spawn never edits it, but a broad `.agents/` or
+# `.opencode/` line, or one of the five exact paths an older spawn appended, hides files
+# in every worktree: name it and let the user decide. Either form may also be the user's
+# own line, so the warning suggests where it came from instead of asserting it.
+warn_shared_excludes() {
+  local excl line rel joined='' named=() injected=()
+  excl=$(git -C "$worktree" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
+  [ -n "$excl" ] && [ -f "$excl" ] || return 0
+  while IFS= read -r rel; do injected+=("$rel"); done < <(kp_exclude_injected_paths)
+  while IFS= read -r line; do
+    case $line in
+      .agents|.opencode|/.agents|/.opencode|.agents/|.opencode/|/.agents/|/.opencode/)
+        named+=("$line")
+        continue
+        ;;
+    esac
+    for rel in "${injected[@]}"; do
+      if [ "$line" = "$rel" ]; then named+=("$line"); break; fi
+    done
+  done < "$excl"
+  [ "${#named[@]}" -gt 0 ] || return 0
+  for line in "${named[@]}"; do joined=${joined:+"$joined, "}$line; done
+  printf 'kingpin-spawn: %s carries a Kingpin-shaped exclude (%s); an older Kingpin may have written it (or you did), it hides files in every worktree, and this spawn does not edit that file, so remove it yourself\n' \
+    "$excl" "$joined" >&2
 }
-migrate_legacy_excludes
 
 if [ -n "$SETUP_CMD" ]; then
   (cd "$worktree" && bash -c "$SETUP_CMD") > "$task_dir/setup.log" 2>&1 \
@@ -244,8 +257,7 @@ EOF
   }
 }
 EOF_HOOKS
-    exclude_path '.agents/rules/kingpin.md'
-    exclude_path '.agents/hooks.json'
+    task_exclude_paths+=('.agents/rules/kingpin.md' '.agents/hooks.json')
     cat > "$task_dir/launch.sh" <<EOF
 #!/usr/bin/env bash
 export KINGPIN_TASK_DIR='$task_dir'
@@ -351,9 +363,7 @@ export default {
   },
 };
 EOF_OC_PLUG
-    exclude_path '.opencode/opencode.json'
-    exclude_path '.opencode/plugins/package.json'
-    exclude_path '.opencode/plugins/kingpin-stop.js'
+    task_exclude_paths+=('.opencode/opencode.json' '.opencode/plugins/package.json' '.opencode/plugins/kingpin-stop.js')
     cat > "$task_dir/launch.sh" <<EOF
 #!/usr/bin/env bash
 export KINGPIN_TASK_DIR='$task_dir'
@@ -362,6 +372,21 @@ exec $OPENCODE_CMD --standalone --auto --prompt "\$(cat '$task_dir/prompt.txt')"
 EOF
     ;;
 esac
+
+# Record exactly the paths this spawn injected, so the cleanup (`kingpin-done`, or the
+# failure trap below) removes only those: a file someone left at another harness's path
+# in this slot is not Kingpin's to delete (issue #77 review).
+if [ "${#task_exclude_paths[@]}" -gt 0 ]; then
+  printf '%s\n' "${task_exclude_paths[@]}" > "$task_dir/injected"
+fi
+
+if [ "${#task_exclude_paths[@]}" -gt 0 ]; then
+  kp_exclude_write "$worktree" "$task_dir" "$id" "$harness" "${task_exclude_paths[@]}" \
+    || die "refusing to launch: $worktree cannot hide the harness files this spawn writes (issue #77)"
+fi
+# The user's shared exclude file is checked on every spawn, whatever the harness: the
+# stale lines an older Kingpin left there are not this harness's business.
+warn_shared_excludes
 
 chmod +x "$task_dir/launch.sh"
 

@@ -61,6 +61,23 @@ t62_working opencode $'working\nesc to cancel' 0
 t62_working opencode $'working\nInterrupt' 0
 t62_working opencode '$ ls -la' 1
 t62_working unknown 'Waiting for 1 background agent' 1
+# The claude marker literals have one owner (#80): a caller that copies an alternative
+# into its own grep drifts out of step, which is how launch-check lost the footer. The
+# alternatives are read from the claude arm itself, so one added there is covered without
+# editing this guard.
+t62_claude_markers() { # one claude-arm alternative per line, from the arm's grep pattern
+  sed -n '/^[[:space:]]*claude)/,/^[[:space:]]*;;/p' "$KP_ROOT/lib/status.sh" |
+    sed -n "s/.*grep -qE '\([^']*\)'.*/\1/p" | tr '|' '\n'
+}
+t62_marker_owners() { # <literal> -> the bin/ and lib/ files that carry it
+  grep -lF -- "$1" "$KP_ROOT"/bin/* "$KP_ROOT"/lib/*.sh 2>/dev/null | sed "s|^$KP_ROOT/||" || true
+}
+t62_claude=$(t62_claude_markers)
+[ -n "$t62_claude" ] && pass "t62: the claude alternatives are read from lib/status.sh" || fail "t62: no claude alternatives found in lib/status.sh"
+while IFS= read -r t62_marker; do
+  t62_files=$(t62_marker_owners "$t62_marker")
+  [ "$t62_files" = "lib/status.sh" ] && pass "t62: '$t62_marker' is defined only in lib/status.sh" || fail "t62: '$t62_marker' appears in: $(printf '%s' "${t62_files:-nothing}" | tr '\n' ' ') (want lib/status.sh only)"
+done <<< "$t62_claude"
 # Callers share that answer: a listener note after merged: leaves the task finished for kingpin-wait
 # (a raw last line would report the dead window as exited).
 t62_task=$KINGPIN_HOME/tasks/t62-wait

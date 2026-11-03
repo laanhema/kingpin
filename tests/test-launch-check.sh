@@ -74,6 +74,10 @@ echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t22-busy/stopped"
 # Stopped and silent, but the pane shows the working marker that `quiet` skips for its harness
 mk_t22 t22-wclaude claude 600 'printf "Waiting for 1 background agent\n"; exec cat'
 echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t22-wclaude/stopped"
+# The claude subagent footer is a working marker on its own (#80): launch-check's old
+# copy of the marker list missed it, so a worker waiting on background agents was failed.
+mk_t22 t22-wtasks claude 600 'printf "/tasks to see subagents\n"; exec cat'
+echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t22-wtasks/stopped"
 mk_t22 t22-wagy agy 600 'printf "working\nesc to cancel\n"; exec cat'
 echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t22-wagy/stopped"
 mk_t22 t22-wopencode opencode 600 'printf "working\nInterrupt\n"; exec cat'
@@ -85,7 +89,7 @@ KINGPIN_STATUS_GRACE=2 "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
 tail -n 1 "$KINGPIN_HOME/tasks/t22-idle/status" | grep -q "^failed: no status: t22-idle (opencode) stopped and went silent.*kingpin peek t22-idle" && pass "t22: a stopped worker with a silent window is failed, with a peek hint" || fail "t22: idle worker status: $(cat "$KINGPIN_HOME/tasks/t22-idle/status")"
 [ ! -s "$KINGPIN_HOME/tasks/t22-busy/status" ] && pass "t22: a stopped worker whose window still prints is not failed" || fail "t22: busy worker failed: $(cat "$KINGPIN_HOME/tasks/t22-busy/status")"
 [ ! -s "$KINGPIN_HOME/tasks/t22-justnow/status" ] && pass "t22: a worker that stopped inside the grace period is not failed" || fail "t22: just-stopped worker failed"
-for t in t22-wclaude t22-wagy t22-wopencode; do
+for t in t22-wclaude t22-wtasks t22-wagy t22-wopencode; do
   [ ! -s "$KINGPIN_HOME/tasks/$t/status" ] && pass "t22: a stopped, silent worker showing a working marker is not failed ($t)" || fail "t22: working worker $t failed: $(cat "$KINGPIN_HOME/tasks/$t/status")"
 done
 
@@ -105,7 +109,7 @@ sleep 0.5
 PATH="$T/t22-notmux-bin:$PATH" "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
 [ ! -s "$KINGPIN_HOME/tasks/t22-notmux/status" ] && pass "t22: nothing is recorded when tmux cannot be asked" || fail "t22: failed written without tmux: $(cat "$KINGPIN_HOME/tasks/t22-notmux/status")"
 
-for t in t22-dead t22-young t22-slow t22-reported t22-idle t22-busy t22-justnow t22-wclaude t22-wagy t22-wopencode t22-paneDead t22-notmux; do
+for t in t22-dead t22-young t22-slow t22-reported t22-idle t22-busy t22-justnow t22-wclaude t22-wtasks t22-wagy t22-wopencode t22-paneDead t22-notmux; do
   tmux kill-window -t "$(sed -n 's/^TMUX_WINDOW_ID=//p' "$KINGPIN_HOME/tasks/$t/task.env")" 2>/dev/null || true
   rm -rf "$KINGPIN_HOME/tasks/$t"
 done
