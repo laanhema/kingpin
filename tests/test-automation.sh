@@ -1463,6 +1463,100 @@ export KINGPIN_AGY=$T/fake-worker
 tmux set-option -gu automatic-rename
 tmux set-option -gu allow-rename
 
+# Test 19: a refused kingpin done keeps a live worker's status; done stops the listener; ack on an archived task is a no-op
+echo "=== Test 19: refused done vs live worker status, listener cleanup, ack on archived task ==="
+cat > "$T/mock-lavish-t19" << 'MLEOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  poll) sleep 0.2 ;;
+  *) echo "OK" ;;
+esac
+MLEOF
+chmod +x "$T/mock-lavish-t19"
+export KINGPIN_LAVISH="$T/mock-lavish-t19"
+mk_t19() {
+  local name=$1 status=$2 wt d
+  d="$KINGPIN_HOME/tasks/$name"
+  wt="$T/wt-$name"
+  mkdir -p "$d" "$wt"
+  git -C "$wt" init -q
+  echo dirty > "$wt/uncommitted.txt"
+  echo "<html><body>$name</body></html>" > "$d/report.html"
+  cat > "$d/task.env" << ENVEOF
+TASK_ID=$name
+PROJECT=demo-t19
+HARNESS=claude
+MODE=review
+PROJECT_PATH=$wt
+WORKTREE=$wt
+TMUX_TARGET=kingpin:$name
+ENVEOF
+  printf '%s\n' "$status" > "$d/status"
+  tmux new-window -d -t kingpin: -n "$name" cat
+}
+
+# (a) live worker waiting on needs-input: a refused done must not mask it
+mk_t19 t19-live "needs-input: which flag should I use?"
+if "$KP_BIN/kingpin-done" t19-live >"$T/t19-live.out" 2>&1; then
+  fail "t19: done on a dirty live worker was not refused"
+else
+  pass "t19: done on a dirty live worker is refused"
+fi
+grep -q "uncommitted changes" "$T/t19-live.out" && pass "t19: the refusal reason is still printed" || fail "t19: refusal reason missing: $(cat "$T/t19-live.out")"
+[ "$(tail -n 1 "$KINGPIN_HOME/tasks/t19-live/status")" = "needs-input: which flag should I use?" ] && pass "t19: live worker's last status is still needs-input" || fail "t19: live worker's status replaced: $(tail -n 1 "$KINGPIN_HOME/tasks/t19-live/status")"
+! grep -q "^cleanup-refused:" "$KINGPIN_HOME/tasks/t19-live/status" && pass "t19: no cleanup-refused line recorded for a live worker" || fail "t19: cleanup-refused recorded for a live worker"
+t19_list=$("$KP_BIN/kingpin" list)
+echo "$t19_list" | grep "^t19-live " | grep -q "needs-input" && ! echo "$t19_list" | grep "^t19-live " | grep -q "cleanup-refused" && pass "t19: kingpin list still shows needs-input" || fail "t19: kingpin list masks needs-input: $t19_list"
+tmux kill-window -t kingpin:t19-live 2>/dev/null || true
+
+# A refusal must not stop the listener of a worker that is still live
+mk_t19 t19-ready "ready: branch=b review=APPROVE report=none"
+"$KP_BIN/kingpin-listen" t19-ready --background
+t19r_pid=$(cat "$KINGPIN_HOME/tasks/t19-ready/listener.pid" 2>/dev/null || true)
+[ -n "$t19r_pid" ] && kill -0 "$t19r_pid" 2>/dev/null && pass "t19: listener running for the ready task" || fail "t19: listener not running for the ready task"
+"$KP_BIN/kingpin-done" t19-ready >/dev/null 2>&1 && fail "t19: done on a dirty ready task was not refused" || true
+kill -0 "$t19r_pid" 2>/dev/null && pass "t19: refused done leaves a live worker's listener alone" || fail "t19: listener of a live worker was stopped"
+[ "$(tail -n 1 "$KINGPIN_HOME/tasks/t19-ready/status")" = "ready: branch=b review=APPROVE report=none" ] && pass "t19: ready status kept" || fail "t19: ready status replaced"
+rm -f "$T/wt-t19-ready/uncommitted.txt"
+"$KP_BIN/kingpin-done" t19-ready --force >/dev/null 2>&1 || true
+tmux kill-window -t kingpin:t19-ready 2>/dev/null || true
+
+# (b) finished task: a refusal still reports cleanup-refused, and the listener is stopped
+mk_t19 t19-merged "merged: pr=https://example.invalid/pull/1"
+"$KP_BIN/kingpin-listen" t19-merged --background
+t19m_pid=$(cat "$KINGPIN_HOME/tasks/t19-merged/listener.pid" 2>/dev/null || true)
+[ -n "$t19m_pid" ] && kill -0 "$t19m_pid" 2>/dev/null && pass "t19: listener running for the merged task" || fail "t19: listener not running for the merged task"
+t19_list=$("$KP_BIN/kingpin" list)
+echo "$t19_list" | grep -q "listening: pid $t19m_pid" && pass "t19: list shows the merged task as listening before done" || fail "t19: list does not show the listener before done"
+"$KP_BIN/kingpin-done" t19-merged >/dev/null 2>&1 && fail "t19: done on a dirty merged task was not refused" || true
+tail -n 1 "$KINGPIN_HOME/tasks/t19-merged/status" | grep -q "^cleanup-refused: .*uncommitted changes" && pass "t19: refusal on a finished task still reports cleanup-refused" || fail "t19: cleanup-refused missing on a finished task: $(tail -n 1 "$KINGPIN_HOME/tasks/t19-merged/status")"
+for _ in $(seq 1 40); do kill -0 "$t19m_pid" 2>/dev/null || break; sleep 0.05; done
+kill -0 "$t19m_pid" 2>/dev/null && fail "t19: listener of the merged task still running after done" || pass "t19: done stopped the listener of the merged task"
+[ ! -f "$KINGPIN_HOME/tasks/t19-merged/listener.pid" ] && pass "t19: listener.pid removed" || fail "t19: listener.pid left behind"
+t19_list=$("$KP_BIN/kingpin" list)
+! echo "$t19_list" | grep -q "listening" && pass "t19: kingpin list no longer shows listening" || fail "t19: kingpin list still shows listening"
+
+# (b2) the listener's approved:/feedback: notes after merged: are not worker events: still a finished task
+mk_t19 t19-approved "merged: pr=https://example.invalid/pull/2"
+echo "approved: by user via lavish dossier" >> "$KINGPIN_HOME/tasks/t19-approved/status"
+"$KP_BIN/kingpin-done" t19-approved >/dev/null 2>&1 && fail "t19: done on a dirty merged+approved task was not refused" || true
+grep -q "^cleanup-refused: .*uncommitted changes" "$KINGPIN_HOME/tasks/t19-approved/status" && pass "t19: cleanup-refused recorded after a trailing approved: note" || fail "t19: cleanup-refused missing after approved: note: $(cat "$KINGPIN_HOME/tasks/t19-approved/status")"
+tmux kill-window -t kingpin:t19-approved 2>/dev/null || true
+
+# (c) ack on an archived task is a no-op with a note; an unknown task is still an error
+"$KP_BIN/kingpin" done t19-merged --force >/dev/null 2>&1 || true
+[ -d "$KINGPIN_HOME/archive/t19-merged" ] && [ ! -d "$KINGPIN_HOME/tasks/t19-merged" ] && pass "t19: done --force archived the task" || fail "t19: task not archived"
+t19_ack_rc=0
+t19_ack=$("$KP_BIN/kingpin" ack t19-merged 2>&1) || t19_ack_rc=$?
+[ "$t19_ack_rc" -eq 0 ] && echo "$t19_ack" | grep -qi "archived" && pass "t19: ack on an archived task exits 0 with a note" || fail "t19: ack on an archived task (rc=$t19_ack_rc): $t19_ack"
+t19_ack_rc=0
+"$KP_BIN/kingpin" ack t19-no-such-task >/dev/null 2>&1 || t19_ack_rc=$?
+[ "$t19_ack_rc" -eq 1 ] && pass "t19: ack on an unknown task still fails" || fail "t19: ack on an unknown task exited $t19_ack_rc"
+
+tmux kill-window -t kingpin:t19-merged 2>/dev/null || true
+rm -rf "$KINGPIN_HOME/archive/t19-"* "$KINGPIN_HOME/tasks/t19-"* "$T"/wt-t19-*
+unset KINGPIN_LAVISH
+
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"
 else

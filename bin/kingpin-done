@@ -54,15 +54,48 @@ release_landing_lock_and_advance_queue() {
   fi
 }
 
+# Stop the task's background Lavish listener and its poll child, and drop the
+# pid file, so `kingpin list` no longer shows the task as listening.
+stop_listener() {
+  [ -f "$task_dir/listener.pid" ] || return 0
+  local lpid
+  lpid=$(cat "$task_dir/listener.pid" 2>/dev/null || true)
+  if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
+    # The listener runs in its own process group (setsid): stop its poll child too.
+    kill -- "-$lpid" 2>/dev/null || kill "$lpid" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$lpid" 2>/dev/null || break
+      sleep 0.05
+    done
+    if kill -0 "$lpid" 2>/dev/null; then
+      kill -KILL -- "-$lpid" 2>/dev/null || kill -KILL "$lpid" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$task_dir/listener.pid"
+}
+
 refuse_cleanup() {
   local reason=$1
   local line="cleanup-refused: $reason"
+  # The worker's own last status: the listener's approved:/feedback: notes are
+  # not worker events.
   local last=""
-  [ -f "$task_dir/status" ] && last=$(tail -n 1 "$task_dir/status" 2>/dev/null || true)
+  [ -f "$task_dir/status" ] && last=$(grep -vE '^(approved|feedback):' "$task_dir/status" 2>/dev/null | tail -n 1 || true)
   echo "kingpin-done: $reason" >&2
-  # An identical consecutive event is not appended again: every new status line
-  # wakes the orchestrator, and kingpin-watch retries the cleanup repeatedly.
-  [ "$last" = "$line" ] || echo "$line" >> "$task_dir/status"
+  case "$last" in
+    merged:*|failed:*|cleanup-refused:*)
+      # A finished task: report the refusal. An identical consecutive event is
+      # not appended again: every new status line wakes the orchestrator, and
+      # kingpin-watch retries the cleanup repeatedly.
+      [ "$last" = "$line" ] || echo "$line" >> "$task_dir/status"
+      # Nothing is left to review on a finished task.
+      stop_listener
+      ;;
+    *)
+      # A worker that may still be live (needs-input:, ready:, ...) keeps its
+      # last status: a cleanup-refused line would hide what it is waiting on.
+      ;;
+  esac
   release_landing_lock_and_advance_queue
   exit 1
 }
@@ -127,21 +160,7 @@ tmux kill-window -t "$tmux_target" 2>/dev/null || true
 "$KP_BIN/kingpin-ack" "$id" >/dev/null 2>&1 || true
 
 # Clean up background lavish listener and session
-if [ -f "$task_dir/listener.pid" ]; then
-  lpid=$(cat "$task_dir/listener.pid" 2>/dev/null || true)
-  if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
-    # The listener runs in its own process group (setsid): stop its poll child too.
-    kill -- "-$lpid" 2>/dev/null || kill "$lpid" 2>/dev/null || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      kill -0 "$lpid" 2>/dev/null || break
-      sleep 0.05
-    done
-    if kill -0 "$lpid" 2>/dev/null; then
-      kill -KILL -- "-$lpid" 2>/dev/null || kill -KILL "$lpid" 2>/dev/null || true
-    fi
-  fi
-  rm -f "$task_dir/listener.pid"
-fi
+stop_listener
 
 LAVISH_CMD=${KINGPIN_LAVISH:-lavish-axi}
 if command -v "$LAVISH_CMD" >/dev/null 2>&1 && [ -f "$task_dir/report.html" ]; then
