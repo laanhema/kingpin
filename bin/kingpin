@@ -11,7 +11,7 @@
 #   kingpin send <task-id> "<text>"
 #   kingpin peek <task-id> [--lines N]
 #   kingpin listen <task-id> [--once] [--background]
-#   kingpin wait [--timeout <seconds>] [--once]
+#   kingpin wait [--timeout <seconds>] [--once]   (exit 0 on events or plain timeout; --once with no events exits 1)
 #   kingpin ack <task-id>... | --all
 #   kingpin list [--all]
 #   kingpin lock [status|check|acquire [--harness <name>]|release|harness]
