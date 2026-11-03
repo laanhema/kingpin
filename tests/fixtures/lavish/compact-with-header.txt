@@ -1,0 +1,5 @@
+session:
+  status: feedback
+prompts[2]{prompt,tag}:
+  "please widen the verdict table cell",action
+  "Request Changes: rename the helper",action

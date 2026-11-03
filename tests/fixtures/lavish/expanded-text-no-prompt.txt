@@ -1,0 +1,7 @@
+session:
+  status: feedback
+prompts[1]:
+  - uid: "1"
+    selector: "table > tbody > tr:nth-of-type(2) > td:nth-of-type(2) > span"
+    tag: span
+    text: PASS
