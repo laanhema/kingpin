@@ -97,12 +97,6 @@ process.exit(1);
 
 # Test 2: AGY spawn
 echo "=== Test 2: AGY Spawn ==="
-# Seed legacy broad exclusions in repo info/exclude to verify migration
-proj_excl=$(git -C "$T/proj" rev-parse --git-path info/exclude)
-case "$proj_excl" in /*) ;; *) proj_excl="$T/proj/$proj_excl" ;; esac
-mkdir -p "$(dirname "$proj_excl")"
-printf '.agents\n.opencode\n' >> "$proj_excl"
-
 "$KP_BIN/kingpin-spawn" demo --issue 102 --id task-agy --harness agy >/dev/null
 [ -f "$KINGPIN_HOME/tasks/task-agy/task.env" ] && pass "task-agy task.env created" || fail "missing task.env"
 grep -q "^HARNESS=agy$" "$KINGPIN_HOME/tasks/task-agy/task.env" && pass "task-agy recorded HARNESS=agy" || fail "wrong harness in task.env"
@@ -129,12 +123,12 @@ grep -qx "trigger: always_on" "$wt_agy/.agents/rules/kingpin.md" && pass "agy ru
 ! grep -q "{{WORKTREE}}" "$wt_agy/.agents/rules/kingpin.md" && pass "agy rules substituted WORKTREE" || fail "unsubstituted WORKTREE in agy rules"
 [ -f "$wt_agy/.agents/hooks.json" ] && pass "agy hooks.json written in worktree" || fail "missing agy hooks"
 grep -q "kingpin-stop" "$wt_agy/.agents/hooks.json" && pass "agy hook command runs the shared stop hook" || fail "wrong agy hook"
-# Verify specific agy files excluded from git, broad .agents migrated
-git_excl=$(git -C "$wt_agy" rev-parse --git-path info/exclude)
-case "$git_excl" in /*) ;; *) git_excl="$wt_agy/$git_excl" ;; esac
-grep -q "^\.agents/rules/kingpin\.md$" "$git_excl" && pass "rules/kingpin.md added to git info/exclude" || fail "rules/kingpin.md not excluded"
-grep -q "^\.agents/hooks\.json$" "$git_excl" && pass "hooks.json added to git info/exclude" || fail "hooks.json not excluded"
-! grep -qE '^/?\.agents/?$' "$git_excl" && pass "broad .agents not in git info/exclude" || fail "broad .agents still in info/exclude"
+# Verify the specific agy files are excluded through the task's own exclude file, not
+# the shared .git/info/exclude (issue #77)
+git_excl=$(git -C "$wt_agy" config --get --worktree core.excludesFile 2>/dev/null || true)
+[ "$git_excl" = "$KINGPIN_HOME/tasks/task-agy/exclude" ] && pass "agy worktree reads its task's exclude file" || fail "agy worktree reads '${git_excl:-nothing}' as core.excludesFile"
+grep -qx '\.agents/rules/kingpin\.md' "${git_excl:-/nonexistent}" && pass "rules/kingpin.md excluded through the task's exclude file" || fail "rules/kingpin.md not excluded"
+grep -qx '\.agents/hooks\.json' "${git_excl:-/nonexistent}" && pass "hooks.json excluded through the task's exclude file" || fail "hooks.json not excluded"
 status_out=$(git -C "$wt_agy" status --porcelain)
 [ -z "$status_out" ] && pass "git status in agy worktree is clean" || fail "git status dirty: $status_out"
 
@@ -163,13 +157,13 @@ grep -q "background code worker" "$KINGPIN_HOME/tasks/task-opencode/preamble.md"
 ! grep -q "{{WORKTREE}}" "$KINGPIN_HOME/tasks/task-opencode/preamble.md" && pass "opencode preamble substituted WORKTREE" || fail "unsubstituted WORKTREE in opencode preamble"
 [ -f "$wt_oc/.opencode/plugins/kingpin-stop.js" ] && pass "opencode kingpin-stop.js plugin written" || fail "missing plugin"
 [ -f "$wt_oc/.opencode/plugins/package.json" ] && pass "opencode plugin package.json written" || fail "missing plugin package.json"
-# Verify .opencode specific files excluded from git, broad .opencode migrated
-git_excl=$(git -C "$wt_oc" rev-parse --git-path info/exclude)
-case "$git_excl" in /*) ;; *) git_excl="$wt_oc/$git_excl" ;; esac
-grep -q "^\.opencode/opencode\.json$" "$git_excl" && pass "opencode opencode.json added to git info/exclude" || fail "opencode.json not excluded"
-grep -q "^\.opencode/plugins/package\.json$" "$git_excl" && pass "opencode plugin package.json added to git info/exclude" || fail "plugin package.json not excluded"
-grep -q "^\.opencode/plugins/kingpin-stop\.js$" "$git_excl" && pass "opencode kingpin-stop.js added to git info/exclude" || fail "plugin kingpin-stop.js not excluded"
-! grep -qE '^/?\.opencode/?$' "$git_excl" && pass "broad .opencode not in git info/exclude" || fail "broad .opencode still in info/exclude"
+# Verify the opencode files are excluded through the task's own exclude file, not the
+# shared .git/info/exclude (issue #77)
+git_excl=$(git -C "$wt_oc" config --get --worktree core.excludesFile 2>/dev/null || true)
+[ "$git_excl" = "$KINGPIN_HOME/tasks/task-opencode/exclude" ] && pass "opencode worktree reads its task's exclude file" || fail "opencode worktree reads '${git_excl:-nothing}' as core.excludesFile"
+grep -qx '\.opencode/opencode\.json' "${git_excl:-/nonexistent}" && pass "opencode.json excluded through the task's exclude file" || fail "opencode.json not excluded"
+grep -qx '\.opencode/plugins/package\.json' "${git_excl:-/nonexistent}" && pass "plugin package.json excluded through the task's exclude file" || fail "plugin package.json not excluded"
+grep -qx '\.opencode/plugins/kingpin-stop\.js' "${git_excl:-/nonexistent}" && pass "kingpin-stop.js excluded through the task's exclude file" || fail "plugin kingpin-stop.js not excluded"
 status_out=$(git -C "$wt_oc" status --porcelain)
 [ -z "$status_out" ] && pass "git status in opencode worktree is clean" || fail "git status dirty: $status_out"
 

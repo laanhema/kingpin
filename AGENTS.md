@@ -9,7 +9,7 @@ each task back as a visual review dossier. This file describes the repository.
 | Path | What it holds |
 |---|---|
 | `bin/` | One executable per command (`kingpin-spawn`, `kingpin-guard`, `kingpin-wait`, ...), plus `bin/kingpin`, the dispatcher that maps `kingpin <cmd>` to them |
-| `lib/` | Shared helpers: `status.sh` (the status-file protocol, sourced by the scripts), `landing.sh`, `mutex.sh` (the mutex sequence shared by the landing lane and `kingpin-lock`), `supervisor.sh` (the fleet supervisor's pidfile, sourced by `kingpin-watch`, `kingpin-lock` and `kingpin list`), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, ...) |
+| `lib/` | Shared helpers: `status.sh` (the status-file protocol, sourced by the scripts), `landing.sh`, `mutex.sh` (the mutex sequence shared by the landing lane and `kingpin-lock`), `supervisor.sh` (the fleet supervisor's pidfile, sourced by `kingpin-watch`, `kingpin-lock` and `kingpin list`), `exclude.sh` (the per-worktree exclude file a spawn points at, sourced by `kingpin-spawn` and `kingpin-done`), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, ...) |
 | `worker/` | `preamble.md`, the text a spawned worker receives, and `hooks.json`, its Claude Code settings |
 | `orchestrator/contract.md` | The orchestrator contract. `kingpin guard install` copies it into the main checkout's untracked instruction sources; no harness loads this tracked file directly |
 | `tests/` | One shell suite per feature, with shared setup in `tests/lib.sh` |
@@ -55,10 +55,16 @@ so no harness binary is needed.
 - Test suites define `pass`/`fail` from `tests/lib.sh` and print `ALL <LABEL> TESTS PASSED`
   through `kp_test_finish`.
 - Harness-specific files a command writes into a worktree (`.opencode/*`, `.agents/rules/*`,
-  `.agents/hooks.json`) are added to that worktree's `.git/info/exclude`, never to the
-  tracked `.gitignore`, so a user's own files in those directories stay visible. A config
-  the project already tracks (`.opencode/opencode.json`) cannot be excluded, so the spawn
-  refuses it instead of rewriting it.
+  `.agents/hooks.json`) are hidden by a Kingpin-owned exclude file,
+  `$KP_HOME/tasks/<id>/exclude`, which the worktree reads through a worktree-scoped
+  `core.excludesFile` (`lib/exclude.sh`); never through the main checkout's
+  `.git/info/exclude`, which belongs to the user and is shared by every linked worktree,
+  and never through the tracked `.gitignore`. Enabling git's `extensions.worktreeConfig`
+  is the one repository-config line a spawn writes. `kingpin done` clears the pointer, the
+  files that spawn recorded as injected and the task's exclude file. A config the project
+  already tracks
+  (`.opencode/opencode.json`) cannot be excluded, so the spawn refuses it instead of
+  rewriting it.
 
 ## Harness wiring
 
