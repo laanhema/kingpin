@@ -169,6 +169,25 @@ Review the changes and click **Approve & Land** on the dossier or run:
 kingpin land <task-id>
 ```
 
+### 3. Handover Artifacts (noir dossier template)
+
+Pages handed to the boss for a decision (proposals, plans, comparisons, review summaries) start from the noir dossier template that ships with the repo:
+
+```
+assets/lavish/noir-dossier/
+  template.html   the page: exhibits A-F, inline-SVG diagrams, @pierre/diffs, two working decision forms
+  kingpin.jpg     the banner, the same image as assets/kingpin.jpg, referenced relatively
+  DESIGN.md       the rules the look depends on, beside the file they describe
+```
+
+Copy the folder into the artifact's directory (`.lavish/`), rename the html, swap the content, and keep the chrome. `DESIGN.md` lists the rules (paper on ink, one accent, one display face, exhibit labels, forms for decisions) and the two widths to check, 1180 px and 480 px, with nothing scrolling sideways. Then open it:
+
+```bash
+lavish-axi .lavish/<artifact>.html
+```
+
+Worker review dossiers are not made from this template: `worker/preamble.md` and `kingpin report diffs` own their layout. `tests/test-noir-template.sh` fails when the folder loses one of the three files, when `template.html` points at a file with an absolute path or through `..`, when a diff block loses its static fallback, or when the page stops passing the full `kingpin report check` (renderable diffs and clean prose).
+
 
 ---
 
@@ -228,6 +247,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-launch-check.sh` | `kingpin-launch-check`: workers that die at launch |
 | `test-status.sh` | `lib/status.sh`, the shared status protocol |
 | `test-report.sh` | `report`: generated diffs are renderable, blank-diff reports are rejected |
+| `test-noir-template.sh` | noir dossier template: the three files ship together, every ref stays inside the folder, the diffs keep static fallbacks, the prose stays clean |
 | `test-harnesses.sh` | Multi-harness contract and isolation |
 | `test-worker-settings.sh` | Orchestrator tool guard and worker edit boundary |
 | `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
