@@ -171,10 +171,23 @@ worktree=$(cd "$PROJECT_PATH" && treehouse get --lease -b "$branch") || die "tre
 # lib/exclude.sh and issue #77. Each harness below records the paths it injects.
 task_exclude_paths=()
 
+# What the pooled slot already carried when this spawn leased it (issue #127). An older
+# task's harness files can survive a `kingpin done` that only removed what its own task
+# recorded; treehouse then hands the slot out when a stale `.git/info/exclude` line hid
+# those files, and they surface the moment the user removes that line. Snapshot the
+# visible untracked files now, before SETUP_CMD and the harness branches write anything
+# of this task's, so the spawn can name them. Kingpin's own paths are checked in the
+# worktree itself below, because the stale line keeps them out of this listing.
+task_leftover_paths=()
+while IFS= read -r -d '' rel; do
+  [ -n "$rel" ] || continue
+  task_leftover_paths+=("$rel")
+done < <(git -C "$worktree" ls-files -z --others --exclude-standard 2>/dev/null || true)
+
 # Older Kingpin versions appended entries to the shared .git/info/exclude, and
 # `kingpin guard install` owns a marked block there for its own contract copies. That
 # file belongs to the user and this spawn never edits it, but a broad `.agents/` or
-# `.opencode/` line, or one of the five exact paths an older spawn appended, hides files
+# `.opencode/` line, or one of the exact paths an older spawn appended, hides files
 # in every worktree: name it and let the user decide. The lines inside the guard's block
 # are skipped, because the guard rewrites them on every install and naming them sends the
 # user to remove files the next install puts back (issue #123). Either form may also be
@@ -411,6 +424,52 @@ exec $OPENCODE_CMD --standalone --auto --prompt "\$(cat '$task_dir/prompt.txt')"
 EOF
     ;;
 esac
+
+# An earlier task's files at Kingpin's own harness paths (issue #127). A `done` removes
+# only the paths its own task recorded, so a pooled slot can still carry them, and a
+# stale `.git/info/exclude` line can hide them from treehouse until the user removes that
+# line. Remove one here only when its content proves Kingpin wrote it (`lib/leftover.mjs`):
+# the worktree is still a checkout of the user's repository and a delete is not
+# reversible, so anything else is left in place and named. A path this spawn wrote is not
+# a leftover and is skipped; `done` owns those through `<task-dir>/injected` (issue #77).
+# The check is on disk, not on the visible listing above, because the stale line hides a
+# file from git while it is still there. A tracked file is the project's: never deleted.
+kingpin_paths=()
+while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  kingpin_paths+=("$rel")
+done < <(kp_exclude_injected_paths)
+
+# Visible untracked files that are not at a Kingpin path: they were in the slot before
+# this spawn, so name them for the user, but never delete them.
+for rel in ${task_leftover_paths[@]+"${task_leftover_paths[@]}"}; do
+  skip=0
+  for held in ${task_exclude_paths[@]+"${task_exclude_paths[@]}"} ${kingpin_paths[@]+"${kingpin_paths[@]}"}; do
+    if [ "$rel" = "$held" ]; then skip=1; break; fi
+  done
+  [ "$skip" = 0 ] || continue
+  printf 'kingpin-spawn: %s was already untracked in %s before this spawn; Kingpin did not write it, so it is left in place (check it yourself)\n' \
+    "$rel" "$worktree" >&2
+done
+
+for rel in ${kingpin_paths[@]+"${kingpin_paths[@]}"}; do
+  skip=0
+  for written in ${task_exclude_paths[@]+"${task_exclude_paths[@]}"}; do
+    if [ "$rel" = "$written" ]; then skip=1; break; fi
+  done
+  [ "$skip" = 0 ] || continue
+  [ -e "$worktree/$rel" ] || [ -L "$worktree/$rel" ] || continue
+  git -C "$worktree" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 && continue
+  if node "$KP_ROOT/lib/leftover.mjs" "$worktree" "$rel" "$KP_HOME"; then
+    rm -f "$worktree/$rel" \
+      || die "cannot remove the earlier task's leftover $rel from $worktree"
+    printf 'kingpin-spawn: removed %s from %s: an earlier task left it there and its content is the shape Kingpin writes\n' \
+      "$rel" "$worktree" >&2
+  else
+    printf 'kingpin-spawn: left %s in %s: it is untracked and its content does not prove Kingpin wrote it, so it is not Kingpin'"'"'s to delete\n' \
+      "$rel" "$worktree" >&2
+  fi
+done
 
 # Record exactly the paths this spawn injected, so the cleanup (`kingpin-done`, or the
 # failure trap below) removes only those: a file someone left at another harness's path
