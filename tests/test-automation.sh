@@ -35,6 +35,7 @@ chmod +x "$T/bin/tmux"
 export PATH="$T/bin:$PATH"
 
 cleanup() {
+  [ -f "$T/kingpin-send.orig" ] && cp -p "$T/kingpin-send.orig" "$KP_BIN/kingpin-send" || true
   "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
   rm -rf "$T"
 }
