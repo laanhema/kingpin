@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="640" viewBox="0 0 1024 640" role="img" aria-label="A dossier page before the layout fix">
+  <rect width="1024" height="640" fill="#0d1117"/>
+  <rect width="1024" height="52" fill="#161b22"/>
+  <circle cx="26" cy="26" r="7" fill="#f85149"/>
+  <circle cx="50" cy="26" r="7" fill="#d29922"/>
+  <circle cx="74" cy="26" r="7" fill="#3fb950"/>
+  <text x="98" y="32" fill="#e6edf3" font-family="system-ui, sans-serif" font-size="16">Dossier review</text>
+  <rect x="40" y="84" width="640" height="26" rx="6" fill="#161b22"/>
+  <rect x="40" y="128" width="944" height="14" rx="4" fill="#30363d"/>
+  <rect x="40" y="156" width="880" height="14" rx="4" fill="#30363d"/>
+  <rect x="40" y="184" width="920" height="14" rx="4" fill="#30363d"/>
+  <rect x="40" y="240" width="944" height="160" rx="8" fill="#161b22" stroke="#f85149" stroke-width="2"/>
+  <text x="60" y="278" fill="#f85149" font-family="system-ui, sans-serif" font-size="18">This box runs past the page edge</text>
+  <rect x="60" y="300" width="900" height="14" rx="4" fill="#30363d"/>
+  <rect x="60" y="328" width="900" height="14" rx="4" fill="#30363d"/>
+  <rect x="40" y="440" width="944" height="120" rx="8" fill="#161b22"/>
+  <text x="60" y="480" fill="#e6edf3" font-family="system-ui, sans-serif" font-size="18">Before: 1024 px of content in a 484 px column</text>
+  <rect x="60" y="504" width="700" height="14" rx="4" fill="#30363d"/>
+  <rect x="60" y="530" width="760" height="14" rx="4" fill="#30363d"/>
+  <text x="40" y="612" fill="#9da7b3" font-family="system-ui, sans-serif" font-size="15">The page scrolls sideways at 1024.</text>
+</svg>
