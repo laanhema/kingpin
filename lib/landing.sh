@@ -9,10 +9,21 @@
 # A project's landing lane is two files under $KP_HOME/projects:
 #   <project>.landing        the id of the task that owns the lane (the holder)
 #   <project>.landing_queue  one task id per line, in arrival order
-# plus a short-lived <project>.landing.mutex directory that makes every
+# plus a short-lived <project>.landing.mutex file that makes every
 # check-and-claim atomic. flock is not used: it is not available on macOS by
 # default. The holder file keeps its one-line format, so a live fleet and the
-# existing suites keep working; the mutex is a sibling directory.
+# existing suites keep working; the mutex is a sibling file.
+#
+# Two races this file closes, because both dispatch a task twice:
+#   * The claim itself is atomic on its own (`_kp_landing_claim` hard-links a
+#     prepared file into place), so even two processes that both believe the
+#     lane is free cannot both become the holder.
+#   * The mutex is created by an atomic hard link, released only by its owner,
+#     and reclaimed by renaming it away after checking that the file moved is
+#     the one inspected. A plain `rm -rf` reclaim let two reclaimers delete each
+#     other's fresh mutex, which put two processes in the critical section at
+#     once; `mv` onto a directory would nest instead of failing, so the mutex is
+#     a file, not a directory.
 #
 # The lane is free when it has no holder, or when the holder can no longer land:
 # its task dir is gone, or its last worker event is terminal (merged:, failed:,
@@ -89,41 +100,97 @@ _kp_landing_unlandable_reason() {
 }
 
 # _kp_landing_mutex_acquire <kp-home> <project>
-# Takes the project's mkdir mutex. Exit 0 = taken (the caller must release it),
-# 1 = could not be taken within ~5 s. A mutex whose pid file names a dead
-# process, or whose directory is older than a minute, is reclaimed: a process
-# killed between the mkdir and the pid write must not wedge the lane forever.
+# Takes the project's mutex. The mutex is a one-line file holding the owner's pid,
+# created by hard-linking a prepared file into place: link(2) is atomic and fails
+# when the mutex exists, so a contender never sees a mutex without its pid and
+# only one contender can win. Exit 0 = taken (the caller must release it),
+# 1 = could not be taken within ~5 s.
+#
+# A mutex is reclaimed when its pid names a dead process, or when the file is
+# older than a minute (a process killed inside the section, or one that never
+# released). The reclaim renames the mutex away and then checks that it moved the
+# mutex it inspected: two reclaimers therefore cannot delete each other's fresh
+# mutex, and a mutex that appeared after the read is put back.
 _kp_landing_mutex_acquire() {
-  local home=${1:?} project=${2:?} mutex pid n=0
+  local home=${1:?} project=${2:?} mutex tmp stolen seen moved old n=0
   mutex="$(kp_landing_lock "$home" "$project").mutex"
   mkdir -p "$home/projects" || return 1
   while [ "$n" -lt 250 ]; do
-    if mkdir "$mutex" 2>/dev/null; then
-      printf '%s\n' "$$" > "$mutex/pid" 2>/dev/null || true
+    tmp=$(mktemp "${mutex}.tmp.XXXXXX" 2>/dev/null) || return 1
+    if printf '%s\n' "$$" > "$tmp" 2>/dev/null && ln "$tmp" "$mutex" 2>/dev/null; then
+      rm -f "$tmp"
       return 0
     fi
-    pid=""
-    [ -f "$mutex/pid" ] && pid=$(head -n 1 "$mutex/pid" 2>/dev/null || true)
-    if [ -n "$pid" ]; then
-      if ! kill -0 "$pid" 2>/dev/null; then
-        rm -rf "$mutex"
-        continue
-      fi
-    fi
-    if [ -n "$(find "$mutex" -maxdepth 0 -mmin +1 2>/dev/null)" ]; then
-      rm -rf "$mutex"
+    rm -f "$tmp"
+    seen=""
+    [ -f "$mutex" ] && seen=$(head -n 1 "$mutex" 2>/dev/null || true)
+    old=""
+    [ -n "$(find "$mutex" -maxdepth 0 -mmin +1 2>/dev/null)" ] && old=1
+    if [ -z "$old" ] && { [ -z "$seen" ] || kill -0 "$seen" 2>/dev/null; }; then
+      # A live owner, or a mutex created just now: wait for it.
+      sleep 0.02
+      n=$((n + 1))
       continue
     fi
-    sleep 0.02
+    stolen="$mutex.stale.$$"
+    rm -rf "$stolen"
+    if ! mv "$mutex" "$stolen" 2>/dev/null; then
+      # Another contender reclaimed it first.
+      sleep 0.02
+      n=$((n + 1))
+      continue
+    fi
+    moved=""
+    [ -f "$stolen" ] && moved=$(head -n 1 "$stolen" 2>/dev/null || true)
+    if [ -n "$seen" ] && [ "$moved" != "$seen" ]; then
+      # We moved a mutex that appeared after our read: hand it back untouched,
+      # and never overwrite a mutex that is already back in place.
+      if [ -e "$mutex" ]; then
+        rm -f "$stolen"
+      else
+        mv "$stolen" "$mutex" 2>/dev/null || rm -f "$stolen"
+      fi
+      sleep 0.02
+      n=$((n + 1))
+      continue
+    fi
+    rm -rf "$stolen"
     n=$((n + 1))
   done
   return 1
 }
 
 # _kp_landing_mutex_release <kp-home> <project>
-# Releases the project's mutex. Always 0: a missing mutex is already released.
+# Releases the project's mutex, but only when this shell owns it: a release can
+# never delete a mutex that another process has just taken. Always 0.
 _kp_landing_mutex_release() {
-  rm -rf "$(kp_landing_lock "${1:?}" "${2:?}").mutex" 2>/dev/null || true
+  local home=${1:?} project=${2:?} mutex pid
+  mutex="$(kp_landing_lock "$home" "$project").mutex"
+  [ -e "$mutex" ] || return 0
+  pid=$(head -n 1 "$mutex" 2>/dev/null || true)
+  [ "$pid" = "$$" ] || return 0
+  rm -f "$mutex"
+  return 0
+}
+
+# _kp_landing_claim <lock> <task>
+# Creates <lock> naming <task> atomically: a private file with the id is
+# hard-linked into place, and link(2) fails when the lock already exists. Two
+# processes that both believe the lane is free therefore cannot both claim it;
+# the loser gets 1. The caller holds the project mutex.
+_kp_landing_claim() {
+  local lock=${1:?} task=${2:?} tmp
+  tmp=$(mktemp "${lock}.claim.XXXXXX" 2>/dev/null) || return 1
+  printf '%s\n' "$task" > "$tmp" || {
+    rm -f "$tmp"
+    return 1
+  }
+  if ln "$tmp" "$lock" 2>/dev/null; then
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
 }
 
 # _kp_landing_queue_remove <queue-file> <task>
@@ -140,20 +207,44 @@ _kp_landing_queue_remove() {
 
 # kp_landing_acquire <kp-home> <project> <task>
 # Claims the lane for <task> atomically: writes the holder file and removes the
-# task from the queue under the project mutex. Re-acquiring as the current
-# holder also succeeds. Exit 0 = claimed, 1 = a live holder owns the lane,
+# task from the queue under the project mutex. The holder file itself is created
+# by an atomic link, so a second claimant can never also win. Re-acquiring as the
+# current holder also succeeds. Exit 0 = claimed, 1 = a live holder owns the lane,
 # 2 = the mutex could not be taken (nothing changed).
 kp_landing_acquire() {
-  local home=${1:?} project=${2:?} task=${3:?} lock queue holder
+  local home=${1:?} project=${2:?} task=${3:?} lock queue holder stale moved
   lock=$(kp_landing_lock "$home" "$project")
   queue=$(kp_landing_queue "$home" "$project")
   _kp_landing_mutex_acquire "$home" "$project" || return 2
   holder=$(kp_landing_holder "$home" "$project")
-  if [ -n "$holder" ] && [ "$holder" != "$task" ] && kp_landing_holder_live "$home" "$holder"; then
+  if [ -n "$holder" ] && [ "$holder" = "$task" ]; then
+    _kp_landing_mutex_release "$home" "$project"
+    return 0
+  fi
+  if [ -n "$holder" ] && kp_landing_holder_live "$home" "$holder"; then
     _kp_landing_mutex_release "$home" "$project"
     return 1
   fi
-  printf '%s\n' "$task" > "$lock"
+  if [ -f "$lock" ]; then
+    # The lane is free but its file names a task that can no longer land (or is
+    # empty). Clear it by renaming it away and checking that it was the file we
+    # inspected: a holder written in between is put back instead of removed.
+    stale="$lock.stale.$$"
+    rm -f "$stale"
+    if mv "$lock" "$stale" 2>/dev/null; then
+      moved=$(head -n 1 "$stale" 2>/dev/null || true)
+      if [ "$moved" != "$holder" ]; then
+        mv "$stale" "$lock" 2>/dev/null || rm -f "$stale"
+        _kp_landing_mutex_release "$home" "$project"
+        return 1
+      fi
+      rm -f "$stale"
+    fi
+  fi
+  if ! _kp_landing_claim "$lock" "$task"; then
+    _kp_landing_mutex_release "$home" "$project"
+    return 1
+  fi
   _kp_landing_queue_remove "$queue" "$task"
   _kp_landing_mutex_release "$home" "$project"
   return 0

@@ -46,7 +46,7 @@ lane_markers() { # <id>...: how many of them carry landing_sent
 lane_drop() { # <id> <project>: kill the window and forget the task and its project files
   tmux kill-window -t "kingpin:$1" 2>/dev/null || true
   rm -rf "$KINGPIN_HOME/tasks/$1" "$T/wt-lane-$1"
-  rm -f "$KINGPIN_HOME/projects/$2.landing" "$KINGPIN_HOME/projects/$2.landing_queue"
+  rm -rf "$KINGPIN_HOME/projects/$2.landing"*
 }
 expect_rc() { # <want> <description> <command...>
   local want=$1 desc=$2 rc=0
@@ -113,14 +113,56 @@ grep -q "dropping unit-gone from the unit-pop queue" "$T/unit-pop.err" && pass "
 # A mutex left behind by a dead process is reclaimed instead of wedging the lane
 unit_task unit-stale
 unit_mutex="$unit_home/projects/unit-stale.landing.mutex"
-mkdir -p "$unit_mutex"
 sleep 0.01 &
 unit_dead_pid=$!
 wait "$unit_dead_pid" || true
-echo "$unit_dead_pid" > "$unit_mutex/pid"
+echo "$unit_dead_pid" > "$unit_mutex"
 expect_rc 0 "acquire: a mutex whose pid is dead is reclaimed" kp_landing_acquire "$unit_home" unit-stale unit-stale
-[ ! -d "$unit_mutex" ] && pass "acquire: the reclaimed mutex is gone" || fail "acquire: the stale mutex survived"
+[ ! -e "$unit_mutex" ] && pass "acquire: the reclaimed mutex is gone" || fail "acquire: the stale mutex survived"
 [ "$(cat "$unit_home/projects/unit-stale.landing" 2>/dev/null || true)" = "unit-stale" ] && pass "acquire: the reclaimed lane is claimed" || fail "acquire: the reclaimed lane is not claimed"
+
+# The claim is atomic on its own: two claimants of one free lane, one winner.
+unit_task unit-claim-a
+unit_task unit-claim-b
+unit_claim_ok=0
+for _ in 1 2 3 4 5; do
+  rm -f "$unit_home/projects/unit-claim.landing"
+  ( _kp_landing_claim "$unit_home/projects/unit-claim.landing" unit-claim-a ) & ca=$!
+  ( _kp_landing_claim "$unit_home/projects/unit-claim.landing" unit-claim-b ) & cb=$!
+  rca=0; wait "$ca" || rca=$?
+  rcb=0; wait "$cb" || rcb=$?
+  [ $(((rca == 0) + (rcb == 0))) -eq 1 ] && unit_claim_ok=$((unit_claim_ok + 1))
+done
+[ "$unit_claim_ok" -eq 5 ] && pass "claim: two concurrent claimants, exactly one wins (5/5 rounds)" || fail "claim: only $unit_claim_ok of 5 rounds had exactly one winner"
+
+# A stale holder is cleared by exactly one of two concurrent acquires.
+unit_stale_ok=0
+for _ in 1 2 3 4 5; do
+  rm -rf "$unit_home/projects/unit-stale-lock.landing"*
+  printf 'unit-gone\n' > "$unit_home/projects/unit-stale-lock.landing"
+  ( kp_landing_acquire "$unit_home" unit-stale-lock unit-claim-a ) & sa=$!
+  ( kp_landing_acquire "$unit_home" unit-stale-lock unit-claim-b ) & sb=$!
+  rca=0; wait "$sa" || rca=$?
+  rcb=0; wait "$sb" || rcb=$?
+  [ $(((rca == 0) + (rcb == 0))) -eq 1 ] && unit_stale_ok=$((unit_stale_ok + 1))
+done
+[ "$unit_stale_ok" -eq 5 ] && pass "acquire: a stale holder is replaced by exactly one of two lands (5/5 rounds)" || fail "acquire: only $unit_stale_ok of 5 rounds had exactly one winner on a stale holder"
+
+# A stale mutex reclaimed by two processes must not let both into the section:
+# the reclaim renames it away, so the loser's rename fails instead of deleting
+# the mutex the winner has just created.
+unit_reclaim_ok=0
+for _ in 1 2 3 4 5; do
+  rm -rf "$unit_home/projects/unit-reclaim.landing"*
+  echo "$unit_dead_pid" > "$unit_home/projects/unit-reclaim.landing.mutex"
+  ( kp_landing_acquire "$unit_home" unit-reclaim unit-claim-a ) & ma=$!
+  ( kp_landing_acquire "$unit_home" unit-reclaim unit-claim-b ) & mb=$!
+  rca=0; wait "$ma" || rca=$?
+  rcb=0; wait "$mb" || rcb=$?
+  [ $(((rca == 0) + (rcb == 0))) -eq 1 ] && unit_reclaim_ok=$((unit_reclaim_ok + 1))
+done
+[ "$unit_reclaim_ok" -eq 5 ] && pass "acquire: a stale mutex reclaimed by two lands yields one holder (5/5 rounds)" || fail "acquire: only $unit_reclaim_ok of 5 rounds had exactly one winner with a stale mutex"
+[ ! -e "$unit_home/projects/unit-reclaim.landing.mutex" ] && pass "acquire: the reclaimed mutex is gone" || fail "acquire: a mutex survived the reclaim"
 
 # t72b: a dead worker window releases the lane (AC 1)
 echo "=== t72b: a dead worker window releases the lane (AC 1) ==="
@@ -153,21 +195,29 @@ S
 chmod +x "$KP_BIN/kingpin-send"
 sent_file="$KINGPIN_HOME/sent.log"
 : > "$sent_file"
+# A pid that is certainly gone: the mutex each round starts as a stale one, which
+# is what a land killed mid-section leaves behind. Two lands reclaiming it at
+# once must still produce one holder, not two.
+sleep 0.01 &
+dead_land_pid=$!
+wait "$dead_land_pid" || true
 for i in 1 2 3 4 5; do
   project="demo-c$i"
   lane_task "c${i}a" "$project"
   lane_task "c${i}b" "$project"
-  "$KP_BIN/kingpin-land" "c${i}a" >/dev/null 2>&1 &
-  "$KP_BIN/kingpin-land" "c${i}b" >/dev/null 2>&1 &
-  wait
+  echo "$dead_land_pid" > "$KINGPIN_HOME/projects/$project.landing.mutex"
+  "$KP_BIN/kingpin-land" "c${i}a" >"$T/c${i}a.out" 2>&1 & pa=$!
+  "$KP_BIN/kingpin-land" "c${i}b" >"$T/c${i}b.out" 2>&1 & pb=$!
+  rca=0; wait "$pa" || rca=$?
+  rcb=0; wait "$pb" || rcb=$?
   n=$(lane_markers "c${i}a" "c${i}b")
   holder=$(lane_holder "$project")
   other="c${i}b"
   [ "$holder" = "c${i}b" ] && other="c${i}a"
-  if [ "$n" -eq 1 ] && [ -n "$holder" ] && [ -f "$KINGPIN_HOME/tasks/$holder/landing_sent" ] && grep -qxF "$other" "$KINGPIN_HOME/projects/$project.landing_queue" 2>/dev/null; then
+  if [ "$n" -eq 1 ] && [ "$rca" -eq 0 ] && [ "$rcb" -eq 0 ] && [ -n "$holder" ] && [ -f "$KINGPIN_HOME/tasks/$holder/landing_sent" ] && grep -qxF "$other" "$KINGPIN_HOME/projects/$project.landing_queue" 2>/dev/null; then
     pass "round $i: one holder ($holder), one landing_sent, $other queued"
   else
-    fail "round $i: markers=$n holder=$holder queue=$(lane_queue "$project")"
+    fail "round $i: markers=$n holder=$holder queue=$(lane_queue "$project") rc=$rca/$rcb a=$(tr '\n' ' ' < "$T/c${i}a.out") b=$(tr '\n' ' ' < "$T/c${i}b.out")"
   fi
 done
 sent_lines=$(wc -l < "$sent_file" | tr -d ' ')
