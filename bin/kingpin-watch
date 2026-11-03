@@ -2,10 +2,8 @@
 # Continuous fleet supervision loop for Kingpin.
 #
 # Listens for fleet events via kingpin-wait:
-#   1. Re-renders ~/.kingpin/board.html on every event.
-#   2. When a worker in 'auto' mode reports 'ready:', automatically triggers kingpin-land.
-#   3. When a worker reports 'merged:', automatically runs kingpin-done to clean up.
-#   4. In 'review' mode, keeps board.html fresh for captain review and clicks.
+#   1. When a worker in 'auto' mode reports 'ready:', automatically triggers kingpin-land.
+#   2. When a worker reports 'merged:', automatically runs kingpin-done to clean up.
 #
 # Usage: kingpin-watch [--once] [--interval <seconds>]
 set -euo pipefail
@@ -124,14 +122,10 @@ step_supervision() {
       [ -n "$id" ] || continue
       process_task_event "$id" "$reason"
     done <<< "$updates"
-    "$KP_BIN/kingpin-board" >/dev/null 2>&1 || true
     return 0
   fi
   return 1
 }
-
-# Initial board refresh
-"$KP_BIN/kingpin-board" >/dev/null 2>&1 || true
 
 if [ "$ONCE" -eq 1 ]; then
   step_supervision || true
@@ -147,7 +141,6 @@ while true; do
       [ -n "$id" ] || continue
       process_task_event "$id" "$reason"
     done <<< "$updates"
-    "$KP_BIN/kingpin-board" >/dev/null 2>&1 || true
   fi
   retry_pending_cleanups
 done

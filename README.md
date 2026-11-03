@@ -4,7 +4,7 @@
   <img src="assets/kingpin.jpg" alt="Kingpin" width="700">
 </p>
 
-Kingpin is a multi-worker fleet orchestrator for AI coding agents. It runs tasks in parallel git worktrees, isolates dependencies, prevents git pollution, serializes landing queues, and serves a live dark-mode fleet board.
+Kingpin is a multi-worker fleet orchestrator for AI coding agents. It runs tasks in parallel git worktrees, isolates dependencies, prevents git pollution, serializes landing queues, and hands each task to you as a visual review dossier.
 
 Kingpin supports **Claude Code**, **Antigravity CLI (agy)**, and **OpenCode**.
 
@@ -24,7 +24,7 @@ Ensure the following tools are installed on your host:
   - `opencode` (OpenCode CLI)
 
 Optional:
-- `lavish-axi` (for real-time fleet board serving and interactive actions)
+- `lavish-axi` (for per-task review dossiers and their interactive actions)
 
 ---
 
@@ -98,7 +98,6 @@ kingpin watch
 | `kingpin run` | `kingpin run <proj> (--issue <n> \| --text <req>) [--mode auto\|review]` | Single command that spawns, monitors, and completes a task. |
 | `kingpin watch` | `kingpin watch [--once] [--interval <sec>]` | Continuous supervision and auto-landing loop. |
 | `kingpin spawn` | `kingpin spawn <proj> (--issue <n> \| --text <req>) [--harness <name>]` | Starts a worker on a background tmux window and records its tmux window ID (`TMUX_WINDOW_ID` in `task.env`), so renaming a worker window or moving it to another session is safe; `task.env` files without it fall back to `TMUX_TARGET`. The window is pinned with `automatic-rename off` and `allow-rename off`, so ambient tmux settings and worker child commands cannot rename it; only `kingpin-wait` renames it. The task ID, branch (`kingpin/<id>`) and window share one slug: `kp-<n>-<slug>` from the issue title for `--issue`, `kp-<slug>` from the request for `--text` (`--id` overrides). For `--text`, `kingpin-wait` renames the window and `TMUX_TARGET` to `kp-<n>-<slug>` once the worker reports its issue; the task ID and branch keep the first name. |
-| `kingpin board` | `kingpin board [--out <path>]` | Renders the live fleet status HTML board. |
 | `kingpin list` | `kingpin list [--all]` | Displays active fleet tasks and states in the terminal; `--all` also shows finished (archived) tasks. |
 | `kingpin send` | `kingpin send <task-id> "<text>"` | Types the text literally into a worker window, then presses Enter. |
 | `kingpin land` | `kingpin land <task-id>` (alias: `kingpin approve <task-id>`) | Serializes project landing and triggers merge. When the review verdict has findings (`APPROVE WITH NITS`, `NEEDS CHANGES`) it runs `/fix-findings` first and says so; landing continues after the worker reports `fixed:`. When the review is clean it says that landing is starting. |
@@ -140,13 +139,6 @@ Review the changes and click **Approve & Land** on the dossier or run:
 kingpin land <task-id>
 ```
 
-### 3. Optional Fleet Board (`kingpin board`)
-
-To generate a static HTML overview of all fleet tasks:
-
-```bash
-kingpin board
-```
 
 ---
 

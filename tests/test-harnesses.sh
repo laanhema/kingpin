@@ -231,12 +231,12 @@ sleep 0.5
 res=$("$KP_BIN/kingpin-wait" --once 2>&1 || true)
 echo "$res" | grep -q "task-agy quiet" && pass "task-agy reported quiet after pane cleared" || fail "task-agy did not report quiet"
 
-# Test 6: Board rendering with all 3 harnesses
-echo "=== Test 6: Board Harness Badges ==="
-"$KP_BIN/kingpin-board" --out "$T/board.html" >/dev/null
-grep -q '<span class="badge badge-sm badge-outline">claude</span>' "$T/board.html" && pass "board renders claude badge" || fail "claude badge missing"
-grep -q '<span class="badge badge-sm badge-outline">agy</span>' "$T/board.html" && pass "board renders agy badge" || fail "agy badge missing"
-grep -q '<span class="badge badge-sm badge-outline">opencode</span>' "$T/board.html" && pass "board renders opencode badge" || fail "opencode badge missing"
+# Test 6: kingpin list shows all 3 harnesses
+echo "=== Test 6: List Harness Column ==="
+list_out=$("$KP_BIN/kingpin" list)
+for h in claude agy opencode; do
+  echo "$list_out" | grep -Eq "[[:space:]]$h[[:space:]]" && pass "list shows $h harness" || fail "$h harness missing from list"
+done
 
 # Test 7: Scope guard in AGENTS.md and role separation
 echo "=== Test 7: AGENTS.md Scope Guard & Role Separation ==="

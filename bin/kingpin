@@ -6,7 +6,6 @@
 #   kingpin spawn <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto]
 #   kingpin run <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto]
 #   kingpin watch [--once] [--interval <seconds>]
-#   kingpin board [--out <path>]
 #   kingpin land <task-id>        (alias: kingpin approve <task-id>)
 #   kingpin done <task-id> [--force]
 #   kingpin send <task-id> "<text>"
@@ -34,7 +33,6 @@ Commands:
   spawn     Start a worker in a leased worktree on a background tmux window
   run       Start a worker and follow it to completion / review
   watch     Run the continuous fleet supervision and auto-landing loop
-  board     Generate or refresh ~/.kingpin/board.html
   land      Land a ready worker; when its review has findings, run the fix pass first (alias: approve)
   done      Verify merge, release worktree lease, and advance queue
   send      Send input or approval keys to a worker
@@ -71,9 +69,6 @@ case "$cmd" in
     ;;
   watch)
     exec "$KP_BIN/kingpin-watch" "$@"
-    ;;
-  board)
-    exec "$KP_BIN/kingpin-board" "$@"
     ;;
   land|approve)
     exec "$KP_BIN/kingpin-land" "$@"

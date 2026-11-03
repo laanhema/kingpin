@@ -106,10 +106,9 @@ for id in demo-alpha demo-beta demo-gamma; do
   grep -q "^ready:" "$KINGPIN_HOME/tasks/$id/status" && pass "$id reported ready" || fail "$id not ready"
 done
 
-# 4. Check board rendering with 3 ready tasks
-"$KP_BIN/kingpin-board" --out "$T/board.html" >/dev/null
-[ -f "$T/board.html" ] && pass "board rendered 3 tasks" || fail "board missing"
-grep -q "demo-alpha" "$T/board.html" && grep -q "demo-beta" "$T/board.html" && grep -q "demo-gamma" "$T/board.html" && pass "all 3 tasks present on board" || fail "tasks missing from board"
+# 4. Check kingpin list with 3 ready tasks
+list_out=$("$KP_BIN/kingpin" list)
+echo "$list_out" | grep -q "demo-alpha" && echo "$list_out" | grep -q "demo-beta" && echo "$list_out" | grep -q "demo-gamma" && pass "all 3 tasks present in kingpin list" || fail "tasks missing from kingpin list"
 
 # 5. Land demo-alpha, demo-beta, demo-gamma
 # Override kingpin-send to write landed_signal for fake-claude (backup keeps uncommitted edits of the real script)
