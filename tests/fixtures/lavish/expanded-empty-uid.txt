@@ -1,0 +1,8 @@
+session:
+  status: feedback
+prompts[1]:
+  - uid: ""
+    prompt: the freeform message that carries no element target
+    selector: ""
+    tag: message
+    text: Freeform message

@@ -181,13 +181,15 @@ handle_approve() {
 }
 
 handle_feedback() {
-  local text=$1 summary
+  local text=$1 quiet=${2:-} summary
   {
     printf '## %s\n\n%s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$text"
   } >> "$task_dir/feedback.md"
   summary=$(printf '%s\n' "$text" | head -n 1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | cut -c 1-100)
   note "feedback: $summary"
-  reply "Feedback received. Forwarded to the orchestrator."
+  # The recovery path forwards several prompts and replies once for all of them,
+  # so it passes `quiet` and owns the single receipt itself.
+  [ -n "$quiet" ] || reply "Feedback received. Forwarded to the orchestrator."
 }
 
 # Poll loop: re-poll after every response; only an ended session stops it.
@@ -223,14 +225,44 @@ while true; do
     esac
   done < <(printf '%s\n' "$poll_out" | LAVISH_AXI_BIN="$LAVISH_PATH" node "$PROMPTS_MJS" "$id" 2>/dev/null || true)
 
-  # The poll carried prompts that the parser could not read: keep the raw
-  # response, so a lavish-axi output change does not lose feedback silently.
-  if [ "$parsed" -eq 0 ] && printf '%s\n' "$poll_out" | grep -qE '^prompts\[[1-9]'; then
+  # The poll carried prompts that the parser could not read: park the raw
+  # response in the task directory, so a lavish-axi output change loses nothing,
+  # and deliver the `prompt:` values it still holds instead of asking the
+  # reviewer to retype feedback Kingpin already received.
+  if [ "$parsed" -eq 0 ] && printf '%s\n' "$poll_out" | grep -qE '^[[:space:]]*prompts[[:space:]]*\[[1-9]'; then
+    # One capture per event: a later response must not overwrite the file an
+    # earlier `feedback:` note still points at.
+    parked=$(mktemp "$task_dir/unparsed-poll-XXXXXX.txt")
+    printf '%s\n' "$poll_out" > "$parked"
     {
-      echo "kingpin-listen: $(date -u +%Y-%m-%dT%H:%M:%SZ) poll returned prompts that could not be parsed; raw response:"
+      echo "kingpin-listen: $(date -u +%Y-%m-%dT%H:%M:%SZ) poll returned prompts that could not be parsed; raw response parked at $parked:"
       printf '%s\n' "$poll_out"
     } >> "$task_dir/listener.log"
-    reply "I could not read your last message. Please resend it as plain text."
+    # The prompts section may sit at any indent (a future lavish-axi could nest it
+    # under another key), and it ends at the next line indented no deeper than it.
+    recovered=$(printf '%s\n' "$poll_out" | awk '
+      /^[[:space:]]*prompts\[/ {
+        inside = 1
+        indent = match($0, /[^[:space:]]/) - 1
+        next
+      }
+      inside && /^[[:space:]]*$/ { next }
+      inside && match($0, /[^[:space:]]/) - 1 <= indent { inside = 0; next }
+      inside && /^[[:space:]]*prompt:[[:space:]]*/ {
+        sub(/^[[:space:]]*prompt:[[:space:]]*/, "")
+        sub(/^"/, ""); sub(/"$/, "")
+        print
+      }
+    ')
+    if [ -n "$recovered" ]; then
+      while IFS= read -r text; do
+        if [ -n "$text" ]; then handle_feedback "$text" quiet; fi
+      done <<< "$recovered"
+      reply "Feedback received and forwarded. Kingpin could not fully parse the poll response, so it recovered your message and kept the raw response at $parked."
+    else
+      note "feedback: could not read the poll response; raw response parked at $parked"
+      reply "I could not read your last message. Please resend it as plain text."
+    fi
   fi
 
   if [ "$status" = "ended" ]; then
