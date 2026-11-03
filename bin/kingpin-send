@@ -13,6 +13,18 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
 
+usage() {
+  cat <<'HELP'
+usage: kingpin-send <task-id> <text>
+
+Type <text> literally into the worker's window, then press Enter after
+KINGPIN_SEND_DELAY seconds (default 0.2) so a TUI submits it as a paste.
+HELP
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
 [ $# -ge 2 ] || { echo "usage: kingpin-send <task-id> <text>" >&2; exit 1; }
 id=$1
 shift

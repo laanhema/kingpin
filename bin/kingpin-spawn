@@ -58,11 +58,27 @@ resolve_tmux_session() {
   fi
 }
 
+usage() {
+  cat <<'HELP'
+usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode]
+
+  --issue    an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
+  --text     a free-text request: the worker runs /create-issue first, then the same
+  --mode     review (default) stops at a ready branch for the review; auto merges when green
+  --id       task id; defaults to kp-<n>-<slug> (issue title) or kp-<slug> (request)
+  --harness  worker harness: claude, agy, or opencode (overrides the project and the lock)
+HELP
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
 [ $# -ge 1 ] || die "usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode]"
 project=$1; shift
 issue='' text='' mode=review id='' harness_cli=''
 while [ $# -gt 0 ]; do
   case $1 in
+    -h|--help) usage; exit 0 ;;
     --issue) issue=${2:?--issue needs a number}; shift 2 ;;
     --text) text=${2:?--text needs a request}; shift 2 ;;
     --mode) mode=${2:?--mode needs review or auto}; shift 2 ;;

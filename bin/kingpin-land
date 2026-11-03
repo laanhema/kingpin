@@ -15,7 +15,21 @@ KP_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../lib/landing.sh
 . "$KP_BIN/../lib/landing.sh"
 
+usage() {
+  cat <<'HELP'
+usage: kingpin-land <task-id>
+
+Land a ready task: run the fix pass when the review has findings, serialize
+landing per project, and send /issue-flow-done to the worker. The review gate
+fails closed: a `ready:` line whose verdict cannot be read lands nothing.
+HELP
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
 [ $# -ge 1 ] || { echo "usage: kingpin-land <task-id>" >&2; exit 1; }
+[ $# -le 1 ] || { echo "kingpin-land: unknown argument: $2" >&2; exit 1; }
 id=$1
 
 task_dir="$KP_HOME/tasks/$id"

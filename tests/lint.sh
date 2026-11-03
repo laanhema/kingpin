@@ -44,4 +44,6 @@ if [ -n "$tracked" ]; then
   exit 1
 fi
 
+./tests/readme-cli-reference.sh
+
 echo "lint: ${#files[@]} files clean"

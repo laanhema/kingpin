@@ -37,9 +37,23 @@ MUTEX_FILE="$LOCK_FILE.mutex"
 . "$(dirname "$0")/../lib/supervisor.sh"
 # shellcheck source=../lib/mutex.sh
 . "$(dirname "$0")/../lib/mutex.sh"
-mkdir -p "$KP_HOME"
 
 die() { echo "kingpin-lock: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'HELP'
+usage: kingpin-lock [status|check|acquire [--harness <name>]|release|harness] [pid]
+
+  status    print `lock: free` or `lock: held by pid <n> (<harness>)`
+  check     exit 0 when this session holds the lock, 1 when it does not
+  acquire   take the lock for this session (default command)
+  release   drop this session's lock; refuses while another live session holds it
+  harness   print the harness recorded for the holder (claude, agy, opencode)
+
+--harness records the session's harness on `acquire`. A numeric [pid] overrides
+the detected session pid; KINGPIN_LOCK_PID does the same.
+HELP
+}
 
 is_harness_pid() {
   local p=$1
@@ -172,17 +186,24 @@ resolve_session_pid() {
 
 cmd=${1:-acquire}
 [ $# -eq 0 ] || shift
+case "$cmd" in
+  -h|--help) usage; exit 0 ;;
+esac
 
 harness_flag=''
 positional=()
 while [ $# -gt 0 ]; do
   case $1 in
+    -h|--help) usage; exit 0 ;;
     --harness) harness_flag=${2:?--harness needs a value}; shift 2 ;;
     *) positional+=("$1"); shift ;;
   esac
 done
 # resolve_session_pid reads the command as $1 and the optional pid as $2.
 set -- "$cmd" ${positional[@]+"${positional[@]}"}
+# Created only now that both help arms have exited: `kingpin lock --help` on a
+# fresh host prints usage without starting fleet state.
+mkdir -p "$KP_HOME"
 
 case "$cmd" in
   status)

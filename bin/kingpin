@@ -3,8 +3,8 @@
 #
 # Usage:
 #   kingpin init [name] [path] [--harness <name>] [--setup "<cmd>"]
-#   kingpin spawn <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto]
-#   kingpin run <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto]
+#   kingpin spawn <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto] [--id <task-id>]
+#   kingpin run <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto] [--id <task-id>]
 #   kingpin watch [--once] [--interval <seconds>]
 #   kingpin land <task-id>        (alias: kingpin approve <task-id>)
 #   kingpin done <task-id> [--force]
@@ -13,10 +13,10 @@
 #   kingpin sync                  (fast-forward the main checkout; run it in the main checkout)
 #   kingpin listen <task-id> [--once] [--background]
 #   kingpin wait [--timeout <seconds>] [--once]   (exit 0 on events or plain timeout; --once with no events exits 1)
-#   kingpin ack <task-id>... | --all
-#   kingpin list [--all]
-#   kingpin lock [status|check|acquire [--harness <name>]|release|harness]
-#   kingpin guard [install|check|warn]
+#   kingpin ack [--through <line>] <task-id>... | --all
+#   kingpin list [--all|-a]
+#   kingpin lock [status|check|acquire [--harness <name>]|release|harness] [pid]
+#   kingpin guard [install|check|warn] [--dir <kingpin-checkout>]
 #   kingpin scope files|check --harness <name> --worktree <dir> [--preamble <file>]
 #   kingpin report diffs [--repo <dir>] [--base <ref>] | check [--prose-only] <report.html>
 #   kingpin curate [--dry-run]
@@ -120,8 +120,8 @@ case "$cmd" in
       case "$arg" in
         --all|-a) show_all=1 ;;
         -h|--help)
-          echo "usage: kingpin list [--all]"
-          echo "  Lists live fleet tasks; --all also shows finished (archived) tasks."
+          echo "usage: kingpin list [--all|-a]"
+          echo "  Lists live fleet tasks; --all (or -a) also shows finished (archived) tasks."
           echo "  Always prints a 'Supervisor: running (pid N, since HH:MM)' line, or"
           echo "  'Supervisor: none - run kingpin watch' when no fleet supervisor runs."
           exit 0
@@ -231,6 +231,11 @@ case "$cmd" in
     ;;
   run)
     # kingpin run: spawn worker, then follow until complete or ready
+    # --help belongs to spawn's usage: parsing it as a spawned task would fail
+    # on the empty spawn output ("could not determine task id").
+    case "${1:-}" in
+      -h|--help) exec "$KP_BIN/kingpin-spawn" --help ;;
+    esac
     out=$("$KP_BIN/kingpin-spawn" "$@")
     echo "$out"
     # Extract task id from spawn output
