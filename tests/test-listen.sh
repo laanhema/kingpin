@@ -473,6 +473,8 @@ tmux kill-window -t kingpin:task-lavish-1 2>/dev/null || true
 tmux kill-window -t kingpin:task-lavish-2 2>/dev/null || true
 rm -rf "$t11_task" "$t11_task2"
 rm -f "$KINGPIN_HOME/projects/demo-auto.landing" "$KINGPIN_HOME/projects/demo-auto.landing_queue"
-unset KINGPIN_LAVISH
+# Put the default stub back rather than unsetting KINGPIN_LAVISH: an unset value
+# resolves the real lavish-axi from PATH again (issue #129).
+kp_test_stub_lavish
 
 kp_test_finish LISTEN

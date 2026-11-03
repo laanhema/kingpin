@@ -10,6 +10,9 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 kp_test_setup "watch-supervisor"
+# Test 13 arms and re-arms listeners for the t-arm task against the default Lavish stub
+# on purpose; every recorded call must name it, so the rest of the suite stays armed.
+kp_test_expect_lavish_calls '*t-arm*'
 
 PID_FILE="$KINGPIN_HOME/supervisor.pid"
 LOG="$T/supervisor.log"
@@ -564,7 +567,9 @@ reset_arm_task; rm -f "$KINGPIN_HOME/tasks/t-arm/report.html"; assert_no_rearm "
 reset_arm_task; rm -f "$KINGPIN_HOME/tasks/t-arm/task.env"; assert_no_rearm "a task without task.env"
 
 rm -rf "$KINGPIN_HOME/tasks/t-arm"
-unset KINGPIN_LAVISH
+# Put the default stub back rather than unsetting KINGPIN_LAVISH: an unset value
+# resolves the real lavish-axi from PATH again (issue #129).
+kp_test_stub_lavish
 
 tmux kill-window -t "$probe_wid" 2>/dev/null || true
 kp_test_finish WATCH-SUPERVISOR
