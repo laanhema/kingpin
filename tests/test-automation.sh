@@ -1432,6 +1432,37 @@ rm -f "$T/t17-gh-calls"
 "$KP_BIN/kingpin" done t17-explicit --force >/dev/null
 unset KINGPIN_GH
 
+# Test 18: spawned windows keep the name Kingpin gave them
+echo "=== Test 18: spawned windows are pinned against renames ==="
+# Simulate a user config that renames windows; the private server dies in cleanup.
+tmux set-option -g automatic-rename on
+tmux set-option -g allow-rename on
+cat > "$T/fake-renamer" << 'FRN'
+#!/usr/bin/env bash
+# Wait for the test's go marker, then emit a rename escape sequence like a child command would
+until [ -f "$KINGPIN_TASK_DIR/go" ]; do sleep 0.1; done
+printf '\033kevil\033\\'
+: > "$KINGPIN_TASK_DIR/emitted"
+exec bash
+FRN
+chmod +x "$T/fake-renamer"
+export KINGPIN_AGY=$T/fake-renamer
+"$KP_BIN/kingpin" spawn demo-auto --issue 306 --id t18-pinned --mode review >/dev/null
+t18_wid=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$KINGPIN_HOME/tasks/t18-pinned/task.env")
+[ "$(tmux display-message -p -t "$t18_wid" '#{automatic-rename} #{allow-rename}')" = "0 0" ] && pass "t18: automatic-rename and allow-rename are off on the task window" || fail "t18: window options not pinned: $(tmux display-message -p -t "$t18_wid" '#{automatic-rename} #{allow-rename}')"
+touch "$KINGPIN_HOME/tasks/t18-pinned/go"
+for _ in $(seq 1 50); do
+  [ -f "$KINGPIN_HOME/tasks/t18-pinned/emitted" ] && break
+  sleep 0.1
+done
+sleep 0.3
+[ -f "$KINGPIN_HOME/tasks/t18-pinned/emitted" ] && pass "t18: worker emitted the rename escape sequence" || fail "t18: worker never emitted the escape sequence"
+[ "$(tmux display-message -p -t "$t18_wid" '#{window_name}')" = "t18-pinned" ] && pass "t18: escape-sequence rename did not change the window name" || fail "t18: window renamed to $(tmux display-message -p -t "$t18_wid" '#{window_name}')"
+"$KP_BIN/kingpin" done t18-pinned --force >/dev/null
+export KINGPIN_AGY=$T/fake-worker
+tmux set-option -gu automatic-rename
+tmux set-option -gu allow-rename
+
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL AUTOMATION TESTS PASSED"
 else
