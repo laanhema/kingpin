@@ -101,6 +101,7 @@ kingpin watch
 | `kingpin list` | `kingpin list [--all]` | Displays active fleet tasks and states in the terminal; `--all` also shows finished (archived) tasks. |
 | `kingpin send` | `kingpin send <task-id> "<text>"` | Types the text literally into a worker window, then presses Enter. |
 | `kingpin peek` | `kingpin peek <task-id> [--lines N]` | Read-only view of a worker: prints the last 20 non-empty lines of its tmux pane (`--lines N` changes the count), scrollback included. It finds the pane from the recorded window ID (`TMUX_WINDOW_ID`), so it works after the window is renamed or moved, and falls back to `TMUX_TARGET` for older `task.env` files. It sends no keys and changes no state. Exits 1 for an unknown task or a window that is gone, 2 for a bad argument. Use it to see why a worker is stuck (an unsubmitted pasted message, a usage-limit banner, a permission prompt). |
+| `kingpin sync` | `kingpin sync` | Fast-forwards the main checkout from its upstream branch with `git pull --ff-only`, so the orchestrator never runs raw git against project files. Run it in the main checkout; it prints the old and new short SHAs plus the commits pulled, or `already up to date`. It never merges, rebases, resets or stashes. Exits 1 with a message on stderr in a linked worktree, on a dirty tree (any `git status --porcelain` output; ignored files do not count), with a detached HEAD or no upstream, or when a fast-forward is not possible; 2 for an argument. |
 | `kingpin land` | `kingpin land <task-id>` (alias: `kingpin approve <task-id>`) | Serializes project landing and triggers merge. When the review verdict has findings (`APPROVE WITH NITS`, `NEEDS CHANGES`) it runs `/fix-findings` first and says so; landing continues after the worker reports `fixed:`. When the review is clean it says that landing is starting. |
 | `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, advances the queue, and archives the task record to `~/.kingpin/archive/<task-id>`. Refuses, even with `--force`, when another unfinished task records the same worktree. A refusal is recorded as a `cleanup-refused:` status line only for a finished task (`merged:`, `failed:`); a worker that may still be live keeps its last status (for example `needs-input:`), and the reason goes to stderr. `done` also stops the task's dossier listener, and `kingpin ack` of an archived task is a no-op that exits 0 with a note. |
 | `kingpin lock` | `kingpin lock [status\|check\|acquire [--harness <name>]\|release\|harness]` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. |
@@ -131,6 +132,12 @@ To see why a worker is quiet or stuck, look at the tail of its pane without touc
 ```bash
 kingpin peek <task-id>              # last 20 non-empty lines
 kingpin peek <task-id> --lines 50   # more context
+```
+
+To pick up merged changes in the main checkout, fast-forward it without raw git:
+
+```bash
+kingpin sync    # old..new short SHAs and the commits pulled, or "already up to date"
 ```
 
 Finished tasks are archived by `kingpin done` and hidden from `kingpin list`; run `kingpin list --all` to include them. `kingpin curate` still collects skill critiques from archived tasks.

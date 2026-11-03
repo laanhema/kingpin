@@ -10,6 +10,7 @@
 #   kingpin done <task-id> [--force]
 #   kingpin send <task-id> "<text>"
 #   kingpin peek <task-id> [--lines N]
+#   kingpin sync                  (fast-forward the main checkout; run it in the main checkout)
 #   kingpin listen <task-id> [--once] [--background]
 #   kingpin wait [--timeout <seconds>] [--once]   (exit 0 on events or plain timeout; --once with no events exits 1)
 #   kingpin ack <task-id>... | --all
@@ -38,6 +39,7 @@ Commands:
   done      Verify merge, release worktree lease, and advance queue
   send      Send input or approval keys to a worker
   peek      Show the last lines of a worker's tmux pane (read-only)
+  sync      Fast-forward the main checkout from its upstream (ff-only; refuses a dirty tree or a worktree)
   listen    Maintain background Lavish listener and handle review actions
   wait      Wait for fleet task events (blocking or --once)
   ack       Acknowledge task events to advance seen counters
@@ -83,6 +85,9 @@ case "$cmd" in
     ;;
   peek)
     exec "$KP_BIN/kingpin-peek" "$@"
+    ;;
+  sync)
+    exec "$KP_BIN/kingpin-sync" "$@"
     ;;
   lock)
     exec "$KP_BIN/kingpin-lock" "$@"
