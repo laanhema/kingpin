@@ -191,6 +191,10 @@ sed -e "s|{{TASK_ID}}|$id|g" -e "s|{{TASK_DIR}}|$task_dir|g" -e "s|{{MODE}}|$mod
 
 target_session=$(resolve_tmux_session)
 
+# kingpin-wait does not report "exited" for a task with a fresh marker: task.env
+# exists before the window does. Removed once the window ID is recorded.
+: > "$task_dir/launching"
+
 cat > "$task_dir/task.env" <<EOF
 TASK_ID=$id
 PROJECT=$project
@@ -331,6 +335,7 @@ window_id=$(tmux new-window -d -P -F '#{window_id}' -t "$target_session:" -n "$i
 tmux set-window-option -t "$window_id" automatic-rename off || true
 tmux set-window-option -t "$window_id" allow-rename off || true
 printf 'TMUX_WINDOW_ID=%s\n' "$window_id" >> "$task_dir/task.env"
+rm -f "$task_dir/launching"
 launched=1
 
 echo "OK: spawned $id ($harness) in $worktree on $branch (tmux $target_session:$id, mode $mode)"
