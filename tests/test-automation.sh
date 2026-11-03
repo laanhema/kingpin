@@ -279,8 +279,8 @@ seen_val_all=$(cat "$task_w_dir/seen" 2>/dev/null | tr -d ' ' || echo 0)
 
 rm -rf "$task_w_dir"
 
-# Test 6b: kingpin-wait ignores informational lines, holds repeated quiet, spares a launching window
-echo "=== Test 6b: kingpin-wait wake filtering (#45) ==="
+# Test 6c: kingpin-wait ignores informational lines, holds repeated quiet, spares a launching window
+echo "=== Test 6c: kingpin-wait wake filtering (#45) ==="
 t45_dir="$KINGPIN_HOME/tasks/t45-wait"
 mkdir -p "$t45_dir"
 t45_wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n t45-wait)
@@ -345,6 +345,39 @@ rm -f "$t45_dir/launching"
 "$KP_BIN/kingpin" wait --once 2>/dev/null | grep -q "^t45-wait exited" && pass "t45: a gone window is exited" || fail "t45: gone window not reported"
 rm -rf "$t45_dir"
 
+
+# Test 6b: kingpin-wait exit codes (timeout is not an error)
+echo "=== Test 6b: kingpin-wait exit codes ==="
+t6b_home="$T/kp-t6b"
+mkdir -p "$t6b_home/tasks"
+set +e
+t6b_out=$(KINGPIN_HOME="$t6b_home" "$KP_BIN/kingpin-wait" --timeout 1 2>"$T/t6b.err")
+t6b_exit=$?
+set -e
+[ "$t6b_exit" -eq 0 ] && [ -z "$t6b_out" ] && [ ! -s "$T/t6b.err" ] && pass "kingpin-wait timeout exits 0 with empty stdout and stderr" || fail "timeout: exit $t6b_exit, out '$t6b_out', err '$(cat "$T/t6b.err")'"
+set +e
+t6b_out=$(KINGPIN_HOME="$t6b_home" "$KP_BIN/kingpin-wait" --once 2>&1)
+t6b_exit=$?
+set -e
+[ "$t6b_exit" -eq 1 ] && [ -z "$t6b_out" ] && pass "kingpin-wait --once with no events exits 1" || fail "--once no events: exit $t6b_exit, out '$t6b_out'"
+set +e
+t6b_out=$(KINGPIN_HOME="$t6b_home" "$KP_BIN/kingpin-wait" --bogus 2>&1)
+t6b_exit=$?
+set -e
+[ "$t6b_exit" -ne 0 ] && echo "$t6b_out" | grep -q "^kingpin-wait: " && pass "kingpin-wait bad argument exits non-zero with a message" || fail "bad arg: exit $t6b_exit, out '$t6b_out'"
+set +e
+t6b_out=$(KINGPIN_HOME="$t6b_home" "$KP_BIN/kingpin-wait" --timeout abc 2>&1)
+t6b_exit=$?
+set -e
+[ "$t6b_exit" -ne 0 ] && echo "$t6b_out" | grep -q "^kingpin-wait: " && pass "kingpin-wait bad --timeout exits non-zero with a message" || fail "bad timeout: exit $t6b_exit, out '$t6b_out'"
+t6b_bad="$T/kp-t6b-bad"
+mkdir -p "$t6b_bad"
+echo "not a dir" > "$t6b_bad/tasks"
+set +e
+t6b_out=$(KINGPIN_HOME="$t6b_bad" "$KP_BIN/kingpin-wait" --timeout 1 2>&1)
+t6b_exit=$?
+set -e
+[ "$t6b_exit" -ne 0 ] && echo "$t6b_out" | grep -q "^kingpin-wait: " && pass "kingpin-wait unusable fleet dir exits non-zero with a message" || fail "bad fleet dir: exit $t6b_exit, out '$t6b_out'"
 
 # Test 7: kingpin lock lifecycle
 echo "=== Test 7: kingpin lock lifecycle ==="

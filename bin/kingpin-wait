@@ -12,7 +12,12 @@
 #      again until its status or its pane activity changes (`seen_activity`, written by ack).
 #
 # Outputs: one line per task update: "<task-id> <reason>" (status|quiet|exited)
-# Exit 0 if updates found, 1 on timeout or no updates (--once).
+# Exit codes:
+#   0  events found (lines printed), or the timeout passed with no events
+#      (nothing printed: a quiet fleet is not an error)
+#   1  --once and no events (scripts such as kingpin-watch rely on this), or an
+#      unusable fleet directory (message on stderr)
+#   2  bad arguments (message on stderr)
 #
 # Usage: kingpin-wait [--timeout <seconds>] [--once]
 set -euo pipefail
@@ -23,10 +28,22 @@ ONCE=0
 
 while [ $# -gt 0 ]; do
   case $1 in
-    --timeout) TIMEOUT=${2:?--timeout needs seconds}; shift 2 ;;
+    --timeout)
+      TIMEOUT=${2:-}
+      case $TIMEOUT in
+        ''|*[!0-9]*) echo "kingpin-wait: --timeout needs a whole number of seconds" >&2; exit 2 ;;
+      esac
+      shift 2 ;;
     --once) ONCE=1; shift ;;
     -h|--help)
-      echo "usage: kingpin-wait [--timeout <seconds>] [--once]"
+      cat <<'USAGE'
+usage: kingpin-wait [--timeout <seconds>] [--once]
+
+Prints "<task-id> <reason>" per event.
+Exit 0: events printed, or the timeout passed with no events (prints nothing).
+Exit 1: --once and no events, or the fleet directory is unusable.
+Exit 2: bad arguments.
+USAGE
       exit 0
       ;;
     *) echo "kingpin-wait: unknown argument $1" >&2; exit 2 ;;
@@ -34,7 +51,10 @@ while [ $# -gt 0 ]; do
 done
 
 tasks_dir="$KP_HOME/tasks"
-mkdir -p "$tasks_dir"
+if ! mkdir -p "$tasks_dir" 2>/dev/null || [ ! -d "$tasks_dir" ] || [ ! -r "$tasks_dir" ]; then
+  echo "kingpin-wait: cannot use fleet directory $tasks_dir" >&2
+  exit 1
+fi
 
 # Repeat the guard warning once at startup (stderr, non-fatal, silent when active).
 "$(dirname "$0")/kingpin-guard" warn || true
@@ -216,13 +236,13 @@ while true; do
   now=$(date +%s)
   elapsed=$((now - start_time))
   if [ "$elapsed" -ge "$TIMEOUT" ]; then
-    exit 1
+    exit 0
   fi
 
   remaining=$((TIMEOUT - elapsed))
   step=2
   [ "$remaining" -lt "$step" ] && step="$remaining"
-  [ "$step" -le 0 ] && exit 1
+  [ "$step" -le 0 ] && exit 0
 
   if command -v inotifywait >/dev/null 2>&1; then
     inotifywait -q -r -e modify,create,delete,attrib -t "$step" "$tasks_dir" >/dev/null 2>&1 || true
