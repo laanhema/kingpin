@@ -29,9 +29,38 @@ done
 for t62_l in "ready: b" "needs-input: q" "fixed: high=0" "approved: x" "feedback: x" "issue: #1" ""; do
   kp_status_is_terminal "$t62_l" && fail "t62: '$t62_l' counted as terminal" || pass "t62: '${t62_l%%:*}' is not terminal"
 done
+# The Stop hook's outcome kinds (#102): waiting and silent are read here, not spelled out
+# again by kingpin list, kingpin-wait and the suites.
+for t62_l in "needs-input: q" "feedback: x" "waiting: needs-input q"; do
+  kp_status_is_waiting "$t62_l" && pass "t62: '$t62_l' is waiting" || fail "t62: '$t62_l' not waiting"
+done
+for t62_l in "ready: b" "failed: x" ""; do
+  kp_status_is_waiting "$t62_l" && fail "t62: '$t62_l' counted as waiting" || pass "t62: '$t62_l' is not waiting"
+done
+kp_status_is_silent "failed: no status: stopped without reporting" && pass "t62: the hook's no-status line is silent" || fail "t62: no-status line not silent"
+for t62_l in "failed: something else" "waiting: x" "ready: b" ""; do
+  kp_status_is_silent "$t62_l" && fail "t62: '$t62_l' counted as silent" || pass "t62: '$t62_l' is not silent"
+done
 printf '%s\n' "MODE=review" "HARNESS=agy" "HARNESS=claude" "EMPTY=" "PATH_X=a=b" > "$t62_dir/task.env"
 [ "$(kp_env_get "$t62_dir/task.env" HARNESS)" = "claude" ] && pass "t62: kp_env_get returns the last assignment" || fail "t62: kp_env_get HARNESS = $(kp_env_get "$t62_dir/task.env" HARNESS)"
 [ "$(kp_env_get "$t62_dir/task.env" PATH_X)" = "a=b" ] && [ -z "$(kp_env_get "$t62_dir/task.env" EMPTY)" ] && [ -z "$(kp_env_get "$t62_dir/task.env" NOPE)" ] && [ -z "$(kp_env_get "$t62_dir/nofile" MODE)" ] && pass "t62: kp_env_get handles = in values, empty, absent and missing file" || fail "t62: kp_env_get edge cases"
+# The working-marker list is one function now (#102 review L2), so the three callers
+# cannot disagree about it: every harness, plus the claude subagent line that
+# kingpin-launch-check's own copy used to miss.
+t62_working() { # <harness> <pane-tail> <0 working|1 idle>
+  local got=1
+  kp_pane_shows_working "$2" "$1" && got=0
+  [ "$got" = "$3" ] && pass "t62: '$1' pane working=$3" || fail "t62: '$1' pane working=$got (want $3): $2"
+}
+t62_working claude $'tool output\nWaiting for 2 background agents' 0
+t62_working claude '/tasks to see subagents' 0
+t62_working claude $'$ make test\nok' 1
+t62_working agy $'working\nesc to cancel' 0
+t62_working agy 'Interrupt' 1
+t62_working opencode $'working\nesc to cancel' 0
+t62_working opencode $'working\nInterrupt' 0
+t62_working opencode '$ ls -la' 1
+t62_working unknown 'Waiting for 1 background agent' 1
 # Callers share that answer: a listener note after merged: leaves the task finished for kingpin-wait
 # (a raw last line would report the dead window as exited).
 t62_task=$KINGPIN_HOME/tasks/t62-wait
