@@ -35,6 +35,7 @@ Every page we hand over is prose first: a worker's `report.html` dossier, and a 
 - Run the `unslop` skill over the page, then `bin/kingpin-report check <file>`. A page with no diff section takes `--prose-only`.
 - `check` fails with `<file>:<line>:` and the offending line for the mechanical tells: em dash, "testament to", "it's not just", "delve", "seamless", "in order to", "let me know", "I hope this helps". Fix the line, or put `<!-- unslop:ignore -->` on it when the word is genuinely wanted.
 - The same `check` runs a layout pass over a full page (`*.html` with an `<html>` element) and names the line for a `<pre>` or inline `<code>` with no wrap rule, an `<img>` with no `max-width` rule, a table whose cells have no wrap rule, a grid/flex layout with no `min-width: 0` or `minmax(0, ...)` guard, and a `src`/`href`/`url()` that is an absolute path or climbs out with `..`. The block a worker dossier must carry is in `worker/preamble.md`, and `assets/lavish/noir-dossier/template.html` carries it too.
+- `check` also walks every `<style>` block by brace depth. A declaration at the top level of a block, outside any selector, fails with its line, because the browser's recovery drops the rule that follows it. After parsing, a page that claims `color-scheme: dark` must carry a parsed `background` on `body`, `html` or `:root`. The palette rule is presence only: a gradient, a `var(...)` value and an inline style all count, and a page that claims no dark palette is not asked to paint one.
 - Code blocks, diff output, script and style bodies and HTML attributes are ignored, and style judgement stays with the skill: title-case display headings or a deliberate noir voice in a hand-built page are not slop.
 - `worker/preamble.md` carries the same requirement for workers, and `bin/kingpin-watch` warns when a dossier fails the check.
 
@@ -69,7 +70,10 @@ so no harness binary is needed.
   ignore the file. `kingpin spawn` names every other Kingpin-shaped line there and skips
   the block. Enabling git's `extensions.worktreeConfig`
   is the one repository-config line a spawn writes. `kingpin done` clears the pointer, the
-  files that spawn recorded as injected and the task's exclude file. Pi is the exception:
+  files that spawn recorded as injected and the task's exclude file. A spawn also clears
+  the harness files an earlier task left in the pooled slot when their content proves
+  Kingpin wrote them (`lib/leftover.mjs`), and leaves and names anything else, because the
+  slot is the user's checkout (issue #127). Pi is the exception:
   its extension loads from the checkout by absolute path and it writes no worktree file,
   so a pi spawn records no injected path and needs no exclude file. A config the project
   already tracks

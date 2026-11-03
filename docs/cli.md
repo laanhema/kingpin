@@ -324,6 +324,10 @@ Exit codes: 0 when the binary, credentials and extension are usable, or the cred
 
 `check` exits 1 when a dossier would show blank diffs (`patch:` used, `FileDiff` without `oldFile`/`newFile`, or an empty diff container), and runs a layout pass over a full page: it fails, naming the line, on a `<pre>` or inline `code` with no wrap rule, an `<img>` with no `max-width` rule, a table whose cells have no wrap rule, a grid/flex layout with no `min-width: 0` or `minmax(0, ...)` guard, and a `src`/`href`/`url()` that is an absolute path or climbs out with `..`.
 
+### The stylesheet parse and the palette
+
+Before the layout pass, `check` walks every `<style>` block by brace depth. A declaration at the top level of a block, outside any selector (a bare `color-scheme: dark;` line, for example), is a parse error: the browser drops the rule that follows it, so the check fails naming that line and quoting it. After parsing, a page that claims `color-scheme: dark` must carry a `background` or `background-color` on `body`, `html` or `:root`, from a rule or an inline style, because a transparent body renders white. Presence is the contract, so a gradient, a `var(...)` value or a class on the body all satisfy it. Both passes judge a full page only, like the layout pass.
+
 ### The prose pass
 
 It also runs a prose pass over the page: it fails with `file:line` and the offending line on the mechanical slice of the `unslop` skill (em dash, "testament to", "it's not just", "delve", "seamless", "in order to", "let me know", "I hope this helps"), ignoring code, diff output, script/style bodies and attributes. `<!-- unslop:ignore -->` on a line is the single escape.
