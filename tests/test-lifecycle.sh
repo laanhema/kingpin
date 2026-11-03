@@ -136,4 +136,95 @@ TMUX="/tmp/nonexistent-sock,99999,99999" "$KP_BIN/kingpin" spawn demo-auto --iss
 grep -q "^TMUX_TARGET=kingpin:task-target-fallback$" "$KINGPIN_HOME/tasks/task-target-fallback/task.env" && pass "fallback resolved a valid TMUX_TARGET" || fail "wrong TMUX_TARGET on fallback"
 "$KP_BIN/kingpin" "done" task-target-fallback --force >/dev/null
 
+# Test 6: kingpin run ends instead of polling forever
+echo "=== Test 6: kingpin run ends on needs-input:/waiting: and on a stopped worker ==="
+cat > "$T/fake-runner-needs" << 'FR'
+#!/usr/bin/env bash
+echo "needs-input: which API shape?" >> "$KINGPIN_TASK_DIR/status"
+exec bash
+FR
+chmod +x "$T/fake-runner-needs"
+t6_rc=0
+t6_out=$(KINGPIN_AGY=$T/fake-runner-needs timeout 60 "$KP_BIN/kingpin" run demo-auto --issue 208 --id task-run-needs --mode review 2>&1) || t6_rc=$?
+if [ "$t6_rc" -eq 0 ] && echo "$t6_out" | grep -qF "Question: $KINGPIN_HOME/tasks/task-run-needs/question.md"; then
+  pass "run exits 0 on needs-input: and names the question path"
+else
+  fail "run did not end on needs-input: (rc $t6_rc): $t6_out"
+fi
+"$KP_BIN/kingpin" "done" task-run-needs --force >/dev/null 2>&1 || true
+
+# The Stop hook's line for a worker blocked on a human must end run the same way,
+# naming the question file its kind points at.
+cat > "$T/fake-runner-waiting" << 'FR'
+#!/usr/bin/env bash
+echo "waiting: needs-input $KINGPIN_TASK_DIR/question.md" >> "$KINGPIN_TASK_DIR/status"
+exec bash
+FR
+chmod +x "$T/fake-runner-waiting"
+t6w_rc=0
+t6w_out=$(KINGPIN_AGY=$T/fake-runner-waiting timeout 60 "$KP_BIN/kingpin" run demo-auto --issue 211 --id task-run-waiting --mode review 2>&1) || t6w_rc=$?
+if [ "$t6w_rc" -eq 0 ] && echo "$t6w_out" | grep -qF "OK: task-run-waiting is waiting: needs-input $KINGPIN_HOME/tasks/task-run-waiting/question.md"; then
+  pass "run exits 0 on waiting: and names the task id and question path"
+else
+  fail "run did not end on waiting: (rc $t6w_rc): $t6w_out"
+fi
+"$KP_BIN/kingpin" "done" task-run-waiting --force >/dev/null 2>&1 || true
+
+cat > "$T/fake-runner-dead" << 'FR'
+#!/usr/bin/env bash
+echo "issue: #209" >> "$KINGPIN_TASK_DIR/status"
+FR
+chmod +x "$T/fake-runner-dead"
+t6b_rc=0
+t6b_out=$(KINGPIN_AGY=$T/fake-runner-dead timeout 60 "$KP_BIN/kingpin" run demo-auto --issue 209 --id task-run-dead --mode review 2>&1) || t6b_rc=$?
+if [ "$t6b_rc" -eq 1 ] && echo "$t6b_out" | grep -q "FAILED: task-run-dead exited"; then
+  pass "run exits 1 with the exited reason when the worker stops after issue:"
+else
+  fail "run did not end with exited (rc $t6b_rc): $t6b_out"
+fi
+"$KP_BIN/kingpin" "done" task-run-dead --force >/dev/null 2>&1 || true
+
+# The negative of that exited check: a live window whose only line is issue: keeps
+# run waiting. Kill run after a bounded wait instead of letting a regression hang
+# the suite.
+cat > "$T/fake-runner-live" << 'FR'
+#!/usr/bin/env bash
+echo "issue: #212" >> "$KINGPIN_TASK_DIR/status"
+exec bash
+FR
+chmod +x "$T/fake-runner-live"
+KINGPIN_AGY=$T/fake-runner-live "$KP_BIN/kingpin" run demo-auto --issue 212 --id task-run-live --mode review > "$T/run-live.log" 2>&1 &
+live_pid=$!
+live_alive=0
+for _ in 1 2 3 4 5 6; do
+  sleep 0.5
+  kill -0 "$live_pid" 2>/dev/null || break
+done
+kill -0 "$live_pid" 2>/dev/null && live_alive=1
+kill "$live_pid" 2>/dev/null || true
+wait "$live_pid" 2>/dev/null || true
+if [ "$live_alive" -eq 1 ] && ! grep -q "FAILED:" "$T/run-live.log"; then
+  pass "run keeps waiting on a live worker whose last line is issue:"
+else
+  fail "run left a live issue:-only worker (log: $(cat "$T/run-live.log"))"
+fi
+"$KP_BIN/kingpin" "done" task-run-live --force >/dev/null 2>&1 || true
+
+# The resolved open question: in auto mode the worker is the only process that can
+# finish the landing, so a window that dies after ready: must end run, not wait.
+cat > "$T/fake-runner-auto-dead" << 'FR'
+#!/usr/bin/env bash
+echo "ready: branch=kingpin/task-run-auto-dead review=APPROVE report=none" >> "$KINGPIN_TASK_DIR/status"
+FR
+chmod +x "$T/fake-runner-auto-dead"
+t6c_rc=0
+t6c_out=$(KINGPIN_AGY=$T/fake-runner-auto-dead timeout 60 "$KP_BIN/kingpin" run demo-auto --issue 210 --id task-run-auto-dead --mode auto 2>&1) || t6c_rc=$?
+if [ "$t6c_rc" -eq 1 ] && echo "$t6c_out" | grep -q "FAILED: task-run-auto-dead exited" \
+  && echo "$t6c_out" | grep -q "last status: ready:"; then
+  pass "run reports exited for an auto-mode worker that died after ready:"
+else
+  fail "auto-mode dead worker (rc $t6c_rc): $t6c_out"
+fi
+"$KP_BIN/kingpin" "done" task-run-auto-dead --force >/dev/null 2>&1 || true
+
 kp_test_finish LIFECYCLE
