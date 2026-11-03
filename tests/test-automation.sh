@@ -243,7 +243,10 @@ ack_exit=$?
 set -e
 [ "$ack_exit" -eq 1 ] && [ -z "$out_after_ack" ] && pass "kingpin-wait --once exits 1 with no events after ack" || fail "event printed again after ack"
 
-# Test quiet event
+# Test quiet event (the last status is an acknowledged needs-input, so the pane must show activity first)
+sleep 1.2
+tmux send-keys -t kingpin:test-wait-1 "echo activity" Enter
+sleep 1.2
 now_ts=$(date +%s)
 echo "$now_ts" > "$task_w_dir/stopped"
 quiet_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
@@ -275,6 +278,73 @@ seen_val_all=$(cat "$task_w_dir/seen" 2>/dev/null | tr -d ' ' || echo 0)
 [ "$seen_val_all" -eq 2 ] && pass "kingpin ack --all updated seen to 2" || fail "seen not updated on ack --all"
 
 rm -rf "$task_w_dir"
+
+# Test 6b: kingpin-wait ignores informational lines, holds repeated quiet, spares a launching window
+echo "=== Test 6b: kingpin-wait wake filtering (#45) ==="
+t45_dir="$KINGPIN_HOME/tasks/t45-wait"
+mkdir -p "$t45_dir"
+t45_wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n t45-wait)
+cat > "$t45_dir/task.env" << ENV
+PROJECT=demo-auto
+HARNESS=claude
+MODE=review
+TMUX_TARGET=kingpin:t45-wait
+TMUX_WINDOW_ID=$t45_wid
+ENV
+: > "$t45_dir/status"
+echo 0 > "$t45_dir/seen"
+
+# issue: lines alone do not wake the waiter; the next real line does
+echo "issue: #45 https://example/45" >> "$t45_dir/status"
+set +e; t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null); t45_rc=$?; set -e
+[ "$t45_rc" -eq 1 ] && [ -z "$t45_out" ] && pass "t45: a lone issue: line does not wake kingpin-wait" || fail "t45: issue: line woke the waiter (rc=$t45_rc out=$t45_out)"
+echo "ready: branch=b review=APPROVE report=r" >> "$t45_dir/status"
+t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$t45_out" | grep -q "^t45-wait status" && pass "t45: ready: after an issue: line still wakes" || fail "t45: ready: did not wake ($t45_out)"
+for t45_line in "needs-input: q" "fixed: high=0 report=r" "merged: pr=u" "cleanup-refused: x" "approved: x" "feedback: x"; do
+  : > "$t45_dir/status"; echo 0 > "$t45_dir/seen"
+  echo "$t45_line" >> "$t45_dir/status"
+  "$KP_BIN/kingpin" wait --once 2>/dev/null | grep -q "^t45-wait status" && pass "t45: '${t45_line%%:*}:' wakes" || fail "t45: '${t45_line%%:*}:' did not wake"
+done
+
+# An acknowledged needs-input is not reported quiet again until the pane changes
+: > "$t45_dir/status"; echo 0 > "$t45_dir/seen"; rm -f "$t45_dir/stopped" "$t45_dir/seen_stopped"
+echo "needs-input: q" >> "$t45_dir/status"
+"$KP_BIN/kingpin" ack t45-wait
+[ -s "$t45_dir/seen_activity" ] && pass "t45: ack records the pane activity" || fail "t45: ack wrote no seen_activity"
+sleep 1.2
+date +%s > "$t45_dir/stopped"
+set +e; t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null); t45_rc=$?; set -e
+[ "$t45_rc" -eq 1 ] && [ -z "$t45_out" ] && pass "t45: acked needs-input is not reported quiet" || fail "t45: quiet repeated after needs-input ($t45_out)"
+tmux send-keys -t "$t45_wid" "echo t45-activity" Enter
+sleep 1.2
+echo $(( $(date +%s) + 1 )) > "$t45_dir/stopped"
+t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$t45_out" | grep -q "^t45-wait quiet" && pass "t45: quiet returns once the pane shows activity" || fail "t45: quiet not reported after pane activity ($t45_out)"
+# A pane that still lists background subagents is not quiet
+tmux send-keys -t "$t45_wid" "echo '/tasks to see subagents'" Enter
+sleep 1.2
+tmux clear-history -t "$t45_wid" 2>/dev/null || true
+echo $(( $(date +%s) + 5 )) > "$t45_dir/stopped"
+t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$t45_out" | grep -q "^t45-wait quiet" && fail "t45: quiet reported while subagents run" || pass "t45: a pane with background subagents is not quiet"
+"$KP_BIN/kingpin" ack t45-wait
+echo "needs-input: again" >> "$t45_dir/status"
+"$KP_BIN/kingpin" wait --once 2>/dev/null | grep -q "^t45-wait status" && pass "t45: a new status line wakes after a hold" || fail "t45: new status did not wake"
+
+# A window that is still being created is not exited; a gone window still is
+"$KP_BIN/kingpin" ack t45-wait
+tmux kill-window -t "$t45_wid"
+sleep 0.2
+: > "$t45_dir/launching"
+set +e; t45_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null); t45_rc=$?; set -e
+[ "$t45_rc" -eq 1 ] && [ -z "$t45_out" ] && pass "t45: a launching task is not reported exited" || fail "t45: launching task reported ($t45_out)"
+touch -d '10 minutes ago' "$t45_dir/launching"
+"$KP_BIN/kingpin" wait --once 2>/dev/null | grep -q "^t45-wait exited" && pass "t45: a stale launching marker no longer hides a gone window" || fail "t45: stale marker hid exited"
+rm -f "$t45_dir/launching"
+"$KP_BIN/kingpin" wait --once 2>/dev/null | grep -q "^t45-wait exited" && pass "t45: a gone window is exited" || fail "t45: gone window not reported"
+rm -rf "$t45_dir"
+
 
 # Test 7: kingpin lock lifecycle
 echo "=== Test 7: kingpin lock lifecycle ==="
@@ -1389,6 +1459,7 @@ grep -qx "TMUX_TARGET=kingpin:$t17_id" "$t17_env" && pass "t17: TMUX_TARGET is k
 tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "$t17_id" && pass "t17: tmux window is named $t17_id" || fail "t17: window name wrong"
 t17_wt=$(sed -n 's/^WORKTREE=//p' "$t17_env")
 [ "$(git -C "$t17_wt" branch --show-current)" = "kingpin/$t17_id" ] && pass "t17: worktree is on kingpin/$t17_id" || fail "t17: worktree branch wrong"
+[ ! -e "$KINGPIN_HOME/tasks/$t17_id/launching" ] && grep -q '^TMUX_WINDOW_ID=' "$t17_env" && pass "t45: spawn removes the launching marker" || fail "t45: launching marker left behind"
 "$KP_BIN/kingpin" send "$t17_id" "echo t17-ok" | grep -q "OK: sent to kingpin:$t17_id" && pass "t17: kingpin send reaches the slugged window" || fail "t17: kingpin send failed"
 "$KP_BIN/kingpin" done "$t17_id" --force >/dev/null
 ! tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "$t17_id" && [ ! -d "$KINGPIN_HOME/tasks/$t17_id" ] && pass "t17: kingpin done closed and archived the slugged task" || fail "t17: kingpin done left the task behind"

@@ -124,6 +124,8 @@ kingpin list
 
 When a task finishes in `review` mode, `kingpin list` displays its review dossier link directly below the task row.
 
+`kingpin wait` wakes the orchestrator only for events that need action: a new status line other than the informational `issue:` line, a worker that stopped (`quiet`), or a window that is gone (`exited`). A worker whose last acknowledged status is `needs-input:` is not reported `quiet` again until its status or pane activity changes, and a task that `kingpin spawn` is still launching (its `launching` marker is fresh) is not reported `exited`.
+
 To see why a worker is quiet or stuck, look at the tail of its pane without touching it:
 
 ```bash
