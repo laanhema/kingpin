@@ -41,6 +41,8 @@ env_file="$task_dir/task.env"
 project=$(kp_env_get "$env_file" PROJECT)
 issue=$(kp_env_get "$env_file" ISSUE)
 worktree=$(kp_env_get "$env_file" WORKTREE)
+harness=$(kp_env_get "$env_file" HARNESS)
+[ -n "$harness" ] || harness=claude
 [ -n "$project" ] || project="default"
 
 status_file="$task_dir/status"
@@ -81,10 +83,12 @@ if [[ $last_status =~ ^fixed: ]]; then
     # The outcome line is the last stdout line: kingpin-send's own "OK" line is
     # silenced, because kingpin-listen shows the last line to the reviewer.
     echo "kingpin-land: task $id fix pass left $high High/Critical finding(s): not landing yet, requesting a re-review (/review); run kingpin land again once the worker reports ready:"
+    # The send names the command the worker's harness expands (issue #93): a pi
+    # worker has no plain /review, only /skill:review.
     if [ -n "$issue" ]; then
-      "$KP_BIN/kingpin-send" "$id" "/review --issue $issue" >/dev/null
+      "$KP_BIN/kingpin-send" "$id" "$(kp_skill_command "$harness" review --issue "$issue")" >/dev/null
     else
-      "$KP_BIN/kingpin-send" "$id" "/review" >/dev/null
+      "$KP_BIN/kingpin-send" "$id" "$(kp_skill_command "$harness" review)" >/dev/null
     fi
     exit 0
   fi
@@ -109,9 +113,9 @@ else
       echo "kingpin-land: task $id review has findings ($verdict): running the fix pass first (/fix-findings), not landing yet; landing continues after the worker reports fixed: (kingpin watch does it, or run kingpin land again)"
       touch "$task_dir/landing_in_progress"
       if [ -n "$resolved_report" ]; then
-        "$KP_BIN/kingpin-send" "$id" "/fix-findings $resolved_report" >/dev/null
+        "$KP_BIN/kingpin-send" "$id" "$(kp_skill_command "$harness" fix-findings "$resolved_report")" >/dev/null
       else
-        "$KP_BIN/kingpin-send" "$id" "/fix-findings" >/dev/null
+        "$KP_BIN/kingpin-send" "$id" "$(kp_skill_command "$harness" fix-findings)" >/dev/null
       fi
       exit 0
       ;;
@@ -173,11 +177,13 @@ if [ "$acquire_rc" -eq 1 ]; then
 fi
 touch "$task_dir/landing_sent"
 
+# The echoed message keeps the plain skill name (it is prose for the operator); the
+# wire command follows the worker's harness through kp_skill_command.
 if [ -n "$issue" ]; then
-  land_cmd="/issue-flow-done $issue"
+  land_cmd=$(kp_skill_command "$harness" issue-flow-done "$issue")
   started_msg="kingpin-land: task $id: $landing_reason; starting landing (sending /issue-flow-done $issue)"
 else
-  land_cmd="/create-pr-merge"
+  land_cmd=$(kp_skill_command "$harness" create-pr-merge)
   started_msg="kingpin-land: task $id: $landing_reason; starting landing (no issue number found, sending /create-pr-merge)"
 fi
 # Printed only once the send reached the worker: kingpin-listen answers a dossier

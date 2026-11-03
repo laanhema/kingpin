@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verification test for Kingpin: a worker's stop always leaves an outcome (issue #102).
 #
-# Covers the shared Stop hook (bin/kingpin-stop) in all three harnesses, the
+# Covers the shared Stop hook (bin/kingpin-stop) in all four harnesses, the
 # failed:/waiting: lines it appends, the fail-soft contract, and the STATE column of
 # `kingpin list`.
 set -euo pipefail
@@ -135,9 +135,11 @@ run_claude_stop "$d"
 [ "$(wc -l < "$d/status" | tr -d ' ')" = "2" ] && pass "a second waiting stop adds no duplicate waiting line" || fail "duplicate waiting lines: $(cat "$d/status")"
 
 # Test 3b: a stop with background agents still running is not a failure, in every
-# harness (review L3). Each harness marks a live turn or a background agent
-# differently, and a wrong pattern silently brings the false failure line back.
-echo "=== Test 3b: a working pane is not marked failed (all three harnesses) ==="
+# harness that has them (review L3). Each harness marks a live turn or a background
+# agent differently, and a wrong pattern silently brings the false failure line back.
+# Pi is not in this loop: it has no background agents and its extension runs this hook
+# before the TUI repaints, so its pane marker is never the stop decision (Test 3c).
+echo "=== Test 3b: a working pane is not marked failed (claude, agy, opencode) ==="
 for h in claude agy opencode; do
   case "$h" in
     claude)
@@ -168,6 +170,31 @@ for h in claude agy opencode; do
   run_claude_stop "$d"
   grep -qx 'failed: no status: stopped without reporting' "$d/status" && pass "$h: the next stop after the marker clears is marked failed" || fail "$h: no failed line after the marker cleared: $(cat "$d/status")"
 done
+
+# Test 3c: a pi pane still showing the working rule does not hold back the outcome line
+# (issue #93 review, H4). The extension runs kingpin-stop from `agent_settled`, before
+# Pi repaints, so the rule is visible while the turn is already over; gating on it
+# would drop the failed: line every silent pi turn.
+echo "=== Test 3c: a pi working pane still gets the failed line ==="
+pi_wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n kp102-working-pi \
+  'printf "── ⠏ Working ─────────────────────────\n"; exec bash')
+[ -n "$pi_wid" ] && pass "working-marker window created (pi, $pi_wid)" || fail "could not create the working-marker window (pi)"
+for _ in $(seq 1 30); do
+  tmux capture-pane -pt "$pi_wid" 2>/dev/null | grep -qF '── ⠏ Working' && break
+  sleep 0.1
+done
+d=$(mk_task kp102-working-pi pi "$pi_wid")
+run_claude_stop "$d"
+grep -qx 'failed: no status: stopped without reporting' "$d/status" \
+  && pass "pi: a working pane still gets the failed line" || fail "pi: working pane held back the failed line: $(cat "$d/status")"
+[ -s "$d/stopped" ] && pass "pi: the stop is still recorded" || fail "pi: no stopped marker"
+# The shared marker list still covers pi for kingpin-wait and kingpin-launch-check,
+# whose pane is live, so the exemption above is the stop hook's alone.
+# shellcheck source=../lib/status.sh
+. "$KP_ROOT/lib/status.sh"
+kp_pane_shows_working '── ⠏ Working ─────────────────────────' pi \
+  && pass "pi: the shared marker list still recognizes the working rule" || fail "pi: the shared marker list lost the pi arm"
+tmux kill-window -t "$pi_wid" 2>/dev/null || true
 
 # Test 4: the hook fails soft
 echo "=== Test 4: the hook fails soft ==="
@@ -217,14 +244,14 @@ printf 'waiting: needs-input /some/question.md\n' > "$d/status"
 watch_out=$("$KP_BIN/kingpin-watch" --once 2>/dev/null || true)
 grep -q "\[kingpin-watch\] kp102-watch is waiting: needs-input /some/question.md" <<< "$watch_out" && pass "kingpin-watch reports a waiting task" || fail "no waiting event from watch: $watch_out"
 
-# Test 6: the hook is wired into all three harnesses
-echo "=== Test 6: all three harnesses ==="
+# Test 6: the hook is wired into all four harnesses
+echo "=== Test 6: all four harnesses ==="
 cat > "$T/kp102-harness" << 'H'
 #!/usr/bin/env bash
 exec bash
 H
 chmod +x "$T/kp102-harness"
-export KINGPIN_CLAUDE=$T/kp102-harness KINGPIN_AGY=$T/kp102-harness KINGPIN_OPENCODE=$T/kp102-harness
+export KINGPIN_CLAUDE=$T/kp102-harness KINGPIN_AGY=$T/kp102-harness KINGPIN_OPENCODE=$T/kp102-harness KINGPIN_PI=$T/kp102-harness
 
 # Claude Code: the tracked settings file runs the shared helper
 grep -q 'kingpin-stop' "$KP_ROOT/worker/hooks.json" && pass "claude Stop hook runs kingpin-stop" || fail "claude Stop hook does not run kingpin-stop"
@@ -261,6 +288,21 @@ const plugin = await mod.KingpinStop();
 await plugin.event({ event: { type: "session.idle" } });
 '
 grep -qx 'failed: no status: stopped without reporting' "$d/status" && pass "opencode: a silent stop leaves the failed line" || fail "opencode silent stop: $(cat "$d/status")"
+
+# Pi: the launcher loads the checkout extension, which runs kingpin-stop on agent_settled.
+"$KP_BIN/kingpin-spawn" demo-auto --issue 102 --id kp102-pi --harness pi >/dev/null
+d="$KINGPIN_HOME/tasks/kp102-pi"
+grep -q 'worker/pi/kingpin-harness.ts' "$d/launch.sh" && pass "pi launcher loads the extension that runs kingpin-stop" || fail "pi launcher does not load the extension"
+grep -q '^export KINGPIN_ROOT=' "$d/launch.sh" && pass "pi launcher exports KINGPIN_ROOT for the extension" || fail "pi launcher does not export KINGPIN_ROOT"
+: > "$d/status"
+rm -f "$d/stopped"
+PI_MODULE="file://$KP_ROOT/lib/pi-harness.mjs" KINGPIN_TASK_DIR=$d KINGPIN_ROOT=$KP_ROOT node --input-type=module -e '
+const { registerPiHarness } = await import(process.env.PI_MODULE);
+const api = { handlers: {}, on(event, handler) { this.handlers[event] = handler; } };
+registerPiHarness(api, process.env);
+await api.handlers.agent_settled({}, {});
+'
+grep -qx 'failed: no status: stopped without reporting' "$d/status" && pass "pi: a silent stop leaves the failed line" || fail "pi silent stop: $(cat "$d/status")"
 
 tmux kill-window -t "$probe_wid" 2>/dev/null || true
 

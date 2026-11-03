@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Initialize or update a project configuration for Kingpin.
 #
-# Usage: kingpin-init [project_name] [repo_path] [--harness <claude|agy|opencode>] [--setup "<cmd>"]
+# Usage: kingpin-init [project_name] [repo_path] [--harness <claude|agy|opencode|pi>] [--setup "<cmd>"]
 #
 # If project_name and repo_path are omitted, detects the git repository in the
 # current working directory.
@@ -18,7 +18,7 @@ while [ $# -gt 0 ]; do
     --harness) harness=${2:?--harness needs a value}; shift 2 ;;
     --setup) setup=${2:?--setup needs a command}; shift 2 ;;
     -h|--help)
-      echo "usage: kingpin-init [project_name] [repo_path] [--harness claude|agy|opencode] [--setup \"<cmd>\"]"
+      echo "usage: kingpin-init [project_name] [repo_path] [--harness claude|agy|opencode|pi] [--setup \"<cmd>\"]"
       exit 0
       ;;
     -*) die "unknown option: $1" ;;
@@ -36,8 +36,8 @@ while [ $# -gt 0 ]; do
 done
 
 case $harness in
-  ''|claude|agy|opencode) ;;
-  *) die "unsupported harness: $harness (must be claude, agy, or opencode)" ;;
+  ''|claude|agy|opencode|pi) ;;
+  *) die "unsupported harness: $harness (must be claude, agy, opencode, or pi)" ;;
 esac
 
 if [ -z "$path" ]; then

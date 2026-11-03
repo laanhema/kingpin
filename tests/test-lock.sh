@@ -144,6 +144,44 @@ KINGPIN_LOCK_PID=$holder_pid "$KP_BIN/kingpin" lock release >/dev/null
 [ ! -f "$lock_file" ] && [ -z "$("$KP_BIN/kingpin" lock harness)" ] && pass "release clears the recorded harness" || fail "harness survived release"
 stop_holder
 
+# --harness pi, the env override, a process named pi, and the npm package argv
+"$KP_BIN/kingpin" lock release >/dev/null
+start_holder "A=1" --harness pi
+[ "$("$KP_BIN/kingpin" lock status)" = "lock: held by pid $holder_pid (pi)" ] && pass "--harness pi recorded and shown in status" || fail "status: $("$KP_BIN/kingpin" lock status)"
+[ "$("$KP_BIN/kingpin" lock harness)" = "pi" ] && pass "lock harness prints pi for a live holder" || fail "harness: $("$KP_BIN/kingpin" lock harness)"
+stop_holder
+
+"$KP_BIN/kingpin" lock release >/dev/null
+start_holder "KINGPIN_HARNESS=pi"
+[ "$("$KP_BIN/kingpin" lock harness)" = "pi" ] && pass "KINGPIN_HARNESS=pi recorded" || fail "env override: $("$KP_BIN/kingpin" lock harness)"
+stop_holder
+
+mkdir -p "$T/pi-holder"
+cat > "$T/pi-holder/pi" << F
+#!/usr/bin/env bash
+"$KP_BIN/kingpin" lock acquire >/dev/null 2>&1
+sleep 30
+F
+chmod +x "$T/pi-holder/pi"
+"$T/pi-holder/pi" &
+holder_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ "$(head -n 1 "$lock_file" 2>/dev/null)" = "$holder_pid" ] && break
+  sleep 0.1
+done
+[ "$("$KP_BIN/kingpin" lock harness)" = "pi" ] && pass "session process named pi detected as pi" || fail "process detection: $("$KP_BIN/kingpin" lock harness)"
+stop_holder
+
+# The npm entry point is pi even though the process itself is called node.
+bash -c 'exec -a "node /x/node_modules/@earendil-works/pi-coding-agent/dist/cli.js" sleep 30' &
+npm_pid=$!
+sleep 0.2
+KINGPIN_LOCK_PID=$npm_pid "$KP_BIN/kingpin" lock acquire >/dev/null
+[ "$("$KP_BIN/kingpin" lock harness)" = "pi" ] && pass "the pi npm package path is detected as pi" || fail "npm argv detection: $("$KP_BIN/kingpin" lock harness)"
+KINGPIN_LOCK_PID=$npm_pid "$KP_BIN/kingpin" lock release >/dev/null
+kill "$npm_pid" 2>/dev/null || true
+wait "$npm_pid" 2>/dev/null || true
+
 # Test 7c: parallel acquire attempts race for the lock; exactly one wins
 echo "=== Test 7c: parallel acquire race ==="
 "$KP_BIN/kingpin" lock release >/dev/null
