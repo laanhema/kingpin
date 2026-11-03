@@ -9,7 +9,7 @@ each task back as a visual review dossier. This file describes the repository.
 | Path | What it holds |
 |---|---|
 | `bin/` | One executable per command (`kingpin-spawn`, `kingpin-guard`, `kingpin-wait`, ...), plus `bin/kingpin`, the dispatcher that maps `kingpin <cmd>` to them |
-| `lib/` | Shared helpers: `status.sh` (the status-file protocol, sourced by the scripts), `landing.sh`, and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, ...) |
+| `lib/` | Shared helpers: `status.sh` (the status-file protocol, sourced by the scripts), `landing.sh`, `supervisor.sh` (the fleet supervisor's pidfile, sourced by `kingpin-watch`, `kingpin-lock` and `kingpin list`), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, ...) |
 | `worker/` | `preamble.md`, the text a spawned worker receives, and `hooks.json`, its Claude Code settings |
 | `orchestrator/contract.md` | The orchestrator contract. `kingpin guard install` copies it into the main checkout's untracked instruction sources; no harness loads this tracked file directly |
 | `tests/` | One shell suite per feature, with shared setup in `tests/lib.sh` |

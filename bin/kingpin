@@ -26,6 +26,8 @@ KP_BIN=$(cd "$(dirname "$0")" && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$KP_BIN/../lib/status.sh"
+# shellcheck source=../lib/supervisor.sh
+. "$KP_BIN/../lib/supervisor.sh"
 
 usage() {
   cat << 'HELP'
@@ -37,7 +39,7 @@ Commands:
   init      Configure a project (auto-detects git directory if omitted)
   spawn     Start a worker in a leased worktree on a background tmux window
   run       Start a worker and follow it to completion / review
-  watch     Run the continuous fleet supervision and auto-landing loop
+  watch     Run the fleet supervisor (one per fleet; refuses a second copy)
   land      Land a ready worker; when its review has findings, run the fix pass first (alias: approve)
   done      Verify merge, release worktree lease, and advance queue
   send      Send input or approval keys to a worker
@@ -120,6 +122,8 @@ case "$cmd" in
         -h|--help)
           echo "usage: kingpin list [--all]"
           echo "  Lists live fleet tasks; --all also shows finished (archived) tasks."
+          echo "  Always prints a 'Supervisor: running (pid N, since HH:MM)' line, or"
+          echo "  'Supervisor: none - run kingpin watch' when no fleet supervisor runs."
           exit 0
           ;;
         *) echo "kingpin list: unknown argument '$arg'" >&2; exit 2 ;;
@@ -175,18 +179,20 @@ case "$cmd" in
 
     if [ ${#live_dirs[@]} -eq 0 ] && [ ${#archived_dirs[@]} -eq 0 ]; then
       echo "No tasks in fleet."
-      exit 0
+    else
+      printf "%-22s %-10s %-8s %-12s %s\n" "TASK ID" "PROJECT" "HARNESS" "MODE" "LAST STATUS"
+      printf "%-22s %-10s %-8s %-12s %s\n" "-------" "-------" "-------" "----" "-----------"
+      for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
+        suffix=""
+        [ -f "$d/done_cleaned" ] && suffix=" (finished)"
+        print_task_row "$d" "$suffix"
+      done
+      for d in ${archived_dirs[@]+"${archived_dirs[@]}"}; do
+        print_task_row "$d" " (archived)"
+      done
     fi
-    printf "%-22s %-10s %-8s %-12s %s\n" "TASK ID" "PROJECT" "HARNESS" "MODE" "LAST STATUS"
-    printf "%-22s %-10s %-8s %-12s %s\n" "-------" "-------" "-------" "----" "-----------"
-    for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
-      suffix=""
-      [ -f "$d/done_cleaned" ] && suffix=" (finished)"
-      print_task_row "$d" "$suffix"
-    done
-    for d in ${archived_dirs[@]+"${archived_dirs[@]}"}; do
-      print_task_row "$d" " (archived)"
-    done
+    # Whether anyone is watching the fleet, and how to start a supervisor when not.
+    printf "\n%s\n" "$(kp_supervisor_line "$KP_HOME")"
     lock_line=$("$KP_BIN/kingpin-lock" status 2>/dev/null || true)
     case "$lock_line" in
       "lock: held"*) printf "\nOrchestrator %s (new workers default to its harness)\n" "$lock_line" ;;
