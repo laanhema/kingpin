@@ -8,11 +8,14 @@
 #
 # The turn boundary is the previous `stopped` file. A status file that is newer than
 # it was written during this turn (bash's -nt compares mtimes, so the protocol needs
-# no new state file). The first stop has no boundary yet and the whole session is one
-# turn, so any worker event counts as a report.
+# no new state file). kingpin-listen moves that boundary when it appends a note, so
+# a listener note never passes for the worker's report. The first stop has no
+# boundary yet and the whole session is one turn, so any worker event counts as a
+# report.
 #
 #   no status this turn, last line needs-input:/feedback:  -> waiting: <kind> <path>
-#   no status this turn, anything else                     -> failed: no status: stopped without reporting
+#   no status this turn, anything else, pane idle          -> failed: no status: stopped without reporting
+#   no status this turn, pane still shows a working marker -> left untouched (background agents run)
 #   a status was written this turn                         -> left untouched
 #
 # A stop hook that fails must not trap the session: every write is best effort, a
@@ -36,6 +39,37 @@ stopped_file="$task_dir/stopped"
 now=$(date +%s)
 
 warn() { echo "kingpin-stop: $*" >&2; }
+
+# The Stop hook also fires while background agents still run (its harness has
+# nothing to wait for once the foreground turn ends). kingpin-wait and
+# kingpin-launch-check handle the same case by inspecting the pane, so this helper
+# keeps that marker list, the one in kingpin-wait's `quiet` check: a pane that
+# shows a marker is still working, and a missing line is not a failure yet.
+# Keep the patterns in step with bin/kingpin-wait:176.
+pane_is_working() {
+  local env_file="$task_dir/task.env"
+  [ -f "$env_file" ] || return 1
+  local target window_id harness pane_tail
+  target=$(kp_env_get "$env_file" TMUX_TARGET)
+  window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
+  [ -n "$window_id" ] && target=$window_id
+  [ -n "$target" ] || target="kingpin:$(basename "$task_dir")"
+  harness=$(kp_env_get "$env_file" HARNESS)
+  [ -n "$harness" ] || harness=claude
+  pane_tail=$(tmux capture-pane -pt "$target" -S -30 2>/dev/null) || return 1
+  case "$harness" in
+    claude)
+      printf '%s\n' "$pane_tail" | grep -qE 'Waiting for [0-9]+ background agent|Background agent|/tasks to see subagents'
+      ;;
+    agy)
+      printf '%s\n' "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel'
+      ;;
+    opencode)
+      printf '%s\n' "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel|Interrupt'
+      ;;
+    *) return 1 ;;
+  esac
+}
 
 last=$(kp_status_last "$status_file")
 newest=$(kp_status_newest "$status_file")
@@ -65,8 +99,12 @@ else
       printf '%s\n' "waiting: $kind $path" 2>/dev/null >> "$status_file" \
         || warn "cannot append the waiting line to $status_file"
     else
-      printf '%s\n' 'failed: no status: stopped without reporting' 2>/dev/null >> "$status_file" \
-        || warn "cannot append the missing status to $status_file"
+      if pane_is_working; then
+        :
+      else
+        printf '%s\n' 'failed: no status: stopped without reporting' 2>/dev/null >> "$status_file" \
+          || warn "cannot append the missing status to $status_file"
+      fi
     fi
   fi
 fi

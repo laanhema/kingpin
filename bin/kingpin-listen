@@ -118,7 +118,14 @@ LAVISH_PATH=$(command -v "$LAVISH_CMD")
 PROMPTS_MJS="$KP_BIN/../lib/lavish-prompts.mjs"
 
 # Listener notes in the status file wake the orchestrator (kingpin-wait).
-note() { printf '%s\n' "$1" >> "$task_dir/status"; }
+# A note is the listener's, not the worker's report, so it must not move the Stop
+# hook's turn boundary: a worker that stops silently after a note would look as if
+# it had reported. Only the mtime changes here; kingpin-wait, kingpin-launch-check
+# and kingpin-ack read the file's contents, so the boundary value is untouched.
+note() {
+  printf '%s\n' "$1" >> "$task_dir/status"
+  [ ! -f "$task_dir/stopped" ] || touch "$task_dir/stopped"
+}
 reply() { "$LAVISH_CMD" reply "$task_dir/report.html" --agent-reply "$1" >/dev/null 2>&1 || true; }
 
 
