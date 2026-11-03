@@ -192,8 +192,15 @@ warn_shared_excludes() {
 }
 
 if [ -n "$SETUP_CMD" ]; then
-  (cd "$worktree" && bash -c "$SETUP_CMD") > "$task_dir/setup.log" 2>&1 \
-    || die "setup failed in $worktree; see $task_dir/setup.log"
+  if ! (cd "$worktree" && bash -c "$SETUP_CMD") > "$task_dir/setup.log" 2>&1; then
+    # The cleanup trap deletes $task_dir on a failed spawn, so a message that says "see
+    # setup.log" would point at a file that is gone by the time the operator reads it (issue
+    # #81). Stream the captured output with a prefix, then die without naming a path.
+    while IFS= read -r line || [ -n "$line" ]; do
+      printf 'kingpin-spawn: setup: %s\n' "$line" >&2
+    done < "$task_dir/setup.log"
+    die "setup failed in $worktree; the command's own output is above"
+  fi
 fi
 
 if [ -n "$issue" ]; then

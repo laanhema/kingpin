@@ -2,61 +2,14 @@
 # Full acceptance test: 3 parallel workers, separate worktrees, serial landing, clean teardown.
 set -euo pipefail
 
-unset TMUX
-export KINGPIN_SKIP_GUARD=1
-# CI runners have no global git identity
-export GIT_AUTHOR_NAME=kingpin-test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=kingpin-test GIT_COMMITTER_EMAIL=test@example.com
+# shellcheck source=lib.sh
+. "$(dirname "$0")/lib.sh"
+kp_test_setup "acceptance"
 
-T=$(mktemp -d)
-export KINGPIN_HOME=$T/kp
-export TREEHOUSE_ROOT=$T/pool
-export CLAUDE_CONFIG_DIR=$T/cfg
-
-mkdir -p "$T/cfg" "$KINGPIN_HOME/projects" "$KINGPIN_HOME/tasks"
-echo '{"projects":{}}' > "$T/cfg/.claude.json"
-
-pass() { echo "PASS: $*"; }
-fail() { echo "FAIL: $*"; FAILED=1; }
-FAILED=0
-
-KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-KP_BIN="$KP_ROOT/bin"
-
-# Set up isolated private tmux server on a temporary socket
-export TMUX_TMPDIR="$T/tmux-tmp"
-mkdir -p "$TMUX_TMPDIR" "$T/bin"
-TEST_SOCKET="kingpin-test-acceptance-$$"
-REAL_TMUX=$(command -v tmux)
-cat > "$T/bin/tmux" << EOF
-#!/usr/bin/env bash
-exec "$REAL_TMUX" -L "$TEST_SOCKET" "\$@"
-EOF
-chmod +x "$T/bin/tmux"
-export PATH="$T/bin:$PATH"
-
-cleanup() {
-  [ -f "$T/kingpin-send.orig" ] && cp -p "$T/kingpin-send.orig" "$KP_BIN/kingpin-send" || true
-  "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
-  rm -rf "$T"
-}
-trap cleanup EXIT
-
-# 1. Set up test repo with origin remote
-git init -q --bare "$T/origin.git"
-git clone -q "$T/origin.git" "$T/proj" 2>/dev/null
-(
-  cd "$T/proj"
-  git checkout -q -b main
-  echo "initial code" > app.txt
-  git add app.txt
-  git commit -qm "init"
-  git push -q -u origin main
-  git remote set-head origin main
-)
-
+# The project is the scratch repo kp_test_setup made; no setup command for these spawns.
 printf 'PROJECT_PATH=%q\nSETUP_CMD=%q\n' "$T/proj" "" > "$KINGPIN_HOME/projects/demo.env"
 
-# 2. Fake worker script that simulates /issue-flow and /issue-flow-done
+# 1. Fake worker script that simulates /issue-flow and /issue-flow-done
 cat > "$T/fake-claude" <<'F'
 #!/usr/bin/env bash
 set -eu
@@ -92,10 +45,9 @@ F
 chmod +x "$T/fake-claude"
 export KINGPIN_CLAUDE=$T/fake-claude
 
-tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
 tmux display-message -p '#{socket_path}' | grep -q "$TEST_SOCKET" && pass "test operates on private tmux socket" || fail "test socket not isolated"
 
-# 3. Spawn 3 parallel tasks
+# 2. Spawn 3 parallel tasks
 echo "Spawning 3 parallel tasks..."
 "$KP_BIN/kingpin-spawn" demo --issue 10 --id demo-alpha >/dev/null
 "$KP_BIN/kingpin-spawn" demo --issue 20 --id demo-beta >/dev/null
@@ -109,11 +61,11 @@ for id in demo-alpha demo-beta demo-gamma; do
   grep -q "^ready:" "$KINGPIN_HOME/tasks/$id/status" && pass "$id reported ready" || fail "$id not ready"
 done
 
-# 4. Check kingpin list with 3 ready tasks
+# 3. Check kingpin list with 3 ready tasks
 list_out=$("$KP_BIN/kingpin" list)
 echo "$list_out" | grep -q "demo-alpha" && echo "$list_out" | grep -q "demo-beta" && echo "$list_out" | grep -q "demo-gamma" && pass "all 3 tasks present in kingpin list" || fail "tasks missing from kingpin list"
 
-# 5. Land demo-alpha, demo-beta, demo-gamma
+# 4. Land demo-alpha, demo-beta, demo-gamma
 # Override kingpin-send to write landed_signal for fake-claude (backup keeps uncommitted edits of the real script)
 cp -p "$KP_BIN/kingpin-send" "$T/kingpin-send.orig"
 cat > "$KP_BIN/kingpin-send" <<'S'
@@ -135,7 +87,7 @@ pass "demo-alpha landing initiated"
 grep -qx "demo-beta" "$KINGPIN_HOME/projects/demo.landing_queue" && pass "demo-beta queued" || fail "beta not queued"
 grep -qx "demo-gamma" "$KINGPIN_HOME/projects/demo.landing_queue" && pass "demo-gamma queued" || fail "gamma not queued"
 
-# 6. Let demo-alpha finish its landing, then kingpin-done demo-alpha.
+# 5. Let demo-alpha finish its landing, then kingpin-done demo-alpha.
 # Each worker merges only after the test says so, so the queue assertions above
 # and the handoff below are deterministic rather than racing the worker.
 merged_in() { # <task-id>: wait up to ~10 s for the worker's merged: line
@@ -168,7 +120,7 @@ merged_in demo-gamma && pass "demo-gamma merged" || fail "gamma not merged"
 "$KP_BIN/kingpin-done" demo-gamma >/dev/null
 pass "demo-gamma cleaned up"
 
-# 7. Final assertions on repository and treehouse pool
+# 6. Final assertions on repository and treehouse pool
 git -C "$T/proj" fetch origin main >/dev/null 2>&1
 git -C "$T/proj" checkout -q main
 git -C "$T/proj" pull -q origin main
@@ -177,16 +129,36 @@ git -C "$T/proj" pull -q origin main
 [ -f "$T/proj/feature-demo-beta.txt" ] && pass "feature-demo-beta merged to main" || fail "beta feature missing on main"
 [ -f "$T/proj/feature-demo-gamma.txt" ] && pass "feature-demo-gamma merged to main" || fail "gamma feature missing on main"
 
-# Assert all treehouse slots were returned
-leased_count=$( (cd "$T/proj" && treehouse status 2>/dev/null | grep -c leased || true) )
-[ "$leased_count" -eq 0 ] && pass "all treehouse leases returned clean" || fail "lingering leases: $leased_count"
+# Assert all treehouse slots were returned. A `treehouse status` that fails must not read
+# as a clean pool: `grep -c leased` prints 0 and exits 0 on empty input, which is how this
+# assertion stayed green while slots were still leased (issue #81).
+leased_count() { # <repo>: print the leased slot count; non-zero when status cannot be read
+  local out
+  out=$(cd "$1" && treehouse status 2>&1) || return 1
+  grep -c leased <<< "$out" || true
+}
 
-# Restore original kingpin-send
-cp -p "$T/kingpin-send.orig" "$KP_BIN/kingpin-send"
-
-if [ "$FAILED" -eq 0 ]; then
-  echo "ALL ACCEPTANCE TESTS PASSED"
+if leased=$(leased_count "$T/proj"); then
+  [ "$leased" -eq 0 ] && pass "all treehouse leases returned clean" || fail "lingering leases: $leased"
 else
-  echo "ACCEPTANCE TESTS FAILED"
-  exit 1
+  fail "treehouse status failed, so the pool state is unknown"
 fi
+
+# The check above is only worth its line if a broken treehouse fails it: prove the
+# negative with a stub that exits 1.
+mkdir -p "$T/broken-treehouse"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$T/broken-treehouse/treehouse"
+chmod +x "$T/broken-treehouse/treehouse"
+if PATH="$T/broken-treehouse:$PATH" leased_count "$T/proj" >/dev/null; then
+  fail "a failing 'treehouse status' was read as a clean pool"
+else
+  pass "a failing 'treehouse status' fails the lease check"
+fi
+
+# The expression this replaced was `treehouse status 2>/dev/null | grep -c leased || true`,
+# which read that same stub as zero leases. Show it, so the strict form cannot quietly turn
+# back into the old one without a red suite.
+old_leased=$(cd "$T/proj" && PATH="$T/broken-treehouse:$PATH" bash -c 'treehouse status 2>/dev/null | grep -c leased || true')
+[ "$old_leased" = "0" ] && pass "the old lease expression read the broken stub as a clean pool" || fail "the old lease expression no longer reproduces the gap (got '$old_leased')"
+
+kp_test_finish ACCEPTANCE
