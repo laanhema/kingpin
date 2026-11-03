@@ -70,5 +70,6 @@ When the boss asks to build, fix, or investigate something on a project:
         - On `cleanup-refused:`: notify the boss with the refusal reason. The project's landing lock is already released and `kingpin-watch` retries the cleanup on its own, so no action is needed once the cause clears. Run `bin/kingpin done <task-id> --force` only on the boss's word: it discards uncommitted changes (reason "uncommitted changes") or commits that are not yet on the remote default branch (reason "HEAD ... is not yet merged").
         - On `needs-input:`: relay the question from `question.md` concisely to the boss.
         - On `exited`: report worker termination to the boss. To see what a worker was doing, or why it looks stuck, run `kingpin peek <task-id>`.
+        - On `failed:`: relay the reason to the boss. A `failed: no status:` line means the worker stopped without reporting anything (a harness that died at launch): run `kingpin peek <task-id>` if the window is still open, and `bin/kingpin done <task-id>` releases its worktree once the boss agrees.
      3. Acknowledge the event with `bin/kingpin ack <task-id>` to advance seen counters.
      4. If tasks remain live in the fleet, re-arm the background `bin/kingpin-wait` before completing your turn.

@@ -127,6 +127,8 @@ When a task finishes in `review` mode, `kingpin list` displays its review dossie
 
 `kingpin wait` wakes the orchestrator only for events that need action: a new status line other than the informational `issue:` line, a worker that stopped (`quiet`), or a window that is gone (`exited`). A worker whose last acknowledged status is `needs-input:` is not reported `quiet` again until its status or pane activity changes, and a task that `kingpin spawn` is still launching (its `launching` marker is fresh) is not reported `exited`.
 
+A worker that stops without ever writing a status line (a harness that died at launch) is marked `failed: no status: <task> (<harness>) ...` by `kingpin wait`, and so by `kingpin watch` and `kingpin run`; `kingpin list` then shows that line instead of `(pending)`. "Stopped" means the tmux window or pane is gone, or the Stop hook fired and the window stayed silent for the grace period without showing a working marker (such as a wait on background agents). The grace period is 30 seconds from launch (or from the last stop), and `KINGPIN_STATUS_GRACE` sets it in seconds. A worker that is only slow to start is left alone. `kingpin peek <task-id>` shows the pane while the window is open, and `kingpin done <task-id>` releases the worktree.
+
 To see why a worker is quiet or stuck, look at the tail of its pane without touching it:
 
 ```bash

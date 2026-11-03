@@ -1,0 +1,233 @@
+diff --git a/bin/kingpin-launch-check b/bin/kingpin-launch-check
+new file mode 100755
+index 0000000..775feac
+--- /dev/null
++++ b/bin/kingpin-launch-check
+@@ -0,0 +1,89 @@
++#!/usr/bin/env bash
++# Record that a worker died at launch: it stopped without writing a single status
++# line. kingpin-wait calls this for every task on every pass.
++#
++# Usage: kingpin-launch-check <task-dir>
++#   exit 0  the worker died at launch: `failed: no status: ...` was appended to
++#           <task-dir>/status and printed on stdout.
++#   exit 1  nothing recorded (it wrote a status line, it is inside the grace
++#           period, it is still running, or tmux cannot be asked).
++#   exit 2  bad arguments.
++#
++# A worker has stopped when its tmux window is gone or its panes are dead, or when
++# its Stop hook has fired (the `stopped` file) and its window has been silent for
++# the grace period. The grace period counts from the last Stop, or from CREATED when
++# the worker never stopped. KINGPIN_STATUS_GRACE sets it in seconds (default 30).
++set -euo pipefail
++
++usage() { echo "usage: kingpin-launch-check <task-dir>" >&2; }
++
++[ $# -eq 1 ] || { usage; exit 2; }
++case "$1" in
++  -h|--help) usage; exit 0 ;;
++  -*) echo "kingpin-launch-check: unknown option '$1'" >&2; usage; exit 2 ;;
++esac
++task_dir=${1%/}
++
++env_file="$task_dir/task.env"
++status_file="$task_dir/status"
++[ -f "$env_file" ] || exit 1
++
++has_status() { [ -f "$status_file" ] && grep -q '[^[:space:]]' "$status_file"; }
++# A worker that wrote any status line lived long enough to report.
++! has_status || exit 1
++
++now=$(date +%s)
++grace=${KINGPIN_STATUS_GRACE:-30}
++[[ $grace =~ ^[0-9]+$ ]] || grace=30
++
++stop=""
++[ -f "$task_dir/stopped" ] && stop=$(tr -d '[:space:]' < "$task_dir/stopped")
++[[ $stop =~ ^[0-9]+$ ]] || stop=""
++if [ -n "$stop" ]; then
++  since=$stop
++  since_what="its last stop"
++else
++  created=$(sed -n 's/^CREATED=//p' "$env_file" | tail -n 1)
++  # `date -d ""` is midnight, not an error: an empty CREATED must not pass.
++  [ -n "$created" ] || exit 1
++  since=$(date -d "$created" +%s 2>/dev/null) || exit 1
++  since_what="launch"
++fi
++age=$((now - since))
++[ "$age" -ge "$grace" ] || exit 1
++
++id=$(basename "$task_dir")
++harness=$(sed -n 's/^HARNESS=//p' "$env_file" | tail -n 1)
++[ -n "$harness" ] || harness=claude
++tmux_target=$(sed -n 's/^TMUX_TARGET=//p' "$env_file" | tail -n 1)
++[ -n "$tmux_target" ] || tmux_target="kingpin:$id"
++# The window ID survives rename and move; older task.env files lack it.
++window_id=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$env_file" | tail -n 1)
++[ -z "$window_id" ] || tmux_target=$window_id
++
++# A tmux server that cannot be reached says nothing about the worker.
++tmux list-sessions >/dev/null 2>&1 || exit 1
++
++if panes=$(tmux list-panes -t "$tmux_target" -F '#{pane_dead}' 2>/dev/null); then
++  [ -n "$panes" ] || exit 1
++  if printf '%s\n' "$panes" | grep -qvx 1; then
++    # Alive. Only a worker that stopped and has been silent since counts.
++    [ -n "$stop" ] || exit 1
++    activity=$(tmux display-message -p -t "$tmux_target" '#{window_activity}' 2>/dev/null || true)
++    [[ $activity =~ ^[0-9]+$ ]] || exit 1
++    [ $((now - activity)) -ge "$grace" ] || exit 1
++    cause="stopped and went silent"
++    hint="; kingpin peek $id shows why"
++  else
++    cause="exited, tmux pane dead"
++  fi
++else
++  cause="exited, tmux window gone"
++fi
++
++# The worker is stopped, so nothing races this append; the re-check covers a second caller.
++! has_status || exit 1
++line="failed: no status: $id ($harness) $cause; never reported a status (${age}s since $since_what${hint:-})"
++printf '%s\n' "$line"
++printf '%s\n' "$line" >> "$status_file"
++exit 0
+diff --git a/bin/kingpin-wait b/bin/kingpin-wait
+index ed77436..86490d1 100755
+--- a/bin/kingpin-wait
++++ b/bin/kingpin-wait
+@@ -49,6 +49,11 @@ check_task() {
+   local task_env="$dir/task.env"
+   [ -f "$task_env" ] || return 0
+ 
++  # A worker that stopped without a single status line failed at launch. The
++  # helper appends `failed: no status: ...` once its grace period is over, so the
++  # new line is counted as a status event below. Its stdout is not an event.
++  [ -s "$dir/status" ] || "$(dirname "$0")/kingpin-launch-check" "$dir" >/dev/null 2>&1 || true
++
+   local status_file="$dir/status"
+   local seen_file="$dir/seen"
+   local stopped_file="$dir/stopped"
+diff --git a/tests/test-automation.sh b/tests/test-automation.sh
+index 1c5322e..b63c6a4 100755
+--- a/tests/test-automation.sh
++++ b/tests/test-automation.sh
+@@ -1634,6 +1634,117 @@ t20_err=$("$KP_BIN/kingpin" peek t20-peek 2>&1 >/dev/null) || t20_rc=$?
+ 
+ rm -rf "$t20_dir" "$T/t20-shim" "$T/t20-tmux.log"
+ 
++# Test 21: a worker that stops without ever writing a status line is reported failed
++echo "=== Test 21: workers that die at launch ==="
++# A hand-made task: $1 name, $2 harness, $3 seconds since CREATED, $4 window command.
++mk_t21() {
++  local name=$1 harness=$2 age=$3 cmd=$4 d wid
++  d="$KINGPIN_HOME/tasks/$name"
++  mkdir -p "$d"
++  wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n "$name" "$cmd")
++  cat > "$d/task.env" << ENVEOF
++TASK_ID=$name
++PROJECT=demo-t21
++HARNESS=$harness
++MODE=review
++PROJECT_PATH=$T/proj
++WORKTREE=$T/t21-missing-worktree-$name
++TMUX_TARGET=kingpin:$name
++TMUX_WINDOW_ID=$wid
++CREATED=$(date -Iseconds -d "-$age seconds")
++ENVEOF
++  : > "$d/status"
++  echo 0 > "$d/seen"
++}
++t21_status_lines() { grep -c '' "$KINGPIN_HOME/tasks/$1/status" 2>/dev/null || true; }
++
++# AC1+AC2+AC3: the process is gone and the grace period is over -> failed line naming task and harness
++mk_t21 t21-dead agy 120 'exit 1'
++sleep 0.5
++t21_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
++echo "$t21_out" | grep -q "^t21-dead status" && pass "t21: kingpin-wait reports the dead worker as a status event" || fail "t21: no status event for t21-dead (got: $t21_out)"
++t21_last=$(tail -n 1 "$KINGPIN_HOME/tasks/t21-dead/status")
++case "$t21_last" in "failed: no status: t21-dead (agy) "*) pass "t21: the failed line names the task and its harness" ;; *) fail "t21: unexpected status line: $t21_last" ;; esac
++echo "$t21_last" | grep -q "tmux window gone" && pass "t21: the failed line gives the cause (window gone)" || fail "t21: cause missing: $t21_last"
++t21_list=$("$KP_BIN/kingpin" list 2>/dev/null | grep '^t21-dead ')
++echo "$t21_list" | grep -q "failed: no status" && ! echo "$t21_list" | grep -q "(pending)" && pass "t21: kingpin list shows the task as failed, not pending" || fail "t21: list row: $t21_list"
++"$KP_BIN/kingpin" ack t21-dead
++t21_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
++echo "$t21_out" | grep -q "^t21-dead" && fail "t21: dead worker reported again after ack: $t21_out" || pass "t21: no repeat event after ack"
++[ "$(t21_status_lines t21-dead)" = 1 ] && pass "t21: the failed line is written once" || fail "t21: status has $(t21_status_lines t21-dead) lines"
++
++# AC4: inside the grace period nothing is failed; a live worker that is only slow is left alone
++mk_t21 t21-young agy 5 'exit 1'
++mk_t21 t21-slow claude 120 'cat'
++sleep 0.5
++"$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
++[ ! -s "$KINGPIN_HOME/tasks/t21-young/status" ] && pass "t21: a worker inside the grace period is not failed" || fail "t21: young worker failed: $(cat "$KINGPIN_HOME/tasks/t21-young/status")"
++[ ! -s "$KINGPIN_HOME/tasks/t21-slow/status" ] && pass "t21: a live worker with an empty status and no stop is not failed" || fail "t21: slow worker failed: $(cat "$KINGPIN_HOME/tasks/t21-slow/status")"
++KINGPIN_STATUS_GRACE=1 "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
++tail -n 1 "$KINGPIN_HOME/tasks/t21-young/status" | grep -q "^failed: no status: t21-young" && pass "t21: KINGPIN_STATUS_GRACE shortens the grace period" || fail "t21: young worker not failed under a 1s grace"
++[ ! -s "$KINGPIN_HOME/tasks/t21-slow/status" ] && pass "t21: a short grace still leaves a live worker alone" || fail "t21: slow worker failed under a 1s grace"
++
++# A worker that reported anything is never rewritten
++mk_t21 t21-reported agy 120 'exit 1'
++echo "issue: #1 https://example.invalid/1" >> "$KINGPIN_HOME/tasks/t21-reported/status"
++sleep 0.5
++"$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
++[ "$(t21_status_lines t21-reported)" = 1 ] && pass "t21: a worker with a status line gets no failed line" || fail "t21: reported worker status: $(cat "$KINGPIN_HOME/tasks/t21-reported/status")"
++
++# A stopped worker whose window stays open: failed only after the window has been silent for the grace period
++mk_t21 t21-idle opencode 600 'cat'
++echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t21-idle/stopped"
++mk_t21 t21-busy claude 600 'while :; do echo tick; sleep 0.3; done'
++echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t21-busy/stopped"
++sleep 3
++mk_t21 t21-justnow claude 600 'cat'
++date +%s > "$KINGPIN_HOME/tasks/t21-justnow/stopped"
++KINGPIN_STATUS_GRACE=2 "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
++tail -n 1 "$KINGPIN_HOME/tasks/t21-idle/status" | grep -q "^failed: no status: t21-idle (opencode) stopped and went silent.*kingpin peek t21-idle" && pass "t21: a stopped worker with a silent window is failed, with a peek hint" || fail "t21: idle worker status: $(cat "$KINGPIN_HOME/tasks/t21-idle/status")"
++[ ! -s "$KINGPIN_HOME/tasks/t21-busy/status" ] && pass "t21: a stopped worker whose window still prints is not failed" || fail "t21: busy worker failed: $(cat "$KINGPIN_HOME/tasks/t21-busy/status")"
++[ ! -s "$KINGPIN_HOME/tasks/t21-justnow/status" ] && pass "t21: a worker that stopped inside the grace period is not failed" || fail "t21: just-stopped worker failed"
++
++# remain-on-exit keeps the window of a dead process: the pane is dead
++mk_t21 t21-paneDead agy 120 'sleep 1; exit 3'
++tmux set-window-option -t "$(sed -n 's/^TMUX_WINDOW_ID=//p' "$KINGPIN_HOME/tasks/t21-paneDead/task.env")" remain-on-exit on
++sleep 2
++"$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
++tail -n 1 "$KINGPIN_HOME/tasks/t21-paneDead/status" | grep -q "tmux pane dead" && pass "t21: a dead pane in a kept window is failed" || fail "t21: pane-dead status: $(cat "$KINGPIN_HOME/tasks/t21-paneDead/status")"
++
++# An unreachable tmux server says nothing about the worker
++mk_t21 t21-notmux agy 120 'exit 1'
++mkdir -p "$T/t21-notmux-bin"
++printf '#!/usr/bin/env bash\nexit 1\n' > "$T/t21-notmux-bin/tmux"
++chmod +x "$T/t21-notmux-bin/tmux"
++sleep 0.5
++PATH="$T/t21-notmux-bin:$PATH" "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
++[ ! -s "$KINGPIN_HOME/tasks/t21-notmux/status" ] && pass "t21: nothing is recorded when tmux cannot be asked" || fail "t21: failed written without tmux: $(cat "$KINGPIN_HOME/tasks/t21-notmux/status")"
++
++for t in t21-dead t21-young t21-slow t21-reported t21-idle t21-busy t21-justnow t21-paneDead t21-notmux; do
++  tmux kill-window -t "$(sed -n 's/^TMUX_WINDOW_ID=//p' "$KINGPIN_HOME/tasks/$t/task.env")" 2>/dev/null || true
++  rm -rf "$KINGPIN_HOME/tasks/$t"
++done
++rm -rf "$T/t21-notmux-bin"
++
++# End to end: a real spawn whose harness exits at once, then kingpin done releases the slot
++cat > "$T/t21-dead-harness" << 'DH'
++#!/usr/bin/env bash
++exit 1
++DH
++chmod +x "$T/t21-dead-harness"
++KINGPIN_AGY=$T/t21-dead-harness "$KP_BIN/kingpin" spawn demo-auto --issue 246 --id t21-spawn --mode review >/dev/null
++sleep 2
++t21_out=$(KINGPIN_STATUS_GRACE=1 "$KP_BIN/kingpin" wait --once 2>/dev/null || true)
++echo "$t21_out" | grep -q "^t21-spawn status" && pass "t21: a spawned worker that exits at once is reported" || fail "t21: spawned dead worker not reported (got: $t21_out)"
++"$KP_BIN/kingpin" list 2>/dev/null | grep '^t21-spawn ' | grep -q "failed: no status: t21-spawn (agy)" && pass "t21: list shows the spawned worker as failed" || fail "t21: list row for t21-spawn: $("$KP_BIN/kingpin" list 2>/dev/null | grep '^t21-spawn ')"
++"$KP_BIN/kingpin" done t21-spawn >/dev/null 2>&1 && [ -d "$KINGPIN_HOME/archive/t21-spawn" ] && pass "t21: kingpin done releases the failed task without --force" || fail "t21: kingpin done refused the dead task"
++
++# kingpin run stops on a worker that died at launch instead of polling forever
++t21_run_rc=0
++t21_run_out=$(KINGPIN_AGY=$T/t21-dead-harness KINGPIN_STATUS_GRACE=1 timeout 60 "$KP_BIN/kingpin" run demo-auto --issue 247 --id t21-run --mode review 2>&1) || t21_run_rc=$?
++[ "$t21_run_rc" -eq 1 ] && echo "$t21_run_out" | grep -q "FAILED: t21-run failed: failed: no status:" && pass "t21: kingpin run exits 1 with the failed line for a worker that died at launch" || fail "t21: kingpin run rc=$t21_run_rc: $t21_run_out"
++"$KP_BIN/kingpin" done t21-run >/dev/null 2>&1 || true
++
+ if [ "$FAILED" -eq 0 ]; then
+   echo "ALL AUTOMATION TESTS PASSED"
+ else
