@@ -69,7 +69,10 @@ so no harness binary is needed.
   ignore the file. `kingpin spawn` names every other Kingpin-shaped line there and skips
   the block. Enabling git's `extensions.worktreeConfig`
   is the one repository-config line a spawn writes. `kingpin done` clears the pointer, the
-  files that spawn recorded as injected and the task's exclude file. A config the project
+  files that spawn recorded as injected and the task's exclude file. A spawn also clears
+  the harness files an earlier task left in the pooled slot when their content proves
+  Kingpin wrote them (`lib/leftover.mjs`), and leaves and names anything else, because the
+  slot is the user's checkout (issue #127). A config the project
   already tracks
   (`.opencode/opencode.json`) cannot be excluded, so the spawn refuses it instead of
   rewriting it.
