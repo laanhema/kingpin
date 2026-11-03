@@ -1,0 +1,9 @@
+# Follow `source` directives and resolve them relative to the script.
+external-sources=true
+source-path=SCRIPTDIR
+
+# SC2015: `cond && pass "..." || fail "..."` is the test-suite assertion idiom
+# (416 uses). pass() only echoes, so it cannot fail and "A && B || C" cannot
+# run C after A succeeded. Disabled repo-wide; do not use the idiom with a
+# command that can fail.
+disable=SC2015

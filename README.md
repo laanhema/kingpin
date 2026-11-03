@@ -25,6 +25,7 @@ Ensure the following tools are installed on your host:
 
 Optional:
 - `lavish-axi` (for per-task review dossiers and their interactive actions)
+- `shellcheck` (contributors only, for `./tests/lint.sh`; `pip install shellcheck-py==0.11.0.1` into a venv, which is the version CI pins, or your package manager at shellcheck 0.11.0)
 
 ---
 
@@ -186,9 +187,12 @@ Kingpin-injected worktree configuration files (`.agents/rules/kingpin.md`, `.age
 
 ## Running Automated Tests
 
-Run the full test suite from the repository root:
+Run the lint and the full test suite from the repository root:
 
 ```bash
+# Lint: bash -n + shellcheck over bin/* and tests/*.sh (config in .shellcheckrc)
+./tests/lint.sh
+
 # Automation suite: unified CLI, init, watch, and run
 ./tests/test-automation.sh
 
@@ -204,3 +208,5 @@ Run the full test suite from the repository root:
 # 3-worker parallel concurrency and serial landing acceptance test
 ./tests/test-acceptance.sh
 ```
+
+CI (`.github/workflows/ci.yml`) runs the lint plus each suite on every PR and push to `main`. The suites need `git`, `tmux`, `node`, `treehouse` and a git identity (the suites set one themselves). They use fake agents, so no harness binary is required.
