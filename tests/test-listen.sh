@@ -178,6 +178,52 @@ echo "$pane_out" | grep -q "/fix-findings $T/proj/.agents/reviews/r9.md" && pass
 tmux kill-window -t kingpin:task-lavish-gate 2>/dev/null || true
 rm -rf "$t11_gate"
 
+# Approve & Land on a task that is not review-ready lands nothing and records no approval
+t11_state="$KINGPIN_HOME/tasks/task-lavish-state"
+mkdir -p "$t11_state"
+rm -f "$KINGPIN_HOME/projects/demo-state.landing" "$KINGPIN_HOME/projects/demo-state.landing_queue"
+echo "<html><body>Review Dossier S</body></html>" > "$t11_state/report.html"
+cat > "$t11_state/task.env" << EOF8
+TASK_ID=task-lavish-state
+PROJECT=demo-state
+PROJECT_PATH=$T/proj
+MODE=review
+WORKTREE=$T/proj
+ISSUE=406
+TMUX_TARGET=kingpin:task-lavish-state
+EOF8
+printf '%s\n' "ready: branch=b review=APPROVE report=none" "needs-input: which API shape?" > "$t11_state/status"
+printf '%s\n' "session:" "  status: feedback" "prompts[1]{prompt}:" "  kingpin land task-lavish-state" > "$T/mock-lavish-response.txt"
+"$KP_BIN/kingpin" listen task-lavish-state --once >/dev/null
+[ ! -f "$t11_state/landing_sent" ] && pass "approve on needs-input: did not land" || fail "approve on needs-input: landed"
+! grep -q "^approved:" "$t11_state/status" && pass "approve on needs-input: recorded no approved: note" || fail "approve on needs-input: logged an approval"
+grep -Fq "not ready to land (last event: needs-input: which API shape?)" "$T/mock-lavish.log" && pass "approve on needs-input: reply names the current state" || fail "approve on needs-input: reply does not name the state"
+rm -f "$KINGPIN_HOME/projects/demo-state.landing" "$KINGPIN_HOME/projects/demo-state.landing_queue"
+rm -rf "$t11_state"
+
+# Approve & Land on a ready: line the gate cannot parse: refused, no approval note
+t11_unknown="$KINGPIN_HOME/tasks/task-lavish-unknown"
+mkdir -p "$t11_unknown"
+rm -f "$KINGPIN_HOME/projects/demo-unknown.landing" "$KINGPIN_HOME/projects/demo-unknown.landing_queue"
+echo "<html><body>Review Dossier U</body></html>" > "$t11_unknown/report.html"
+cat > "$t11_unknown/task.env" << EOF9
+TASK_ID=task-lavish-unknown
+PROJECT=demo-unknown
+PROJECT_PATH=$T/proj
+MODE=review
+WORKTREE=$T/proj
+ISSUE=407
+TMUX_TARGET=kingpin:task-lavish-unknown
+EOF9
+printf '%s\n' "ready: branch=b review=LGTM report=r.md" > "$t11_unknown/status"
+printf '%s\n' "session:" "  status: feedback" "prompts[1]{prompt}:" "  kingpin land task-lavish-unknown" > "$T/mock-lavish-response.txt"
+"$KP_BIN/kingpin" listen task-lavish-unknown --once >/dev/null
+[ ! -f "$t11_unknown/landing_sent" ] && pass "approve on an unreadable verdict: did not land" || fail "approve on an unreadable verdict: landed"
+! grep -q "^approved:" "$t11_unknown/status" && pass "approve on an unreadable verdict: recorded no approved: note" || fail "approve on an unreadable verdict: logged an approval"
+grep -Fq "Not landing. kingpin-land" "$T/mock-lavish.log" && grep -Fq "review=LGTM report=r.md" "$T/mock-lavish.log" && pass "approve on an unreadable verdict: reply carries the gate's refusal" || fail "approve on an unreadable verdict: refusal reply missing"
+rm -f "$KINGPIN_HOME/projects/demo-unknown.landing" "$KINGPIN_HOME/projects/demo-unknown.landing_queue"
+rm -rf "$t11_unknown"
+
 # Repeat Approve while a fix pass is pending does not resend /fix-findings
 t11_rep="$KINGPIN_HOME/tasks/task-lavish-repeat"
 mkdir -p "$t11_rep"

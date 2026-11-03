@@ -127,6 +127,17 @@ handle_approve() {
     reply "Task $id is already landing."
     return 0
   fi
+  # Only a review-ready worker can be approved. A dossier left open on a task
+  # that has since reported needs-input: would otherwise land with no verdict.
+  local last_event
+  last_event=$(kp_status_last "$task_dir/status")
+  case "$last_event" in
+    ready:*|fixed:*) ;;
+    *)
+      reply "Approval ignored: task $id is not ready to land (last event: ${last_event:-none}). Waiting for the worker to report ready: or fixed:."
+      return 0
+      ;;
+  esac
   # A fix pass or re-review that an earlier approval started is still running:
   # the worker has not reported a new event, so landing again would resend it.
   local last
@@ -136,16 +147,20 @@ handle_approve() {
     return 0
   fi
   # kingpin-land reads the worker's last ready:/fixed: line, so land first and
-  # only then record the approval for the orchestrator.
+  # only then record the approval for the orchestrator. Its non-zero exit is the
+  # gate refusing the line: record no approval for a landing that did not start.
   local out
-  out=$("$KP_BIN/kingpin-land" "$id" 2>&1 || true)
-  if [ -f "$task_dir/landing_sent" ]; then
-    rm -f "$task_dir/approve_pending"
+  if out=$("$KP_BIN/kingpin-land" "$id" 2>&1); then
+    if [ -f "$task_dir/landing_sent" ]; then
+      rm -f "$task_dir/approve_pending"
+    else
+      printf '%s\n' "$last" > "$task_dir/approve_pending"
+    fi
+    note "approved: by user via lavish dossier"
+    reply "Approval received. $(printf '%s\n' "$out" | tail -n 1)"
   else
-    printf '%s\n' "$last" > "$task_dir/approve_pending"
+    reply "Not landing. $(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | head -n 1)"
   fi
-  note "approved: by user via lavish dossier"
-  reply "Approval received. $(printf '%s\n' "$out" | tail -n 1)"
 }
 
 handle_feedback() {

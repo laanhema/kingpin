@@ -2,6 +2,9 @@
 # Land a ready task: fix findings if needed, serialize landing per project,
 # and send /issue-flow-done to the worker.
 #
+# The review gate fails closed: a status line whose verdict cannot be read never
+# creates landing_sent. It prints the line it could not parse and exits 1.
+#
 # Usage: kingpin-land <task-id>
 set -euo pipefail
 
@@ -37,9 +40,26 @@ fi
 
 # Handle fixed: status line
 if [[ $last_status =~ ^fixed: ]]; then
-  high=0
-  if [[ $last_status =~ high=([0-9]+) ]]; then
-    high="${BASH_REMATCH[1]}"
+  # A fixed: line may carry the review verdict too. When it does, it has to agree
+  # that the review is clean; a line that says both "fixed" and "findings still
+  # open" is self-contradictory, so the gate refuses rather than merge on it.
+  if [ "$(kp_status_field_count "$last_status" review)" -gt 0 ]; then
+    fixed_verdict=$(kp_status_verdict "$last_status")
+    if [ "$(kp_verdict_kind "$fixed_verdict")" != "clean" ]; then
+      echo "kingpin-land: task $id: this fixed: line carries a review verdict that is not clean: $last_status" >&2
+      echo "kingpin-land: not landing; the worker reports: fixed: high=<n> report=<path>, with review=APPROVE only when it is clean" >&2
+      exit 1
+    fi
+  fi
+  # Parsed as a field, not matched inside the line: a report path such as
+  # report=high=0.md or a key such as nothigh=3 is not a count.
+  high=$(kp_status_field "$last_status" high)
+  if ! [[ $high =~ ^[0-9]+$ ]]; then
+    # A fix pass that reports no count makes "no High findings left" unprovable,
+    # so the gate refuses instead of assuming zero.
+    echo "kingpin-land: task $id: cannot read high=<n> from this status line: $last_status" >&2
+    echo "kingpin-land: not landing; the worker reports: fixed: high=<n> report=<path>" >&2
+    exit 1
   fi
   if [ "$high" -gt 0 ]; then
     # The outcome line is the last stdout line: kingpin-send's own "OK" line is
@@ -54,20 +74,9 @@ if [[ $last_status =~ ^fixed: ]]; then
   fi
   landing_reason="the fix pass completed cleanly"
 else
-  # Extract report and review verdict if present
-  verdict=""
-  report=""
-  if [[ $last_status =~ review=(.*)[[:space:]]+report=([^[:space:]]*) ]]; then
-    verdict="${BASH_REMATCH[1]}"
-    report="${BASH_REMATCH[2]}"
-  elif [[ $last_status =~ review=([^ ]+( [^ ]+)*) ]]; then
-    verdict="${BASH_REMATCH[1]}"
-  fi
-  if [ -z "$report" ] && [[ $last_status =~ report=([^[:space:]]+) ]]; then
-    report="${BASH_REMATCH[1]}"
-  fi
-  verdict=$(echo "$verdict" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-  report=$(echo "$report" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+  # Extract report and review verdict if present, in any field order
+  verdict=$(kp_status_verdict "$last_status")
+  report=$(kp_status_field "$last_status" report)
 
   resolved_report=""
   if [ -n "$report" ] && [ "$report" != "none" ]; then
@@ -78,22 +87,38 @@ else
     fi
   fi
 
-  # If verdict is NEEDS CHANGES or has findings, run /fix-findings first
-  if [ "$verdict" = "APPROVE WITH NITS" ] || [ "$verdict" = "NEEDS CHANGES" ] || [ "$verdict" = "NEEDS_CHANGES" ] || [ "$verdict" = "NEEDS-CHANGES" ]; then
-    echo "kingpin-land: task $id review has findings ($verdict): running the fix pass first (/fix-findings), not landing yet; landing continues after the worker reports fixed: (kingpin watch does it, or run kingpin land again)"
-    touch "$task_dir/landing_in_progress"
-    if [ -n "$resolved_report" ]; then
-      "$KP_BIN/kingpin-send" "$id" "/fix-findings $resolved_report" >/dev/null
-    else
-      "$KP_BIN/kingpin-send" "$id" "/fix-findings" >/dev/null
-    fi
-    exit 0
-  fi
-  if [ -n "$verdict" ]; then
-    landing_reason="the review is clean ($verdict)"
-  else
-    landing_reason="no review verdict recorded"
-  fi
+  case $(kp_verdict_kind "$verdict") in
+    findings)
+      # NEEDS CHANGES and APPROVE WITH NITS: run /fix-findings first
+      echo "kingpin-land: task $id review has findings ($verdict): running the fix pass first (/fix-findings), not landing yet; landing continues after the worker reports fixed: (kingpin watch does it, or run kingpin land again)"
+      touch "$task_dir/landing_in_progress"
+      if [ -n "$resolved_report" ]; then
+        "$KP_BIN/kingpin-send" "$id" "/fix-findings $resolved_report" >/dev/null
+      else
+        "$KP_BIN/kingpin-send" "$id" "/fix-findings" >/dev/null
+      fi
+      exit 0
+      ;;
+    clean)
+      landing_reason="the review is clean ($verdict)"
+      ;;
+    *)
+      # Fail closed: a verdict the gate cannot read never lands. An empty verdict
+      # is either a missing review= field, an empty one or a repeated one, which
+      # are different mistakes for the operator to fix.
+      echo "kingpin-land: task $id: cannot read a review verdict from this status line: $last_status" >&2
+      if [ -z "$verdict" ]; then
+        case $(kp_status_field_count "$last_status" review) in
+          0) echo "kingpin-land: the line has no review= field; the worker reports: ready: branch=<b> review=<verdict> report=<path>" >&2 ;;
+          1) echo "kingpin-land: the line has an empty review= field; the worker reports: ready: branch=<b> review=<verdict> report=<path>" >&2 ;;
+          *) echo "kingpin-land: the line repeats the review= field; the worker reports it once: ready: branch=<b> review=<verdict> report=<path>" >&2 ;;
+        esac
+      else
+        echo "kingpin-land: expected review=APPROVE, APPROVE WITH NITS or NEEDS CHANGES; not landing" >&2
+      fi
+      exit 1
+      ;;
+  esac
 fi
 
 # Project-level serialization lock

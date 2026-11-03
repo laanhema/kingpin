@@ -45,4 +45,62 @@ set +e; t62_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null); t62_rc=$?; set -e
 "$KP_BIN/kingpin" list 2>/dev/null | grep '^t62-wait ' | grep -q "approved: by user via lavish dossier" && pass "t62: kingpin list shows the newest status line" || fail "t62: kingpin list row: $("$KP_BIN/kingpin" list 2>/dev/null | grep '^t62-wait ')"
 rm -rf "$t62_task" "$t62_dir"
 
+# t71: the review-gate verdict parser (field order, separators, trailing prose)
+echo "=== Test t71: verdict parser (lib/status.sh) ==="
+t71_field() { # <status-line> <key> <expected>
+  local got
+  got=$(kp_status_field "$1" "$2")
+  [ "$got" = "$3" ] && pass "t71: $2 of '$1' = '$3'" || fail "t71: $2 of '$1' = '$got' (want '$3')"
+}
+t71_verdict() { # <status-line> <expected>
+  local got
+  got=$(kp_status_verdict "$1")
+  [ "$got" = "$2" ] && pass "t71: verdict of '$1' = '$2'" || fail "t71: verdict of '$1' = '$got' (want '$2')"
+}
+t71_kind() { # <verdict> <expected>
+  local got
+  got=$(kp_verdict_kind "$1")
+  [ "$got" = "$2" ] && pass "t71: verdict '$1' is $2" || fail "t71: verdict '$1' is $got (want '$2')"
+}
+t71_count() { # <status-line> <key> <expected>
+  local got
+  got=$(kp_status_field_count "$1" "$2")
+  [ "$got" = "$3" ] && pass "t71: $2 count of '$1' = $3" || fail "t71: $2 count of '$1' = $got (want '$3')"
+}
+t71_field "ready: branch=b review=APPROVE WITH NITS report=r.md" review "APPROVE WITH NITS"
+t71_field "ready: branch=b review=APPROVE WITH NITS report=r.md" report "r.md"
+t71_field "ready: branch=b report=r.md review=NEEDS CHANGES" review "NEEDS CHANGES"
+t71_field "ready: branch=b report=r.md review=NEEDS CHANGES" report "r.md"
+t71_field "ready: branch=b review=NEEDS CHANGES (2 high) report=r.md" review "NEEDS CHANGES (2 high)"
+t71_field "ready: branch=b" review ""
+t71_field "ready: branch=b" report ""
+t71_field "" review ""
+t71_field "ready: branch=b report=/abs/path.md review=APPROVE" report "/abs/path.md"
+# A repeated field is ambiguous, so it has no value; the count tells the gate which
+# refusal to print (absent, empty, or repeated).
+t71_field "ready: branch=b review=APPROVE report=none review=NEEDS CHANGES" review ""
+t71_field "ready: branch=b report=a.md report=b.md" report ""
+t71_field "ready: branch=b review=" review ""
+t71_count "ready: branch=b review=APPROVE report=none" review 1
+t71_count "ready: branch=b review=" review 1
+t71_count "ready: branch=b" review 0
+t71_count "ready: branch=b review=APPROVE report=none review=NEEDS CHANGES" review 2
+# high= is a field like any other: a report path or a different key is not a count
+t71_field "fixed: high=0 report=r.md" high "0"
+t71_field "fixed: high=2 report=r.md" high "2"
+t71_field "fixed: report=high=0.md" high ""
+t71_field "fixed: nothigh=3 report=r.md" high ""
+t71_verdict "ready: branch=b review=needs changes (2 high) report=r.md" "NEEDS CHANGES"
+t71_verdict "ready: branch=b review=NEEDS_CHANGES report=r.md" "NEEDS CHANGES"
+t71_verdict "ready: branch=b review=NEEDS-CHANGES report=r.md" "NEEDS CHANGES"
+t71_verdict "ready: branch=b review=needs  changes   (2 high)" "NEEDS CHANGES"
+t71_verdict "ready: branch=b report=r.md review=APPROVE WITH NITS" "APPROVE WITH NITS"
+t71_verdict "ready: branch=b review=lgtm report=r.md" "LGTM"
+t71_verdict "ready: branch=b" ""
+t71_kind APPROVE clean
+t71_kind "APPROVE WITH NITS" findings
+t71_kind "NEEDS CHANGES" findings
+t71_kind LGTM unknown
+t71_kind "" unknown
+
 kp_test_finish STATUS

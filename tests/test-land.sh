@@ -10,29 +10,99 @@ kp_test_project
 # Test 9: Landing review gate verdict parsing, fix-findings, and re-review
 echo "=== Test 9: Landing review gate verdict parsing, fix-findings, and re-review ==="
 
-# 1. Regex parsing unit tests
-check_parse() {
-  local last_status="$1"
-  local exp_v="$2"
-  local exp_r="$3"
-  local verdict="" report=""
-  if [[ $last_status =~ review=(.*)[[:space:]]+report=([^[:space:]]*) ]]; then
-    verdict="${BASH_REMATCH[1]}"
-    report="${BASH_REMATCH[2]}"
-  elif [[ $last_status =~ review=([^ ]+( [^ ]+)*) ]]; then
-    verdict="${BASH_REMATCH[1]}"
-  fi
-  if [ -z "$report" ] && [[ $last_status =~ report=([^[:space:]]+) ]]; then
-    report="${BASH_REMATCH[1]}"
-  fi
-  verdict=$(echo "$verdict" | sed -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//")
-  report=$(echo "$report" | sed -e "s/^[[:space:]]*//" -e "s/[[:space:]]*$//")
-  [ "$verdict" = "$exp_v" ] && [ "$report" = "$exp_r" ]
+# 1. The review gate: every verdict spelling through the real kingpin land
+echo "=== Test 9a: review gate verdicts through kingpin land ==="
+
+# gate_case <name> <status-line>: a review-mode task whose worker window is a
+# fresh cat pane, so the test asserts on what the real kingpin land dispatched.
+gate_case() {
+  local name=$1
+  local d="$KINGPIN_HOME/tasks/$name"
+  mkdir -p "$d"
+  tmux new-window -d -t kingpin: -n "$name" cat
+  cat > "$d/task.env" << EOF
+TASK_ID=$name
+PROJECT=demo-gate
+MODE=review
+WORKTREE=$T/proj
+ISSUE=310
+TMUX_TARGET=kingpin:$name
+EOF
+  printf '%s\n' "$2" > "$d/status"
+  set +e
+  gate_out=$("$KP_BIN/kingpin" land "$name" 2>&1)
+  gate_rc=$?
+  set -e
+  sleep 0.1
+  gate_pane=$(tmux capture-pane -pt "kingpin:$name" -S -5)
+  gate_landing=no
+  if [ -f "$d/landing_sent" ]; then gate_landing=yes; fi
+  gate_lock=no
+  if [ -f "$KINGPIN_HOME/projects/demo-gate.landing" ]; then gate_lock=yes; fi
+}
+gate_done() {
+  tmux kill-window -t "kingpin:$1" 2>/dev/null || true
+  rm -rf "$KINGPIN_HOME/tasks/$1"
+  rm -f "$KINGPIN_HOME/projects/demo-gate.landing" "$KINGPIN_HOME/projects/demo-gate.landing_queue"
+}
+gate_findings() { # <name> <status-line> <report path as sent to /fix-findings>
+  gate_case "$1" "$2"
+  [ "$gate_rc" -eq 0 ] && pass "$1: findings verdict accepted (exit 0)" || fail "$1: exit $gate_rc, want 0: $gate_out"
+  [ "$gate_landing" = "no" ] && [ "$gate_lock" = "no" ] && pass "$1: no landing dispatched" || fail "$1: landed despite a findings verdict"
+  echo "$gate_pane" | grep -Fq "/fix-findings $T/proj/$3" && pass "$1: sent /fix-findings with the report path" || fail "$1: wrong fix-findings command: $gate_pane"
+  gate_done "$1"
+}
+gate_clean() { # <name> <status-line>
+  gate_case "$1" "$2"
+  [ "$gate_rc" -eq 0 ] && pass "$1: clean verdict accepted (exit 0)" || fail "$1: exit $gate_rc, want 0: $gate_out"
+  [ "$gate_landing" = "yes" ] && pass "$1: landing dispatched" || fail "$1: landing_sent missing"
+  echo "$gate_pane" | grep -q "/issue-flow-done 310" && pass "$1: sent /issue-flow-done" || fail "$1: wrong done command: $gate_pane"
+  gate_done "$1"
+}
+gate_refused() { # <name> <status-line> <text the message must name>
+  gate_case "$1" "$2"
+  [ "$gate_rc" -ne 0 ] && pass "$1: refused with exit $gate_rc" || fail "$1: landed an unreadable verdict (exit 0)"
+  [ "$gate_landing" = "no" ] && [ "$gate_lock" = "no" ] && pass "$1: no landing dispatched" || fail "$1: landed an unreadable verdict"
+  echo "$gate_out" | grep -Fq "$3" && pass "$1: message names the line it could not parse" || fail "$1: message does not name '$3': $gate_out"
+  ! echo "$gate_pane" | grep -qE "/fix-findings|/issue-flow-done" && pass "$1: nothing dispatched to the worker" || fail "$1: dispatched despite refusing: $gate_pane"
+  gate_done "$1"
 }
 
-check_parse "ready: branch=b review=APPROVE report=none" "APPROVE" "none" && pass "parsed APPROVE report=none" || fail "failed parse APPROVE"
-check_parse "ready: branch=b review=APPROVE WITH NITS report=.agents/reviews/r1.md" "APPROVE WITH NITS" ".agents/reviews/r1.md" && pass "parsed APPROVE WITH NITS" || fail "failed parse APPROVE WITH NITS"
-check_parse "ready: branch=b review=NEEDS CHANGES report=r2.md" "NEEDS CHANGES" "r2.md" && pass "parsed NEEDS CHANGES" || fail "failed parse NEEDS CHANGES"
+# The four supported findings spellings, then case, separators, trailing prose
+# and field order: all of them must still run the fix pass.
+gate_findings gate-nits "ready: branch=b review=APPROVE WITH NITS report=.agents/reviews/r1.md" ".agents/reviews/r1.md"
+gate_findings gate-space "ready: branch=b review=NEEDS CHANGES report=r2.md" "r2.md"
+gate_findings gate-under "ready: branch=b review=NEEDS_CHANGES report=r3.md" "r3.md"
+gate_findings gate-dash "ready: branch=b review=NEEDS-CHANGES report=r4.md" "r4.md"
+gate_findings gate-prose "ready: branch=b review=NEEDS CHANGES (2 high) report=r5.md" "r5.md"
+gate_findings gate-lower "ready: branch=b review=needs changes report=r6.md" "r6.md"
+gate_findings gate-reorder "ready: branch=b report=r7.md review=NEEDS CHANGES" "r7.md"
+gate_findings gate-reorder-prose "ready: branch=b report=r8.md review=NEEDS CHANGES (2 high)" "r8.md"
+
+# A clean approval lands, in either case
+gate_clean gate-approve "ready: branch=b review=APPROVE report=none"
+gate_clean gate-approve-lower "ready: branch=b review=approve report=none"
+
+# Verdicts the gate does not recognize fail closed, naming the line
+gate_refused gate-lgtm "ready: branch=b review=LGTM report=r.md" "review=LGTM report=r.md"
+gate_refused gate-unknown "ready: branch=b review=SHIP IT report=r.md" "review=SHIP IT report=r.md"
+gate_refused gate-noverdict "ready: branch=b" "no review= field"
+gate_refused gate-needs-input "needs-input: which API shape?" "needs-input: which API shape?"
+gate_refused gate-fixed-nohigh "fixed: report=r.md" "fixed: report=r.md"
+gate_refused gate-fixed-badhigh "fixed: high=two report=r.md" "fixed: high=two report=r.md"
+# high= is a parsed field: a report path or a lookalike key does not supply a count
+gate_refused gate-fixed-report-high "fixed: report=high=0.md" "fixed: report=high=0.md"
+gate_refused gate-fixed-nothigh "fixed: nothigh=3 report=r.md" "fixed: nothigh=3 report=r.md"
+# A fixed: line that also reports findings contradicts itself: refuse, do not land
+gate_refused gate-fixed-review "fixed: high=0 review=NEEDS CHANGES report=r.md" "review=NEEDS CHANGES"
+gate_refused gate-fixed-review-reorder "fixed: review=NEEDS CHANGES high=0 report=r.md" "review=NEEDS CHANGES"
+gate_refused gate-fixed-nits "fixed: high=0 review=APPROVE WITH NITS report=r.md" "review=APPROVE WITH NITS"
+# A fixed: line may carry the verdict when it is clean
+gate_clean gate-fixed-approve "fixed: high=0 review=APPROVE report=none"
+# A repeated review= field is ambiguous: the gate refuses instead of trusting one
+gate_refused gate-dup-review "ready: branch=b review=APPROVE report=none review=NEEDS CHANGES" "repeats the review= field"
+# An empty review= field is a different mistake from a missing one, and says so
+gate_refused gate-empty-review "ready: branch=b review= report=r.md" "empty review= field"
 
 # 2. APPROVE WITH NITS and NEEDS CHANGES report path resolution & /fix-findings dispatch
 t7_dir="$KINGPIN_HOME/tasks/t7-nits"
@@ -196,11 +266,15 @@ last=$(printf '%s\n' "$out" | tail -n 1)
 echo "$last" | grep -q "starting landing" && echo "$last" | grep -q "review is clean" && pass "clean path: output says the review is clean and landing is starting" || fail "clean path output unclear: $out"
 tmux kill-window -t kingpin:t14-clean 2>/dev/null || true
 rm -f "$KINGPIN_HOME/projects/demo-t14.landing"
-# No parsable verdict: lands as before, but does not claim the review is clean
+# No verdict at all: the gate fails closed instead of landing on trust
 mk_t14 t14-nover "ready: branch=b"
-out=$("$KP_BIN/kingpin" land t14-nover)
-last=$(printf '%s\n' "$out" | tail -n 1)
-echo "$last" | grep -q "no review verdict recorded" && ! echo "$last" | grep -q "review is clean" && pass "no verdict: output does not claim the review is clean" || fail "no-verdict output unclear: $out"
+if out=$("$KP_BIN/kingpin" land t14-nover 2>&1); then
+  fail "no verdict: landed a task with no review verdict: $out"
+else
+  pass "no verdict: refused to land"
+fi
+echo "$out" | grep -Fq "ready: branch=b" && pass "no verdict: message names the status line" || fail "no verdict: message does not name the line: $out"
+[ ! -f "$KINGPIN_HOME/tasks/t14-nover/landing_sent" ] && [ ! -f "$KINGPIN_HOME/projects/demo-t14.landing" ] && pass "no verdict: no landing_sent and no landing lock" || fail "no verdict: landing was recorded"
 tmux kill-window -t kingpin:t14-nover 2>/dev/null || true
 rm -f "$KINGPIN_HOME/projects/demo-t14.landing"
 mk_t14 t14-alias "ready: branch=b review=APPROVE report=none"
