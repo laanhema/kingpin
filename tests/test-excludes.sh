@@ -281,4 +281,125 @@ printf '{"mine": true}\n' > "${wt_foreign:-/nonexistent}/.agents/hooks.json"
   || fail "done deleted .agents/hooks.json, which this claude spawn never injected"
 rm -f "${wt_foreign:-/nonexistent}/.agents/hooks.json"
 
+echo "=== Test 13: a checkout with kingpin guard install applied is silent ==="
+# The guard owns the main checkout's contract copies and hides them in its own block of
+# the shared exclude file (issue #123). An older install left those lines unmarked, so
+# the install adopts them instead of adding a second copy.
+git init -q -b main "$T/guard"
+mkdir -p "$T/guard/orchestrator"
+cp "$KP_ROOT/orchestrator/contract.md" "$T/guard/orchestrator/contract.md"
+git -C "$T/guard" add -A
+git -C "$T/guard" commit -qm "carry the orchestrator contract template"
+printf 'PROJECT_PATH=%q\nSETUP_CMD=%q\n' "$T/guard" "" > "$KINGPIN_HOME/projects/demo-guard.env"
+guard_excl=$(git -C "$T/guard" rev-parse --path-format=absolute --git-path info/exclude)
+# The shape an older guard install left behind, plus a line the user owns.
+printf 'guard-user-note.txt\n.agents/rules/kingpin.md\n.opencode/opencode.json\n' >> "$guard_excl"
+"$KP_BIN/kingpin-guard" install --dir "$T/guard" >/dev/null
+"$KP_BIN/kingpin-guard" install --dir "$T/guard" >/dev/null
+sed -n '/^# kingpin guard$/,/^# end kingpin guard$/p' "$guard_excl" > "$T/guard.block"
+[ "$(grep -cxF '# kingpin guard' "$T/guard.block")" = 1 ] \
+  && pass "guard install wrote one # kingpin guard header" || fail "guard install wrote no single block header"
+[ "$(grep -cxF '# end kingpin guard' "$T/guard.block")" = 1 ] \
+  && pass "guard install wrote one # end kingpin guard footer" || fail "guard install wrote no single block footer"
+for rel in .agents/rules/kingpin.md .opencode/opencode.json .claude/rules/kingpin-orchestrator.md; do
+  [ "$(grep -cxF "$rel" "$guard_excl")" = 1 ] \
+    && pass "two installs left one $rel line in the exclude file" \
+    || fail "the exclude file carries $(grep -cxF "$rel" "$guard_excl") copies of $rel after two installs"
+  grep -qxF "$rel" "$T/guard.block" \
+    && pass "guard install adopted $rel into its block" \
+    || fail "guard install left $rel outside its block"
+done
+grep -qxF 'guard-user-note.txt' "$guard_excl" \
+  && pass "guard install kept the user's own exclude line" || fail "guard install dropped the user's own exclude line"
+cp -p "$guard_excl" "$T/exclude.guard"
+spawn_err=$("$KP_BIN/kingpin-spawn" demo-guard --issue 913 --id excl-guard --harness claude 2>&1 >/dev/null)
+echo "$spawn_err" | grep -qF 'Kingpin-shaped exclude' \
+  && fail "a guard-installed checkout still gets the stale-exclude warning: $spawn_err" \
+  || pass "a checkout with kingpin guard install applied gets no stale-exclude warning"
+for rel in .agents/rules/kingpin.md .opencode/opencode.json; do
+  echo "$spawn_err" | grep -qF "$rel" \
+    && fail "the warning still names the guard-owned $rel: $spawn_err" \
+    || pass "the warning stays silent about the guard-owned $rel"
+done
+cmp -s "$guard_excl" "$T/exclude.guard" && pass "the spawn left the guard block byte-identical" \
+  || { fail "the spawn rewrote the guard block"; diff -u "$T/exclude.guard" "$guard_excl" || true; }
+
+echo "=== Test 14: an orphaned hand-added entry is still named ==="
+# The block covers only what the guard writes: a path nothing maintains keeps getting
+# named, because it hides files in every worktree (issue #123).
+printf '.agents/hooks.json\n' >> "$guard_excl"
+cp -p "$guard_excl" "$T/exclude.guard-orphan"
+spawn_err=$("$KP_BIN/kingpin-spawn" demo-guard --issue 914 --id excl-guard-orphan --harness claude 2>&1 >/dev/null)
+echo "$spawn_err" | grep -qF '.agents/hooks.json' \
+  && pass "the warning still names the orphaned .agents/hooks.json" \
+  || fail "the warning said nothing about the orphaned .agents/hooks.json: $spawn_err"
+for rel in .agents/rules/kingpin.md .opencode/opencode.json; do
+  echo "$spawn_err" | grep -qF "$rel" \
+    && fail "the warning names the guard-owned $rel alongside the orphan: $spawn_err" \
+    || pass "the orphan warning does not name the guard-owned $rel"
+done
+cmp -s "$guard_excl" "$T/exclude.guard-orphan" && pass "the spawn left the orphaned entry in place" \
+  || { fail "the spawn edited the orphaned entry"; diff -u "$T/exclude.guard-orphan" "$guard_excl" || true; }
+
+echo "=== Test 15: kingpin done leaves the guard block alone ==="
+for t in excl-guard excl-guard-orphan; do
+  "$KP_BIN/kingpin-done" "$t" --force >/dev/null 2>&1 || true
+done
+sed -n '/^# kingpin guard$/,/^# end kingpin guard$/p' "$guard_excl" > "$T/guard.block-after"
+cmp -s "$T/guard.block" "$T/guard.block-after" && pass "done left the guard block byte-identical" \
+  || { fail "done rewrote the guard block"; diff -u "$T/guard.block" "$T/guard.block-after" || true; }
+grep -qxF '.agents/hooks.json' "$guard_excl" \
+  && pass "done left the orphaned entry for the user to remove" || fail "done removed the user's orphaned entry"
+
+echo "=== Test 16: a guard path as the exclude file's last line is adopted ==="
+# The read loop must not take a matching last line as a read failure: that is the shape
+# a user is left with after removing the loose lines an older warning named, and the
+# failed read used to abort the install before it wrote the block (issue #123 review, H1).
+git init -q -b main "$T/guard-last"
+mkdir -p "$T/guard-last/orchestrator"
+cp "$KP_ROOT/orchestrator/contract.md" "$T/guard-last/orchestrator/contract.md"
+# The settings file is already ignored, so install adds no line after the seeded one and
+# the seeded guard path really is the file's last line when the block is first written.
+printf '.claude/settings.local.json\n' > "$T/guard-last/.gitignore"
+git -C "$T/guard-last" add -A
+git -C "$T/guard-last" commit -qm "carry the orchestrator contract template"
+guard_last_excl=$(git -C "$T/guard-last" rev-parse --path-format=absolute --git-path info/exclude)
+printf 'guard-last-note.txt\n.claude/rules/kingpin-orchestrator.md\n' >> "$guard_last_excl"
+rc=0
+install_err=$("$KP_BIN/kingpin-guard" install --dir "$T/guard-last" 2>&1 >/dev/null) || rc=$?
+[ "$rc" -eq 0 ] && pass "guard install accepts a guard path as the exclude file's last line" \
+  || fail "guard install exited $rc with a guard path last: $install_err"
+sed -n '/^# kingpin guard$/,/^# end kingpin guard$/p' "$guard_last_excl" > "$T/guard-last.block"
+[ "$(grep -cxF '.claude/rules/kingpin-orchestrator.md' "$guard_last_excl")" = 1 ] \
+  && pass "the seeded guard path appears once after the install" \
+  || fail "the exclude file carries $(grep -cxF '.claude/rules/kingpin-orchestrator.md' "$guard_last_excl") copies of the seeded guard path"
+grep -qxF '.claude/rules/kingpin-orchestrator.md' "$T/guard-last.block" \
+  && pass "guard install adopted the seeded guard path into its block" \
+  || fail "guard install left the seeded guard path outside its block"
+grep -qxF 'guard-last-note.txt' "$guard_last_excl" \
+  && pass "guard install kept the user's line above the seeded guard path" \
+  || fail "guard install dropped the user's line above the seeded guard path"
+
+echo "=== Test 17: a guard path appended after an existing block is adopted ==="
+# An install that follows a loose guard path after the block footer must exit 0 and fold
+# that copy into the block, not leave two lines or abort (issue #123 review, H1).
+printf '.claude/rules/kingpin-orchestrator.md\n' >> "$guard_last_excl"
+rc=0
+install_err=$("$KP_BIN/kingpin-guard" install --dir "$T/guard-last" 2>&1 >/dev/null) || rc=$?
+[ "$rc" -eq 0 ] && pass "guard install accepts a guard path appended after its block" \
+  || fail "guard install exited $rc with a guard path after the block: $install_err"
+[ "$(grep -cxF '# kingpin guard' "$guard_last_excl")" = 1 ] \
+  && pass "the install after the appended guard path left one block header" \
+  || fail "the install after the appended guard path wrote $(grep -cxF '# kingpin guard' "$guard_last_excl") block headers"
+sed -n '/^# kingpin guard$/,/^# end kingpin guard$/p' "$guard_last_excl" > "$T/guard-last.block-after"
+grep -qxF '.claude/rules/kingpin-orchestrator.md' "$T/guard-last.block-after" \
+  && pass "the appended guard path was folded into the block" \
+  || fail "the appended guard path stayed outside the block"
+[ "$(grep -cxF '.claude/rules/kingpin-orchestrator.md' "$guard_last_excl")" = 1 ] \
+  && pass "the appended guard path left one line in the exclude file" \
+  || fail "the exclude file carries $(grep -cxF '.claude/rules/kingpin-orchestrator.md' "$guard_last_excl") copies after the append"
+grep -qxF 'guard-last-note.txt' "$guard_last_excl" \
+  && pass "the install after the appended guard path kept the user's line" \
+  || fail "the install after the appended guard path dropped the user's line"
+
 kp_test_finish "SPAWN EXCLUDE"
