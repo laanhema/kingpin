@@ -4,6 +4,8 @@
 # Usage: kingpin-done <task-id> [--force]
 set -euo pipefail
 
+die() { echo "kingpin-done: $*" >&2; exit 1; }
+
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 KP_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../lib/status.sh
@@ -12,7 +14,7 @@ KP_BIN=$(cd "$(dirname "$0")" && pwd)
 . "$KP_BIN/../lib/landing.sh"
 FORCE=0
 
-[ $# -ge 1 ] || { echo "usage: kingpin-done <task-id> [--force]" >&2; exit 1; }
+[ $# -ge 1 ] || die "usage: kingpin-done <task-id> [--force]"
 id=$1
 [ "${2:-}" = "--force" ] && FORCE=1
 
@@ -21,16 +23,100 @@ if [ ! -d "$task_dir" ] && [ -d "$KP_HOME/archive/$id" ]; then
   echo "OK: task $id already cleaned up (archived)"
   exit 0
 fi
-[ -d "$task_dir" ] || { echo "kingpin-done: task $id not found: $task_dir" >&2; exit 1; }
+[ -d "$task_dir" ] || die "task $id not found: $task_dir"
 
 env_file="$task_dir/task.env"
-[ -f "$env_file" ] || { echo "kingpin-done: task.env missing in $task_dir" >&2; exit 1; }
+[ -f "$env_file" ] || die "task.env missing in $task_dir"
+
+# Two callers can run this cleanup for one task: `kingpin run` (bin/kingpin:267)
+# and the fleet supervisor's retry (bin/kingpin-watch:207). Without a lock both
+# call `treehouse return` for the same path and a lease a spawn took in between
+# is returned from under it (issue #75). The lock is a file, not a directory:
+# link(2) is atomic and fails when the file exists, and a stale lock is reclaimed
+# by renaming it away and checking it moved the file inspected (the idiom in
+# lib/landing.sh:102-174). It lives outside the task directory, which moves to
+# the archive at the end of a successful cleanup.
+cleanup_lock="$KP_HOME/locks/$id.cleanup"
+
+_cleanup_lock_owner_alive() {
+  local pid=$1 args
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$pid" -gt 1 ] 2>/dev/null || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  # A recycled pid is not a holder (same check as lib/supervisor.sh:14-25).
+  args=$(ps -o args= -p "$pid" 2>/dev/null || true)
+  case "$args" in *kingpin-done*) return 0 ;; esac
+  return 1
+}
+
+cleanup_lock_acquire() {
+  local tries=0 tmp seen moved stale pid
+  mkdir -p "$KP_HOME/locks" || return 2
+  while [ "$tries" -lt 250 ]; do
+    tries=$((tries + 1))
+    tmp=$(mktemp "${cleanup_lock}.tmp.XXXXXX" 2>/dev/null) || return 2
+    if printf '%s\n%s\n' "$$" "$(date +%s)" > "$tmp" 2>/dev/null \
+       && ln "$tmp" "$cleanup_lock" 2>/dev/null; then
+      rm -f "$tmp"
+      return 0
+    fi
+    rm -f "$tmp"
+    pid=$(sed -n 1p "$cleanup_lock" 2>/dev/null | tr -d ' ' || true)
+    if _cleanup_lock_owner_alive "$pid"; then
+      return 1
+    fi
+    seen=$pid
+    stale="$cleanup_lock.stale.$$"
+    rm -f "$stale"
+    if mv "$cleanup_lock" "$stale" 2>/dev/null; then
+      moved=$(sed -n 1p "$stale" 2>/dev/null | tr -d ' ' || true)
+      if [ "$moved" = "$seen" ]; then
+        rm -f "$stale"
+      elif [ -e "$cleanup_lock" ]; then
+        rm -f "$stale"
+      else
+        mv "$stale" "$cleanup_lock" 2>/dev/null || rm -f "$stale"
+      fi
+    fi
+    sleep 0.02
+  done
+  return 2
+}
+
+cleanup_lock_release() {
+  local pid
+  [ -f "$cleanup_lock" ] || return 0
+  pid=$(sed -n 1p "$cleanup_lock" 2>/dev/null | tr -d ' ' || true)
+  [ "$pid" = "$$" ] || return 0
+  rm -f "$cleanup_lock"
+  return 0
+}
+
+# 0 = this run owns the cleanup, 1 = another run owns it, 2 = no lock available.
+lock_rc=0
+cleanup_lock_acquire || lock_rc=$?
+case "$lock_rc" in
+  0) ;;
+  1)
+    echo "kingpin-done: cleanup of task $id is already running ($cleanup_lock); leaving it to that run" >&2
+    exit 0
+    ;;
+  *) die "cannot create the cleanup lock $cleanup_lock" ;;
+esac
+trap cleanup_lock_release EXIT
+
+# Re-check under the lock: the run we lost the race to may have archived it.
+if [ ! -d "$task_dir" ]; then
+  [ -d "$KP_HOME/archive/$id" ] || die "task $id disappeared while cleanup started: $task_dir"
+  echo "OK: task $id already cleaned up (archived)"
+  exit 0
+fi
 
 # shellcheck source=/dev/null
 . "$env_file"
 
-[ -n "${PROJECT_PATH:-}" ] || { echo "kingpin-done: PROJECT_PATH missing in $env_file" >&2; exit 1; }
-[ -n "${WORKTREE:-}" ] || { echo "kingpin-done: WORKTREE missing in $env_file" >&2; exit 1; }
+[ -n "${PROJECT_PATH:-}" ] || die "PROJECT_PATH missing in $env_file"
+[ -n "${WORKTREE:-}" ] || die "WORKTREE missing in $env_file"
 
 release_landing_lock_and_advance_queue() {
   local project=${PROJECT:-default}
@@ -84,6 +170,19 @@ refuse_cleanup() {
   exit 1
 }
 
+# A lost lease does not heal by retrying. `kingpin-watch` retries every task whose
+# last status is `cleanup-refused:` (bin/kingpin-watch:207), and before this marker
+# each retry re-ran `git fetch origin`, `git ls-remote --symref origin HEAD` and a
+# `treehouse return` that is known to fail (issue #75). The marker records the
+# refusal, so a later run without --force re-emits it and stops before any network
+# call or external command. `--force` is the documented recovery path: it bypasses
+# the marker and attempts the full cleanup again.
+lease_lost_marker="$task_dir/lease-lost"
+if [ -f "$lease_lost_marker" ] && [ "$FORCE" -eq 0 ]; then
+  lease_reason=$(sed -n 1p "$lease_lost_marker" 2>/dev/null || true)
+  refuse_cleanup "${lease_reason:-treehouse return failed for worktree $WORKTREE; the lease is lost and the slot was not released}"
+fi
+
 # Slot guard: never release a worktree that another unfinished task holds, not
 # even with --force. A stale record may still point at a slot that has since
 # been leased to a live worker.
@@ -118,16 +217,58 @@ fi
 
 # Set when the merge check below ran and passed: only then is the remote branch deleted.
 merge_verified=0
-default_ref=$(git -C "$PROJECT_PATH" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || echo "refs/remotes/origin/main")
-default_branch=${default_ref#refs/remotes/origin/}
+
+# The branch the project treats as its default. A clone records origin/HEAD; a repo
+# whose default branch is master, or one whose origin/HEAD was never set, has none,
+# and the old blind fallback to origin/main refused every cleanup there (issue #75).
+resolve_default_branch() {
+  local ref head b
+  if ref=$(git -C "$PROJECT_PATH" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null) \
+     && git -C "$PROJECT_PATH" show-ref --verify --quiet "$ref"; then
+    printf '%s\n' "${ref#refs/remotes/origin/}"
+    return 0
+  fi
+  for b in master main; do
+    if git -C "$PROJECT_PATH" show-ref --verify --quiet "refs/remotes/origin/$b"; then
+      printf '%s\n' "$b"
+      return 0
+    fi
+  done
+  head=$(git -C "$PROJECT_PATH" symbolic-ref --short -q HEAD 2>/dev/null || true)
+  printf '%s\n' "${head:-main}"
+}
+
+# Ask the remote which branch its HEAD names. Read-only: it does not rewrite
+# refs/remotes/origin/HEAD in the user's repository, and an unreachable remote
+# prints nothing so the local fallback above decides.
+remote_default_branch() {
+  local head
+  head=$(git -C "$PROJECT_PATH" ls-remote --symref origin HEAD 2>/dev/null \
+    | sed -n 's|^ref: refs/heads/\([^[:space:]]*\)[[:space:]]*HEAD$|\1|p' \
+    | head -n 1 || true)
+  printf '%s\n' "$head"
+}
+
+default_branch=$(resolve_default_branch)
 
 # Confirm commit is on origin default branch
 if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ]; then
   head_sha=$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || true)
   if [ -n "$head_sha" ]; then
-    git -C "$PROJECT_PATH" fetch origin >/dev/null 2>&1 || true
+    fetch_note=""
+    if ! fetch_out=$(git -C "$PROJECT_PATH" fetch origin 2>&1); then
+      fetch_out=$(printf '%s' "${fetch_out:-no output from git}" | tr '\n' ' ' | tr -s ' ')
+      echo "kingpin-done: git fetch origin failed in $PROJECT_PATH: $fetch_out; verifying against the last-known origin refs" >&2
+      fetch_note="; the last git fetch failed ($fetch_out)"
+    fi
+    remote_default=$(remote_default_branch)
+    if [ -n "$remote_default" ]; then default_branch=$remote_default; fi
+    default_ref="refs/remotes/origin/$default_branch"
+    if ! git -C "$PROJECT_PATH" show-ref --verify --quiet "$default_ref"; then
+      refuse_cleanup "HEAD $head_sha cannot be verified: $default_ref is missing in $PROJECT_PATH$fetch_note; refusing to tear down without --force"
+    fi
     if ! git -C "$PROJECT_PATH" merge-base --is-ancestor "$head_sha" "$default_ref" 2>/dev/null; then
-      refuse_cleanup "HEAD $head_sha is not yet merged into $default_ref; refusing to tear down without --force"
+      refuse_cleanup "HEAD $head_sha is not yet merged into $default_ref$fetch_note; refusing to tear down without --force"
     fi
     merge_verified=1
   fi
@@ -151,12 +292,28 @@ if command -v "$LAVISH_CMD" >/dev/null 2>&1 && [ -f "$task_dir/report.html" ]; t
   "$LAVISH_CMD" end "$task_dir/report.html" >/dev/null 2>&1 || true
 fi
 
-# 2. Return treehouse slot
+# 2. Return treehouse slot. A nonzero return means the pool no longer holds this
+# worktree (it was already returned, destroyed, or a spawn leased the path again).
+# Archiving anyway would lose the slot with no record, and a later spawn would fail
+# with "treehouse could not lease a worktree"; name the lease and stop instead.
 if [ -d "$WORKTREE" ]; then
   ret_args=()
   if [ "$FORCE" -eq 1 ]; then ret_args+=(--force); fi
-  (cd "$PROJECT_PATH" && treehouse return "${ret_args[@]}" "$WORKTREE" >/dev/null 2>&1) || true
+  if ! return_out=$(cd "$PROJECT_PATH" && treehouse return "${ret_args[@]}" "$WORKTREE" 2>&1); then
+    # The status file is line-based: treehouse can print more than one line.
+    return_out=$(printf '%s' "${return_out:-no output from treehouse}" | tr '\n' ' ' | tr -s ' ')
+    lease_reason="treehouse return failed for worktree $WORKTREE: $return_out; the lease is lost and the slot was not released"
+    # Record why, so the supervisor's next retry stops here instead of repeating
+    # the network check and a failing treehouse call. A marker that cannot be
+    # written only costs that saving; the refusal is still reported.
+    printf '%s\n' "$lease_reason" > "$lease_lost_marker" 2>/dev/null \
+      || echo "kingpin-done: could not record the lost lease in $lease_lost_marker" >&2
+    refuse_cleanup "$lease_reason"
+  fi
 fi
+# The lease was released, or there was nothing left to release: the marker has
+# served its purpose, and a stale one must not travel into the archive.
+rm -f "$lease_lost_marker"
 
 # 3. Delete the local branches: the one the worker used, and the recorded one.
 # The default branch is never deleted.
@@ -177,10 +334,11 @@ fi
 # 4. Release project landing lock and pop next task in queue
 release_landing_lock_and_advance_queue
 
-touch "$task_dir/done_cleaned"
-
-# 5. Archive the task record out of the live fleet. The done_cleaned marker and
-# any critique file travel with it; kingpin-curate scans the archive.
+# 5. Archive the task record out of the live fleet. The record is moved first and
+# the marker written inside the archive: a concurrent or retried run can no longer
+# delete the directory before the touch (issue #75: `touch: cannot touch
+# .../done_cleaned: No such file or directory`), and the marker still travels with
+# the record for `kingpin list --all` and kingpin-curate.
 archive_root="$KP_HOME/archive"
 mkdir -p "$archive_root"
 archive_dir="$archive_root/$id"
@@ -189,5 +347,7 @@ while [ -e "$archive_dir" ]; do
   n=$((n + 1))
   archive_dir="$archive_root/$id.$n"
 done
-mv "$task_dir" "$archive_dir"
+mv "$task_dir" "$archive_dir" || die "could not archive $task_dir to $archive_dir"
+touch "$archive_dir/done_cleaned" 2>/dev/null \
+  || die "archived $id to $archive_dir but could not write its done_cleaned marker"
 echo "OK: cleaned up task $id (archived to $archive_dir)"
