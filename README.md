@@ -88,16 +88,19 @@ kingpin run my-repo --text "refactor authentication service" --harness agy
 
 ## Automated Fleet Supervision (`kingpin watch`)
 
-When running multiple workers simultaneously, start the fleet supervisor in the background or in a separate terminal:
+`kingpin watch` is the fleet's supervisor: one process per fleet, started once and left running, in the background or in a separate terminal:
 
 ```bash
-kingpin watch
+kingpin watch >> ~/.kingpin/supervisor.log 2>&1 &
 ```
 
-`kingpin watch` automates the entire lifecycle:
-- Automatically triggers `kingpin land` for workers in `auto` mode when they report `ready:`.
+It loops, so it keeps handling events after it handles one; there is nothing to restart each turn. It:
+- Automatically triggers `kingpin land` for workers in `auto` mode when they report `ready:`, and continues a landing after `fixed:`.
 - Automatically triggers `kingpin done` when workers report `merged:`, releasing worktrees back to the treehouse pool.
 - Notifies when tasks in `review` mode are ready for inspection or need input.
+- Advances a project's landing queue whose holder released or is gone.
+
+Only one supervisor runs at a time. A second `kingpin watch` refuses to start and names the running pid (recorded in `~/.kingpin/supervisor.pid`), and a pidfile left by a supervisor that died is reclaimed by the next one. `kingpin list` prints `Supervisor: running (pid 12345, since 14:03)` or `Supervisor: none - run kingpin watch`, and `kingpin lock acquire` warns when none is running. `kingpin watch --once` runs a single pass without claiming the pidfile; `kingpin wait` is the one-shot primitive underneath, for scripts that want to read fleet events themselves.
 
 ---
 
@@ -107,9 +110,9 @@ kingpin watch
 |---|---|---|
 | `kingpin init` | `kingpin init [name] [path] [--harness <name>]` | Auto-configures a project from current directory or path. |
 | `kingpin run` | `kingpin run <proj> (--issue <n> \| --text <req>) [--mode auto\|review]` | Single command that spawns, monitors, and completes a task. |
-| `kingpin watch` | `kingpin watch [--once] [--interval <sec>]` | Continuous supervision and auto-landing loop. Each cycle also advances a project's landing queue whose holder released or is gone, so an ownerless queue recovers on its own. |
+| `kingpin watch` | `kingpin watch [--once] [--interval <sec>]` | The fleet's one supervisor: a continuous supervision and auto-landing loop. Each cycle also advances a project's landing queue whose holder released or is gone, so an ownerless queue recovers on its own. It claims `~/.kingpin/supervisor.pid`, refuses a second copy with the running pid named, reclaims a pidfile left by a dead supervisor, and `--once` runs one pass without claiming it (that is the path `kingpin run` and the tests use). `kingpin wait` is the primitive it drives. |
 | `kingpin spawn` | `kingpin spawn <proj> (--issue <n> \| --text <req>) [--harness <name>]` | Starts a worker on a background tmux window and records its tmux window ID (`TMUX_WINDOW_ID` in `task.env`), so renaming a worker window or moving it to another session is safe; `task.env` files without it fall back to `TMUX_TARGET`. The window is pinned with `automatic-rename off` and `allow-rename off`, so ambient tmux settings and worker child commands cannot rename it; only `kingpin-wait` renames it. The task ID, branch (`kingpin/<id>`) and window share one slug: `kp-<n>-<slug>` from the issue title for `--issue`, `kp-<slug>` from the request for `--text` (`--id` overrides). For `--text`, `kingpin-wait` renames the window and `TMUX_TARGET` to `kp-<n>-<slug>` once the worker reports its issue; the task ID and branch keep the first name. |
-| `kingpin list` | `kingpin list [--all]` | Displays active fleet tasks and states in the terminal; `--all` also shows finished (archived) tasks. |
+| `kingpin list` | `kingpin list [--all]` | Displays active fleet tasks and states in the terminal, plus a `Supervisor: running (pid <n>, since <HH:MM>)` or `Supervisor: none - run kingpin watch` line; `--all` also shows finished (archived) tasks. |
 | `kingpin send` | `kingpin send <task-id> "<text>"` | Types the text literally into a worker window, then presses Enter. |
 | `kingpin peek` | `kingpin peek <task-id> [--lines N]` | Read-only view of a worker: prints the last 20 non-empty lines of its tmux pane (`--lines N` changes the count), scrollback included. It finds the pane from the recorded window ID (`TMUX_WINDOW_ID`), so it works after the window is renamed or moved, and falls back to `TMUX_TARGET` for older `task.env` files. It sends no keys and changes no state. Exits 1 for an unknown task or a window that is gone, 2 for a bad argument. Use it to see why a worker is stuck (an unsubmitted pasted message, a usage-limit banner, a permission prompt). |
 | `kingpin sync` | `kingpin sync` | Fast-forwards the main checkout from its upstream branch with `git pull --ff-only`, so the orchestrator never runs raw git against project files. Run it in the main checkout; it prints the old and new short SHAs plus the commits pulled, or `already up to date`. It never merges, rebases, resets or stashes. Exits 1 with a message on stderr in a linked worktree, on a dirty tree (any `git status --porcelain` output; ignored files do not count), with a detached HEAD or no upstream, or when a fast-forward is not possible; 2 for an argument. |
@@ -118,7 +121,7 @@ kingpin watch
 | `kingpin ack` | `kingpin ack <task-id>... \| --all` | Marks a task's events as seen, so `kingpin wait` reports only newer ones. |
 | `kingpin land` | `kingpin land <task-id>` (alias: `kingpin approve <task-id>`) | Serializes project landing and triggers merge. The review gate fails closed: it reads `review=` from the worker's last `ready:` line whatever the field order, and only `APPROVE` lands. `APPROVE WITH NITS` and `NEEDS CHANGES` (any case; `NEEDS_CHANGES` and `NEEDS-CHANGES` too) run `/fix-findings` first and say so; landing continues after the worker reports `fixed:`. An unrecognized verdict, a line with no `review=` field (or an empty or repeated one), a `fixed:` line without a numeric `high=<n>`, or a `fixed:` line whose `review=` is not `APPROVE` prints the line it could not parse and exits 1 without taking the landing lock. When the review is clean it says that landing is starting. The project lane is claimed atomically, so two concurrent runs for different tasks cannot both dispatch. A `kingpin-send` failure (a dead worker window, for example) clears `landing_sent`, releases the project landing lock and exits 1, so the lane advances instead of wedging; if the release itself cannot take the lane's mutex it says so on stderr and names `kingpin done <id> --force`. A queued landing is skipped when the task is gone, archived, finished or already dispatched. |
 | `kingpin done` | `kingpin done <task-id> [--force]` | Verifies merge, releases worktree lease, advances the queue, and archives the task record to `~/.kingpin/archive/<task-id>`. The handoff to the next queued task skips entries that can no longer land (gone, archived, finished or already dispatched) and lands the next live one. Refuses, even with `--force`, when another unfinished task records the same worktree. A refusal is recorded as a `cleanup-refused:` status line only for a finished task (`merged:`, `failed:`); a worker that may still be live keeps its last status (for example `needs-input:`), and the reason goes to stderr. `done` also stops the task's dossier listener, and `kingpin ack` of an archived task is a no-op that exits 0 with a note. |
-| `kingpin lock` | `kingpin lock [status\|check\|acquire [--harness <name>]\|release\|harness]` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. |
+| `kingpin lock` | `kingpin lock [status\|check\|acquire [--harness <name>]\|release\|harness]` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. `acquire` also warns on stderr when no fleet supervisor is running. |
 | `kingpin guard` | `kingpin guard [install\|check\|warn]` | Installs or verifies the orchestrator-only tool guard, a `PreToolUse` hook in `.claude/settings.local.json` (untracked), and the orchestrator contract described under [Initialize your project](#1-initialize-your-project-run-once-inside-any-git-repository); `install` also removes the deny rules that older versions wrote there, which leaked into workers; `check` names a stale contract copy; `warn` prints a stderr warning when the guard or the contract is missing or stale; `kingpin guard hook <orchestrator\|worker>` is the hook entry point; `list` and `wait` run it at startup, and `lock acquire` prints the same warning. |
 | `kingpin scope` | `kingpin scope files\|check --harness <claude\|agy\|opencode> --worktree <dir> [--preamble <file>]` | Names the instruction files a harness really loads for a worker: `files` prints `<kind>\t<path>` per source (`discovery`, a file the harness finds; `configured`, an `instructions` entry of the worktree's config, JSONC included; `ignored`, a rules file the harness skips; `global`, loaded from the user's config directory). `check` exits 1 naming the file when any source carries the orchestrator contract, including a global file in your own config directory (`KINGPIN_ALLOW_GLOBAL_CONTRACT=1` downgrades that one to a warning), and, for OpenCode and agy, when the preamble is not among the sources the harness loads (Claude Code gets it through `--append-system-prompt-file`, which `check` does not verify); nothing is edited. `kingpin spawn` runs `check` before it opens a window. |
 | `kingpin report` | `kingpin report diffs [--repo <dir>] [--base <ref>]` / `kingpin report check [--prose-only] <report.html>` | Dossier helper for workers. `diffs` prints the HTML for the file-diff section (every committed, uncommitted and untracked change, each with a static fallback and a `@pierre/diffs` call that passes `oldFile`/`newFile`). `check` exits 1 when a dossier would show blank diffs (`patch:` used, `FileDiff` without `oldFile`/`newFile`, or an empty diff container), and runs a prose pass over the page: it fails with `file:line` and the offending line on the mechanical slice of the `unslop` skill (em dash, "testament to", "it's not just", "delve", "seamless", "in order to", "let me know", "I hope this helps"), ignoring code, diff output, script/style bodies and attributes. `<!-- unslop:ignore -->` on a line is the single escape. `--prose-only` checks just the prose, for an artifact with no diff section. The worker preamble and `AGENTS.md` require both the pass and the check before `ready:` and before an orchestrator artifact is served. |
@@ -228,7 +231,7 @@ Each supported harness uses native configuration and hook mechanisms without dir
 
 Kingpin-injected worktree configuration files (`.agents/rules/kingpin.md`, `.agents/hooks.json`, `.opencode/opencode.json`, `.opencode/plugins/package.json`, and `.opencode/plugins/kingpin-stop.js`) are added to `.git/info/exclude` in each leased worktree to guarantee zero uncommitted git pollution without hiding user-created artifacts in those directories. The main checkout's contract copies go through `.git/info/exclude` too, so your own `.agents/` and `.opencode/` files stay visible in `git status`.
 
-`.gitignore` ignores `.agents/plans/`, `.agents/reports/` and `.agents/reviews/`. They hold local working artifacts (plans, implementation reports, reviews and prototype patches) that agents write while they work, so they are not tracked. Other files under `.agents/`, such as a PRD, stay trackable.
+`.gitignore` ignores `.agents/plans/`, `.agents/reports/` and `.agents/reviews/`. They hold local working artifacts (plans, implementation reports, reviews and prototype patches) that agents write while they work, so they are not tracked. Other files under `.agents/`, such as a PRD, stay trackable. An ignore rule never untracks a path that is already in the index, so `./tests/lint.sh` fails on any tracked path under those three directories; the remedy it prints is `git rm --cached <path>`, which leaves the file on disk and ignored.
 
 ---
 
@@ -238,7 +241,8 @@ Run the lint and the full test suite from the repository root:
 
 ```bash
 # Lint: bash -n + shellcheck over bin/*, lib/*.sh and tests/*.sh (config in .shellcheckrc),
-# plus a check that every tests/test-*.sh is a leg of the CI matrix
+# a check that every tests/test-*.sh is a leg of the CI matrix, and a check that no
+# .agents plan, report or review file is tracked
 ./tests/lint.sh
 
 # Every suite, one after the other
@@ -251,6 +255,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 |---|---|
 | `test-lifecycle.sh` | `init`, `list`, `watch` auto-lifecycle, `run`, tmux session targeting |
 | `test-wait.sh` | `wait` and `ack`: blocking, wake filtering, exit codes |
+| `test-watch-supervisor.sh` | `watch`: single supervisor with a pidfile, stale reclaim, `list` line, `lock acquire` warning, events handled across turns |
 | `test-lock.sh` | `lock`: lifecycle, collisions, stale locks, recorded harness |
 | `test-curate.sh` | `curate` |
 | `test-land.sh` | `land`: review-gate verdicts, fix pass, re-review, output wording |
@@ -269,6 +274,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-worker-scope.sh` | Worker instruction context: what each harness really loads, the spawn refusal, the installed contract |
 | `test-worker-settings.sh` | Orchestrator tool guard and worker edit boundary |
 | `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
+| `test-agents-paths.sh` | `.agents` artifact policy: nothing under `plans/`, `reports/` or `reviews/` is tracked, other `.agents/` files stay trackable, and the lint fails on a forced artifact |
 
 Run one suite with `./tests/test-<name>.sh`. Run suites one at a time in a checkout: `test-lifecycle.sh`, `test-acceptance.sh` and `test-landing-lane.sh` briefly replace `bin/kingpin-send` with a stub (restored on exit), so a second suite that sends keys to a worker during that window hits the stub and fails. CI legs do not clash, since each runs in its own checkout.
 

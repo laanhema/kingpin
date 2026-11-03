@@ -19,6 +19,8 @@ set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 LOCK_FILE="$KP_HOME/orchestrator.lock"
+# shellcheck source=../lib/supervisor.sh
+. "$(dirname "$0")/../lib/supervisor.sh"
 mkdir -p "$KP_HOME"
 
 is_harness_pid() {
@@ -194,6 +196,11 @@ case "$cmd" in
       *contract:*) echo "warning: the orchestrator contract is stale or missing; run 'kingpin guard install'" >&2 ;;
       *) echo "warning: orchestrator guard is not active; run 'kingpin guard install'" >&2 ;;
     esac
+    # Nothing starts a supervisor for you: a session that only inspects the fleet
+    # would leave a daemon behind. The one line names the command to run.
+    if [ -z "$(kp_supervisor_pid "$KP_HOME")" ]; then
+      echo "warning: no fleet supervisor is running; run 'kingpin watch'" >&2
+    fi
     ;;
   harness)
     lock_harness
