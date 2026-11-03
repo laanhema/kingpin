@@ -12,6 +12,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 KP_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../lib/status.sh
 . "$KP_BIN/../lib/status.sh"
+# shellcheck source=../lib/landing.sh
+. "$KP_BIN/../lib/landing.sh"
 
 [ $# -ge 1 ] || { echo "usage: kingpin-land <task-id>" >&2; exit 1; }
 id=$1
@@ -121,36 +123,66 @@ else
   esac
 fi
 
-# Project-level serialization lock
-lock_dir="$KP_HOME/projects"
-mkdir -p "$lock_dir"
-project_landing_lock="$lock_dir/$project.landing"
-queue_file="$lock_dir/$project.landing_queue"
-
-if [ -f "$project_landing_lock" ]; then
-  holder=$(cat "$project_landing_lock" 2>/dev/null || true)
-  holder_status=""
-  if [ -n "$holder" ] && [ -f "$KP_HOME/tasks/$holder/status" ]; then
-    holder_status=$(kp_status_last "$KP_HOME/tasks/$holder/status")
+# Project-level serialization lane. The claim is atomic (lib/landing.sh takes a
+# short-lived mkdir mutex), so two concurrent land runs for different tasks
+# cannot both dispatch: the loser queues and the winner holds the lane.
+mkdir -p "$KP_HOME/projects"
+acquire_rc=0
+kp_landing_acquire "$KP_HOME" "$project" "$id" || acquire_rc=$?
+if [ "$acquire_rc" -eq 2 ]; then
+  echo "kingpin-land: task $id: could not take the project $project landing lock" >&2
+  exit 1
+fi
+if [ "$acquire_rc" -eq 1 ]; then
+  holder=$(kp_landing_holder "$KP_HOME" "$project")
+  enqueue_rc=0
+  kp_landing_enqueue "$KP_HOME" "$project" "$id" || enqueue_rc=$?
+  if [ "$enqueue_rc" -eq 2 ]; then
+    # Not queued and not dispatched: say so and fail, because exiting 0 here
+    # would tell the operator the landing is queued when nothing recorded it.
+    echo "kingpin-land: task $id: could not queue behind $holder for project $project" >&2
+    exit 1
   fi
-  if [ "$holder" != "$id" ] && [ -d "$KP_HOME/tasks/$holder" ] && ! kp_status_is_terminal "$holder_status"; then
+  # An entry appended between the holder check and its release would otherwise
+  # sit in a queue with no holder, so re-check once after queueing.
+  acquire_rc=0
+  kp_landing_acquire "$KP_HOME" "$project" "$id" || acquire_rc=$?
+  if [ "$acquire_rc" -eq 2 ]; then
+    echo "kingpin-land: task $id: could not take the project $project landing lock" >&2
+    exit 1
+  fi
+  if [ "$acquire_rc" -eq 1 ]; then
+    holder=$(kp_landing_holder "$KP_HOME" "$project")
     echo "kingpin-land: project $project is already landing $holder; queuing $id"
-    grep -qx "$id" "$queue_file" 2>/dev/null || echo "$id" >> "$queue_file"
     exit 0
   fi
-fi
-
-# Acquire landing lock for this project
-echo "$id" > "$project_landing_lock"
-if [ -f "$queue_file" ]; then
-  sed -i "/^$id$/d" "$queue_file" 2>/dev/null || true
 fi
 touch "$task_dir/landing_sent"
 
 if [ -n "$issue" ]; then
-  echo "kingpin-land: task $id: $landing_reason; starting landing (sending /issue-flow-done $issue)"
-  "$KP_BIN/kingpin-send" "$id" "/issue-flow-done $issue" >/dev/null
+  land_cmd="/issue-flow-done $issue"
+  started_msg="kingpin-land: task $id: $landing_reason; starting landing (sending /issue-flow-done $issue)"
 else
-  echo "kingpin-land: task $id: $landing_reason; starting landing (no issue number found, sending /create-pr-merge)"
-  "$KP_BIN/kingpin-send" "$id" "/create-pr-merge" >/dev/null
+  land_cmd="/create-pr-merge"
+  started_msg="kingpin-land: task $id: $landing_reason; starting landing (no issue number found, sending /create-pr-merge)"
 fi
+# Printed only once the send reached the worker: kingpin-listen answers a dossier
+# with the first line of a failed run, so that line has to be the failure. On
+# success this stays the last stdout line, which kingpin-listen shows too.
+if "$KP_BIN/kingpin-send" "$id" "$land_cmd" >/dev/null; then
+  echo "$started_msg"
+  exit 0
+fi
+# Nothing reached the worker (a dead tmux window, for example). Keeping the lock
+# and landing_sent would tell kingpin-listen "already landing" and hide the
+# failure, so release the lane and let the next land acquire it.
+echo "kingpin-land: task $id: could not send '$land_cmd' (the worker window is gone?)" >&2
+rm -f "$task_dir/landing_sent"
+# Report what the release actually did: a release that fails leaves the lane
+# held by a task that can no longer land, which is the wedge this lane removes.
+if kp_landing_release "$KP_HOME" "$project" "$id"; then
+  echo "kingpin-land: released the project $project landing lock; the next land can take it" >&2
+else
+  echo "kingpin-land: task $id: could not release the project $project landing lock; run kingpin done $id --force" >&2
+fi
+exit 1
