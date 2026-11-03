@@ -5,6 +5,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 kp_test_setup "done"
+kp_test_bsd_shims
 kp_test_project
 # The synthetic worktrees below were never leased from a pool, so the real
 # `treehouse return` refuses them; every fixture prepends its own stub where it
@@ -686,7 +687,7 @@ git -C "$T/t23-wt2" config user.email test@example.com
 echo more > "$T/t23-wt2/more.txt"
 git -C "$T/t23-wt2" add more.txt
 git -C "$T/t23-wt2" commit -qm "unmerged work"
-sed -i "s|^WORKTREE=.*|WORKTREE=$T/t23-wt2|" "$KINGPIN_HOME/tasks/t23-stale/task.env"
+kp_test_sub "$KINGPIN_HOME/tasks/t23-stale/task.env" "s|^WORKTREE=.*|WORKTREE=$T/t23-wt2|"
 git -C "$t23_repo" update-ref -d refs/remotes/origin/main
 PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t23-stale >"$T/t23-b.out" 2>&1 \
   && fail "t23: an unverifiable cleanup was not refused" || pass "t23: an unverifiable cleanup is refused"

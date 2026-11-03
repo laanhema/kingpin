@@ -9,7 +9,7 @@ each task back as a visual review dossier. This file describes the repository.
 | Path | What it holds |
 |---|---|
 | `bin/` | One executable per command (`kingpin-spawn`, `kingpin-guard`, `kingpin-wait`, ...), plus `bin/kingpin`, the dispatcher that maps `kingpin <cmd>` to them |
-| `lib/` | Shared helpers: `status.sh` (the status-file protocol, sourced by the scripts), `landing.sh`, `mutex.sh` (the mutex sequence shared by the landing lane and `kingpin-lock`), `supervisor.sh` (the fleet supervisor's pidfile, sourced by `kingpin-watch`, `kingpin-lock` and `kingpin list`), `exclude.sh` (the per-worktree exclude file a spawn points at, sourced by `kingpin-spawn` and `kingpin-done`), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, ...) |
+| `lib/` | Shared helpers: `status.sh` (the status-file protocol, sourced by the scripts), `landing.sh`, `mutex.sh` (the mutex sequence shared by the landing lane and `kingpin-lock`), `supervisor.sh` (the fleet supervisor's pidfile, sourced by `kingpin-watch`, `kingpin-lock` and `kingpin list`), `exclude.sh` (the per-worktree exclude file a spawn points at, and the guard-owned block of the main checkout's exclude file, sourced by `kingpin-spawn`, `kingpin-done` and `kingpin-guard`), `portable.sh` (the GNU-then-BSD clock and file-mtime readers), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, ...) |
 | `worker/` | `preamble.md`, the text a spawned worker receives, and `hooks.json`, its Claude Code settings |
 | `orchestrator/contract.md` | The orchestrator contract. `kingpin guard install` copies it into the main checkout's untracked instruction sources; no harness loads this tracked file directly |
 | `tests/` | One shell suite per feature, with shared setup in `tests/lib.sh` |
@@ -19,8 +19,8 @@ each task back as a visual review dossier. This file describes the repository.
 ## Validation
 
 ```bash
-# bash -n, shellcheck, the CI-matrix check, the README/docs CLI-reference check, and the
-# tracked .agents artifact check
+# bash -n, shellcheck, node --check over lib/*.mjs, the CI-matrix check, the README/docs
+# CLI-reference check, and the tracked .agents artifact check
 ./tests/lint.sh
 
 # One suite at a time (two suites briefly swap bin/kingpin-send)
@@ -42,7 +42,8 @@ CI (`.github/workflows/ci.yml`) runs the lint plus one matrix leg per suite on e
 PR. `./tests/lint.sh` fails when a suite has no leg, so add both together.
 
 `tests/lint.sh` needs shellcheck 0.11.0, the version CI pins
-(`pip install shellcheck-py==0.11.0.1`). Disable a rule only with a
+(`pip install shellcheck-py==0.11.0.1`), and `node` for the `node --check` pass over
+`lib/*.mjs`. Disable a rule only with a
 `# shellcheck disable=SCnnnn # reason` line, or in `.shellcheckrc` with a comment.
 
 The suites need `git`, `tmux`, `node`, `treehouse` and a git identity; they set their
@@ -61,7 +62,12 @@ so no harness binary is needed.
   `$KP_HOME/tasks/<id>/exclude`, which the worktree reads through a worktree-scoped
   `core.excludesFile` (`lib/exclude.sh`); never through the main checkout's
   `.git/info/exclude`, which belongs to the user and is shared by every linked worktree,
-  and never through the tracked `.gitignore`. Enabling git's `extensions.worktreeConfig`
+  and never through the tracked `.gitignore`. The only part of that file `kingpin guard
+  install` rewrites is the `# kingpin guard` … `# end kingpin guard` block it holds its
+  main-checkout contract copies in, and it may also append a plain
+  `.claude/settings.local.json` line outside that block when the project does not already
+  ignore the file. `kingpin spawn` names every other Kingpin-shaped line there and skips
+  the block. Enabling git's `extensions.worktreeConfig`
   is the one repository-config line a spawn writes. `kingpin done` clears the pointer, the
   files that spawn recorded as injected and the task's exclude file. A config the project
   already tracks

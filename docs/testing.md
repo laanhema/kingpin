@@ -6,10 +6,10 @@ Run the lint and the full test suite from the repository root:
 
 ```bash
 # Lint: bash -n + shellcheck over bin/*, lib/*.sh and tests/*.sh (config in .shellcheckrc),
-# a check that every tests/test-*.sh is a leg of the CI matrix, a check that the README
-# documents every flag and KINGPIN_* variable the scripts parse, and a check that no
-# .agents plan, report or review file is tracked
-# (the flag and variable check runs over README.md and docs/*.md together; either can document a token)
+# node --check over lib/*.mjs, a check that every tests/test-*.sh is a leg of the CI matrix,
+# a check over README.md and docs/*.md that every parsed flag and KINGPIN_* variable is
+# documented, and a check that no .agents plan, report or review file is tracked. Pass
+# --root <dir> to lint another checkout instead of this one
 ./tests/lint.sh
 
 # Every suite, one after the other
@@ -44,6 +44,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-worker-settings.sh` | Orchestrator tool guard and worker edit boundary |
 | `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
 | `test-agents-paths.sh` | `.agents` artifact policy: nothing under `plans/`, `reports/` or `reviews/` is tracked, other `.agents/` files stay trackable, and the lint fails on a forced artifact |
+| `test-lint.sh` | the lint itself: a syntax error in a shell script or a `lib/*.mjs` module fails it by name, and a suite with no CI leg fails the matrix check |
 
 Run one suite with `./tests/test-<name>.sh`. Run suites one at a time in a checkout: `test-lifecycle.sh`, `test-acceptance.sh` and `test-landing-lane.sh` briefly replace `bin/kingpin-send` with a stub (restored on exit), so a second suite that sends keys to a worker during that window hits the stub and fails. CI legs do not clash, since each runs in its own checkout.
 

@@ -27,6 +27,8 @@ KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$KP_ROOT/lib/status.sh"
+# shellcheck source=../lib/portable.sh
+. "$KP_ROOT/lib/portable.sh"
 # shellcheck source=../lib/exclude.sh
 . "$KP_ROOT/lib/exclude.sh"
 CLAUDE_CMD=${KINGPIN_CLAUDE:-claude}
@@ -169,17 +171,26 @@ worktree=$(cd "$PROJECT_PATH" && treehouse get --lease -b "$branch") || die "tre
 # lib/exclude.sh and issue #77. Each harness below records the paths it injects.
 task_exclude_paths=()
 
-# Older Kingpin versions appended entries to the shared .git/info/exclude. That file
-# belongs to the user and this spawn never edits it, but a broad `.agents/` or
+# Older Kingpin versions appended entries to the shared .git/info/exclude, and
+# `kingpin guard install` owns a marked block there for its own contract copies. That
+# file belongs to the user and this spawn never edits it, but a broad `.agents/` or
 # `.opencode/` line, or one of the five exact paths an older spawn appended, hides files
-# in every worktree: name it and let the user decide. Either form may also be the user's
-# own line, so the warning suggests where it came from instead of asserting it.
+# in every worktree: name it and let the user decide. The lines inside the guard's block
+# are skipped, because the guard rewrites them on every install and naming them sends the
+# user to remove files the next install puts back (issue #123). Either form may also be
+# the user's own line, so the warning suggests where it came from instead of asserting it.
 warn_shared_excludes() {
   local excl line rel joined='' named=() injected=()
+  local in_guard=0
   excl=$(git -C "$worktree" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
   [ -n "$excl" ] && [ -f "$excl" ] || return 0
   while IFS= read -r rel; do injected+=("$rel"); done < <(kp_exclude_injected_paths)
   while IFS= read -r line; do
+    case $line in
+      "$KP_GUARD_EXCLUDE_BEGIN") in_guard=1; continue ;;
+      "$KP_GUARD_EXCLUDE_END") in_guard=0; continue ;;
+    esac
+    [ "$in_guard" = 0 ] || continue
     case $line in
       .agents|.opencode|/.agents|/.opencode|.agents/|.opencode/|/.agents/|/.opencode/)
         named+=("$line")
@@ -197,8 +208,15 @@ warn_shared_excludes() {
 }
 
 if [ -n "$SETUP_CMD" ]; then
-  (cd "$worktree" && bash -c "$SETUP_CMD") > "$task_dir/setup.log" 2>&1 \
-    || die "setup failed in $worktree; see $task_dir/setup.log"
+  if ! (cd "$worktree" && bash -c "$SETUP_CMD") > "$task_dir/setup.log" 2>&1; then
+    # The cleanup trap deletes $task_dir on a failed spawn, so a message that says "see
+    # setup.log" would point at a file that is gone by the time the operator reads it (issue
+    # #81). Stream the captured output with a prefix, then die without naming a path.
+    while IFS= read -r line || [ -n "$line" ]; do
+      printf 'kingpin-spawn: setup: %s\n' "$line" >&2
+    done < "$task_dir/setup.log"
+    die "setup failed in $worktree; the command's own output is above"
+  fi
 fi
 
 if [ -n "$issue" ]; then
@@ -227,6 +245,11 @@ target_session=$(resolve_tmux_session)
 # exists before the window does. Removed once the window ID is recorded.
 : > "$task_dir/launching"
 
+# `date -Iseconds` is GNU-only, and a failed command substitution inside the
+# heredoc leaves CREATED empty without failing the spawn, which leaves a worker
+# that died at launch stuck at (pending). Stop instead.
+created=$(kp_now_iso) || die "cannot read the current time (date +%Y-%m-%dT%H:%M:%S%z failed)"
+
 cat > "$task_dir/task.env" <<EOF
 TASK_ID=$id
 PROJECT=$project
@@ -237,7 +260,7 @@ MODE=$mode
 BRANCH=$branch
 WORKTREE=$worktree
 TMUX_TARGET=$target_session:$id
-CREATED=$(date -Iseconds)
+CREATED=$created
 EOF
 
 case "$harness" in

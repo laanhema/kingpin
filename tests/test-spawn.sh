@@ -5,6 +5,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 kp_test_setup "spawn"
+kp_test_bsd_shims
 kp_test_project
 
 kp_test_stub_lavish
@@ -68,7 +69,7 @@ tmux kill-window -t kingpin:t15-gone 2>/dev/null || true
 
 # Legacy task.env with only TMUX_TARGET still works through the name
 t15l_wid=$(mk_t15 t15-legacy)
-sed -i '/^TMUX_WINDOW_ID=/d' "$KINGPIN_HOME/tasks/t15-legacy/task.env"
+kp_test_sub "$KINGPIN_HOME/tasks/t15-legacy/task.env" '/^TMUX_WINDOW_ID=/d'
 KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin-send" t15-legacy "legacy-ok" >/dev/null 2>&1 && pass "t15: legacy task.env (TMUX_TARGET only) still reaches the window" || fail "t15: legacy task.env send failed"
 "$KP_BIN/kingpin-done" t15-legacy --force >/dev/null 2>&1 || true
 ! tmux list-windows -a -F '#{window_id}' | grep -qx "$t15l_wid" && pass "t15: kingpin-done closed the legacy window" || fail "t15: kingpin-done left the legacy window alive"
@@ -102,6 +103,7 @@ echo "$t17_out" | grep -q "spawned $t17_id " && pass "t17: issue spawn named $t1
 t17_env=$KINGPIN_HOME/tasks/$t17_id/task.env
 grep -qx "BRANCH=kingpin/$t17_id" "$t17_env" && pass "t17: BRANCH is kingpin/$t17_id" || fail "t17: wrong BRANCH"
 grep -qx "TMUX_TARGET=kingpin:$t17_id" "$t17_env" && pass "t17: TMUX_TARGET is kingpin:$t17_id" || fail "t17: wrong TMUX_TARGET"
+grep -qE '^CREATED=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{4}$' "$t17_env" && pass "t17: CREATED is written in a form both date(1)s write" || fail "t17: CREATED is missing or GNU-only: $(grep '^CREATED=' "$t17_env")"
 tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "$t17_id" && pass "t17: tmux window is named $t17_id" || fail "t17: window name wrong"
 t17_wt=$(sed -n 's/^WORKTREE=//p' "$t17_env")
 [ "$(git -C "$t17_wt" branch --show-current)" = "kingpin/$t17_id" ] && pass "t17: worktree is on kingpin/$t17_id" || fail "t17: worktree branch wrong"
@@ -179,5 +181,46 @@ sleep 0.3
 export KINGPIN_AGY=$T/fake-worker
 tmux set-option -gu automatic-rename
 tmux set-option -gu allow-rename
+
+# Test 19: the dependency setup command runs inside the leased worktree, before launch
+echo "=== Test 19: SETUP_CMD runs in the worktree ==="
+# The project env carries the setup command the way `kingpin init --setup` writes it.
+setup_project() { # <command>: rewrite demo-auto's SETUP_CMD, keeping the project path
+  printf 'PROJECT_PATH=%q\nHARNESS=agy\nSETUP_CMD=%q\n' "$T/proj" "$1" > "$KINGPIN_HOME/projects/demo-auto.env"
+}
+
+setup_project 'touch setup-ran && echo ok'
+"$KP_BIN/kingpin" spawn demo-auto --issue 401 --id t19-setup-ok --mode review >/dev/null && pass "t19: spawn with a setup command exits 0" || fail "t19: spawn with a setup command failed"
+t19_wt=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/t19-setup-ok/task.env")
+[ -f "$t19_wt/setup-ran" ] && pass "t19: the setup command ran in the worktree" || fail "t19: setup-ran missing from the worktree"
+grep -qx 'ok' "$KINGPIN_HOME/tasks/t19-setup-ok/setup.log" && pass "t19: setup.log holds the command's output" || fail "t19: setup.log missing 'ok': $(cat "$KINGPIN_HOME/tasks/t19-setup-ok/setup.log" 2>/dev/null)"
+"$KP_BIN/kingpin" "done" t19-setup-ok --force >/dev/null
+
+# A failed setup aborts the spawn and leaves nothing behind for the next lease. The command
+# prints its own words, so the failure output must carry them: the cleanup trap deletes
+# $task_dir, and with it setup.log, before the operator can read it (issue #81).
+setup_project 'echo setup-broke >&2; false'
+t19_rc=0
+t19_err=$("$KP_BIN/kingpin" spawn demo-auto --issue 402 --id t19-setup-fail --mode review 2>&1 >/dev/null) || t19_rc=$?
+if [ "$t19_rc" -ne 0 ] && [ ! -d "$KINGPIN_HOME/tasks/t19-setup-fail" ] && grep -q 'setup failed' <<< "$t19_err" && grep -q 'setup-broke' <<< "$t19_err"; then
+  pass "t19: a failed setup command aborts the spawn, leaves no task dir, and streams its output"
+else
+  fail "t19: a failed setup command did not abort cleanly (rc=$t19_rc): $t19_err"
+fi
+if grep -q 'setup\.log' <<< "$t19_err"; then
+  fail "t19: the failure message names a setup.log path that the cleanup deletes: $t19_err"
+else
+  pass "t19: the failure message names no deleted setup.log path"
+fi
+t19_pool_rc=0
+t19_pool=$(cd "$T/proj" && treehouse status 2>&1) || t19_pool_rc=$?
+t19_leased=$(grep -c leased <<< "$t19_pool" || true)
+if [ "$t19_pool_rc" -eq 0 ] && [ "$t19_leased" -eq 0 ]; then
+  pass "t19: the failed spawn returned its worktree to the pool"
+else
+  fail "t19: pool unreadable (rc=$t19_pool_rc) or $t19_leased worktree(s) still leased after a failed setup"
+fi
+# Restore the setup command the rest of the suite expects.
+setup_project 'echo setup'
 
 kp_test_finish SPAWN

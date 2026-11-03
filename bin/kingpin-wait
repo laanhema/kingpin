@@ -25,6 +25,8 @@ set -euo pipefail
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
+# shellcheck source=../lib/portable.sh
+. "$(dirname "$0")/../lib/portable.sh"
 TIMEOUT=300
 ONCE=0
 
@@ -64,12 +66,20 @@ fi
 # kingpin-spawn writes task.env before it creates the window and drops `launching`
 # once the window ID is recorded. A fresh marker means the window is still being
 # created; a stale one (a spawn that died) no longer hides a missing window.
+# The age is computed only from a readable mtime; an unreadable one keeps the grace.
 LAUNCH_GRACE=120
 is_launching() {
   local marker="$1/launching"
   [ -f "$marker" ] || return 1
-  local age
-  age=$(( $(date +%s) - $(stat -c %Y "$marker" 2>/dev/null || echo 0) ))
+  local age mtime
+  if ! mtime=$(kp_mtime "$marker"); then
+    # A stat that reads nothing must not become age 0: that is a stale-looking
+    # marker and reports a task still being spawned as exited. Say so, and keep
+    # the launch grace (a false `exited` dispatches the task twice).
+    echo "kingpin-wait: cannot read the modification time of $marker; treating the task as still launching" >&2
+    return 0
+  fi
+  age=$(( $(date +%s) - mtime ))
   [ "$age" -lt "$LAUNCH_GRACE" ]
 }
 
@@ -95,8 +105,10 @@ check_task() {
 
   # A worker that stopped without a single status line failed at launch. The
   # helper appends `failed: no status: ...` once its grace period is over, so the
-  # new line is counted as a status event below. Its stdout is not an event.
-  [ -s "$dir/status" ] || "$(dirname "$0")/kingpin-launch-check" "$dir" >/dev/null 2>&1 || true
+  # new line is counted as a status event below. Its stdout is not an event, but
+  # its stderr is: the helper names a task.env it cannot judge there, and the
+  # supervisor forwards that first line to the fleet log, so keep it.
+  [ -s "$dir/status" ] || "$(dirname "$0")/kingpin-launch-check" "$dir" >/dev/null || true
 
   local status_file="$dir/status"
   local seen_file="$dir/seen"
