@@ -180,4 +180,45 @@ export KINGPIN_AGY=$T/fake-worker
 tmux set-option -gu automatic-rename
 tmux set-option -gu allow-rename
 
+# Test 19: the dependency setup command runs inside the leased worktree, before launch
+echo "=== Test 19: SETUP_CMD runs in the worktree ==="
+# The project env carries the setup command the way `kingpin init --setup` writes it.
+setup_project() { # <command>: rewrite demo-auto's SETUP_CMD, keeping the project path
+  printf 'PROJECT_PATH=%q\nHARNESS=agy\nSETUP_CMD=%q\n' "$T/proj" "$1" > "$KINGPIN_HOME/projects/demo-auto.env"
+}
+
+setup_project 'touch setup-ran && echo ok'
+"$KP_BIN/kingpin" spawn demo-auto --issue 401 --id t19-setup-ok --mode review >/dev/null && pass "t19: spawn with a setup command exits 0" || fail "t19: spawn with a setup command failed"
+t19_wt=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/t19-setup-ok/task.env")
+[ -f "$t19_wt/setup-ran" ] && pass "t19: the setup command ran in the worktree" || fail "t19: setup-ran missing from the worktree"
+grep -qx 'ok' "$KINGPIN_HOME/tasks/t19-setup-ok/setup.log" && pass "t19: setup.log holds the command's output" || fail "t19: setup.log missing 'ok': $(cat "$KINGPIN_HOME/tasks/t19-setup-ok/setup.log" 2>/dev/null)"
+"$KP_BIN/kingpin" "done" t19-setup-ok --force >/dev/null
+
+# A failed setup aborts the spawn and leaves nothing behind for the next lease. The command
+# prints its own words, so the failure output must carry them: the cleanup trap deletes
+# $task_dir, and with it setup.log, before the operator can read it (issue #81).
+setup_project 'echo setup-broke >&2; false'
+t19_rc=0
+t19_err=$("$KP_BIN/kingpin" spawn demo-auto --issue 402 --id t19-setup-fail --mode review 2>&1 >/dev/null) || t19_rc=$?
+if [ "$t19_rc" -ne 0 ] && [ ! -d "$KINGPIN_HOME/tasks/t19-setup-fail" ] && grep -q 'setup failed' <<< "$t19_err" && grep -q 'setup-broke' <<< "$t19_err"; then
+  pass "t19: a failed setup command aborts the spawn, leaves no task dir, and streams its output"
+else
+  fail "t19: a failed setup command did not abort cleanly (rc=$t19_rc): $t19_err"
+fi
+if grep -q 'setup\.log' <<< "$t19_err"; then
+  fail "t19: the failure message names a setup.log path that the cleanup deletes: $t19_err"
+else
+  pass "t19: the failure message names no deleted setup.log path"
+fi
+t19_pool_rc=0
+t19_pool=$(cd "$T/proj" && treehouse status 2>&1) || t19_pool_rc=$?
+t19_leased=$(grep -c leased <<< "$t19_pool" || true)
+if [ "$t19_pool_rc" -eq 0 ] && [ "$t19_leased" -eq 0 ]; then
+  pass "t19: the failed spawn returned its worktree to the pool"
+else
+  fail "t19: pool unreadable (rc=$t19_pool_rc) or $t19_leased worktree(s) still leased after a failed setup"
+fi
+# Restore the setup command the rest of the suite expects.
+setup_project 'echo setup'
+
 kp_test_finish SPAWN
