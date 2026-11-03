@@ -44,6 +44,23 @@ done
 printf '%s\n' "MODE=review" "HARNESS=agy" "HARNESS=claude" "EMPTY=" "PATH_X=a=b" > "$t62_dir/task.env"
 [ "$(kp_env_get "$t62_dir/task.env" HARNESS)" = "claude" ] && pass "t62: kp_env_get returns the last assignment" || fail "t62: kp_env_get HARNESS = $(kp_env_get "$t62_dir/task.env" HARNESS)"
 [ "$(kp_env_get "$t62_dir/task.env" PATH_X)" = "a=b" ] && [ -z "$(kp_env_get "$t62_dir/task.env" EMPTY)" ] && [ -z "$(kp_env_get "$t62_dir/task.env" NOPE)" ] && [ -z "$(kp_env_get "$t62_dir/nofile" MODE)" ] && pass "t62: kp_env_get handles = in values, empty, absent and missing file" || fail "t62: kp_env_get edge cases"
+# The working-marker list is one function now (#102 review L2), so the three callers
+# cannot disagree about it: every harness, plus the claude subagent line that
+# kingpin-launch-check's own copy used to miss.
+t62_working() { # <harness> <pane-tail> <0 working|1 idle>
+  local got=1
+  kp_pane_shows_working "$2" "$1" && got=0
+  [ "$got" = "$3" ] && pass "t62: '$1' pane working=$3" || fail "t62: '$1' pane working=$got (want $3): $2"
+}
+t62_working claude $'tool output\nWaiting for 2 background agents' 0
+t62_working claude '/tasks to see subagents' 0
+t62_working claude $'$ make test\nok' 1
+t62_working agy $'working\nesc to cancel' 0
+t62_working agy 'Interrupt' 1
+t62_working opencode $'working\nesc to cancel' 0
+t62_working opencode $'working\nInterrupt' 0
+t62_working opencode '$ ls -la' 1
+t62_working unknown 'Waiting for 1 background agent' 1
 # Callers share that answer: a listener note after merged: leaves the task finished for kingpin-wait
 # (a raw last line would report the dead window as exited).
 t62_task=$KINGPIN_HOME/tasks/t62-wait

@@ -99,6 +99,23 @@ run_claude_stop "$d"
 grep -qx "waiting: feedback $d/feedback.md" "$d/status" && pass "a silent stop after a listener note is marked waiting, not failed" || fail "stop after a listener note: $(cat "$d/status")"
 ! grep -q '^failed:' "$d/status" && pass "a stop after a listener note is not marked failed" || fail "false failed line: $(cat "$d/status")"
 
+# Test 2d: a note that arrives after the worker's report leaves that report alone
+# (review M2). The note must not move the turn boundary the report already owns,
+# or the next stop appends a waiting: line over a ready:/fixed: nobody has read.
+echo "=== Test 2d: a note after the worker's report keeps the report ==="
+d=$(mk_task kp102-note-after claude)
+printf 'ready: branch=b review=APPROVE report=r.md\n' > "$d/status"
+echo '<html><body>dossier</body></html>' > "$d/report.html"
+run_claude_stop "$d"
+printf 'fixed: high=0 report=r.md\n' >> "$d/status"
+KINGPIN_LAVISH=$T/kp102-lavish "$KP_BIN/kingpin" listen kp102-note-after --once >/dev/null 2>&1
+grep -qx 'feedback: Request Changes: tighten the wording' "$d/status" && pass "the listener appends its note after a report" || fail "no note after a report: $(cat "$d/status")"
+run_claude_stop "$d"
+! grep -q '^waiting:' "$d/status" && pass "a note after a report gets no waiting line" || fail "waiting line over a report: $(cat "$d/status")"
+! grep -q '^failed:' "$d/status" && pass "a note after a report is not marked failed" || fail "failed line over a report: $(cat "$d/status")"
+grep -qx 'fixed: high=0 report=r.md' "$d/status" && pass "the worker's report survives the note and the stop" || fail "report lost: $(cat "$d/status")"
+[ "$(wc -l < "$d/status" | tr -d ' ')" = "3" ] && pass "the turn keeps one report line and the note" || fail "status lines: $(cat "$d/status")"
+
 # Test 3: a repeated stop while waiting is recorded as waiting, not failed
 echo "=== Test 3: a waiting stop is marked waiting ==="
 d=$(mk_task kp102-waiting claude)
@@ -112,23 +129,40 @@ grep -qx "waiting: needs-input $d/question.md" "$d/status" && pass "a repeated w
 run_claude_stop "$d"
 [ "$(wc -l < "$d/status" | tr -d ' ')" = "2" ] && pass "a second waiting stop adds no duplicate waiting line" || fail "duplicate waiting lines: $(cat "$d/status")"
 
-# Test 3b: a stop with background agents still running is not a failure
-echo "=== Test 3b: a working pane is not marked failed ==="
-working_wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n kp102-working \
-  'printf "Waiting for 1 background agent to finish\n"; exec bash')
-[ -n "$working_wid" ] && pass "working-marker window created ($working_wid)" || fail "could not create the working-marker window"
-for _ in $(seq 1 30); do
-  tmux capture-pane -pt "$working_wid" 2>/dev/null | grep -q 'background agent' && break
-  sleep 0.1
+# Test 3b: a stop with background agents still running is not a failure, in every
+# harness (review L3). Each harness marks a live turn or a background agent
+# differently, and a wrong pattern silently brings the false failure line back.
+echo "=== Test 3b: a working pane is not marked failed (all three harnesses) ==="
+for h in claude agy opencode; do
+  case "$h" in
+    claude)
+      marker='Waiting for 1 background agent to finish'
+      win_cmd='printf "Waiting for 1 background agent to finish\n"; exec bash'
+      ;;
+    agy)
+      marker='esc to cancel'
+      win_cmd='printf "working\nesc to cancel\n"; exec bash'
+      ;;
+    opencode)
+      marker='Interrupt'
+      win_cmd='printf "working\nInterrupt\n"; exec bash'
+      ;;
+  esac
+  working_wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n "kp102-working-$h" "$win_cmd")
+  [ -n "$working_wid" ] && pass "working-marker window created ($h, $working_wid)" || fail "could not create the working-marker window ($h)"
+  for _ in $(seq 1 30); do
+    tmux capture-pane -pt "$working_wid" 2>/dev/null | grep -qF "$marker" && break
+    sleep 0.1
+  done
+  d=$(mk_task "kp102-working-$h" "$h" "$working_wid")
+  run_claude_stop "$d"
+  [ ! -s "$d/status" ] && pass "$h: a pane that shows a working marker gets no failed line" || fail "$h: working worker marked: $(cat "$d/status")"
+  [ -s "$d/stopped" ] && pass "$h: the stop is still recorded while background agents run" || fail "$h: no stopped marker for a working stop"
+  tmux kill-window -t "$working_wid" 2>/dev/null || true
+  # Once the marker is gone, the same task's next stop is a real silent stop.
+  run_claude_stop "$d"
+  grep -qx 'failed: no status: stopped without reporting' "$d/status" && pass "$h: the next stop after the marker clears is marked failed" || fail "$h: no failed line after the marker cleared: $(cat "$d/status")"
 done
-d=$(mk_task kp102-working claude "$working_wid")
-run_claude_stop "$d"
-[ ! -s "$d/status" ] && pass "a pane that shows a working marker gets no failed line" || fail "working worker marked: $(cat "$d/status")"
-[ -s "$d/stopped" ] && pass "the stop is still recorded while background agents run" || fail "no stopped marker for a working stop"
-tmux kill-window -t "$working_wid" 2>/dev/null || true
-# Once the marker is gone, the same task's next stop is a real silent stop.
-run_claude_stop "$d"
-grep -qx 'failed: no status: stopped without reporting' "$d/status" && pass "the next stop after the marker clears is marked failed" || fail "no failed line after the marker cleared: $(cat "$d/status")"
 
 # Test 4: the hook fails soft
 echo "=== Test 4: the hook fails soft ==="

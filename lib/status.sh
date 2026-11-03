@@ -14,6 +14,8 @@
 # The `review=` verdict of a ready:/fixed: line is read here too (`kp_status_field`,
 # `kp_status_field_count`, `kp_status_verdict`, `kp_verdict_kind`), so the landing
 # gate in kingpin-land and the approval gate in kingpin-listen share one parser.
+# The one pane decision the outcome writers share (`kp_pane_shows_working`) lives
+# here as well, so the per-harness working-marker list exists once.
 
 # kp_status_last <status-file>
 # The worker's last event: the last line that is not an approved:/feedback: note.
@@ -150,4 +152,30 @@ kp_verdict_kind() {
 kp_env_get() {
   [ -f "${1:-}" ] || return 0
   sed -n "s/^${2:?}=//p" "$1" 2>/dev/null | tail -n 1 || true
+}
+
+# kp_pane_shows_working <pane-tail> <harness>
+# Exit 0 when a capture of the worker's pane still shows the harness's working
+# marker: a background agent, or a turn that has not finished. The three callers
+# that must not call a working worker idle or failed (kingpin-stop's hook,
+# kingpin-wait's `quiet` check, kingpin-launch-check) share this one list, so a
+# marker added for one harness cannot drift out of step between them. The pane is
+# captured by the caller; an unknown harness shows nothing (exit 1).
+kp_pane_shows_working() {
+  local pane_tail=${1:-} harness=${2:-claude} bottom=""
+  case "$harness" in
+    claude)
+      printf '%s\n' "$pane_tail" | grep -qE 'Waiting for [0-9]+ background agent|Background agent|/tasks to see subagents'
+      ;;
+    agy)
+      # This marker sits in the bottom rows of the pane, not in its scrollback.
+      bottom=$(printf '%s\n' "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 || true)
+      printf '%s\n' "$bottom" | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel'
+      ;;
+    opencode)
+      bottom=$(printf '%s\n' "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 || true)
+      printf '%s\n' "$bottom" | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel|Interrupt'
+      ;;
+    *) return 1 ;;
+  esac
 }

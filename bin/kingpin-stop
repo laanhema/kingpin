@@ -41,11 +41,10 @@ now=$(date +%s)
 warn() { echo "kingpin-stop: $*" >&2; }
 
 # The Stop hook also fires while background agents still run (its harness has
-# nothing to wait for once the foreground turn ends). kingpin-wait and
-# kingpin-launch-check handle the same case by inspecting the pane, so this helper
-# keeps that marker list, the one in kingpin-wait's `quiet` check: a pane that
-# shows a marker is still working, and a missing line is not a failure yet.
-# Keep the patterns in step with bin/kingpin-wait:176.
+# nothing to wait for once the foreground turn ends). A pane that shows a working
+# marker is still working, and a missing line is not a failure yet. The marker list
+# lives in lib/status.sh (kp_pane_shows_working), where kingpin-wait's `quiet` check
+# and kingpin-launch-check read the same list, so the three cannot disagree.
 pane_is_working() {
   local env_file="$task_dir/task.env"
   [ -f "$env_file" ] || return 1
@@ -57,18 +56,7 @@ pane_is_working() {
   harness=$(kp_env_get "$env_file" HARNESS)
   [ -n "$harness" ] || harness=claude
   pane_tail=$(tmux capture-pane -pt "$target" -S -30 2>/dev/null) || return 1
-  case "$harness" in
-    claude)
-      printf '%s\n' "$pane_tail" | grep -qE 'Waiting for [0-9]+ background agent|Background agent|/tasks to see subagents'
-      ;;
-    agy)
-      printf '%s\n' "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel'
-      ;;
-    opencode)
-      printf '%s\n' "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel|Interrupt'
-      ;;
-    *) return 1 ;;
-  esac
+  kp_pane_shows_working "$pane_tail" "$harness"
 }
 
 last=$(kp_status_last "$status_file")
