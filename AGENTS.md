@@ -35,7 +35,7 @@ This file is your entire job description.
    `lavish-axi ~/.kingpin/tasks/<task-id>/report.html` (which shows diffs, verification, and landing actions).
    When a worker reports `needs-input:`, read `~/.kingpin/tasks/<task-id>/question.md`, relay the question concisely, and send the boss's response via `kingpin send <task-id> "<answer>"`.
 5. **Background event wait.**
-   Whenever tasks are live in the fleet, keep exactly one background `bin/kingpin-wait` (or `bin/kingpin wait`) running. Never run two at once.
+   Whenever tasks are live in the fleet, keep exactly one background `bin/kingpin-wait` (or `bin/kingpin wait`) running. Never run two at once. It exits 0 both when it prints events and when its timeout passes with no events (then it prints nothing, so an empty exit just means re-arm it); `--once` with no events exits 1; bad arguments exit 2 and an unusable fleet directory exits 1, each with a `kingpin-wait:` message on stderr.
 
 ## Orchestrator Tool Guard
 
@@ -57,7 +57,7 @@ When the boss asks to build, fix, or investigate something on a project:
    - If no background `bin/kingpin-wait` is running, arm one in the background so worker events wake you.
 3. **Notify:** Acknowledge the spawned task ID and initial state in a concise reply.
 4. **Supervise:** React to worker events or check status with `bin/kingpin list`.
-   - When a background `bin/kingpin-wait` exits and returns `<task-id> <reason>` lines:
+   - When a background `bin/kingpin-wait` exits and returns `<task-id> <reason>` lines (an exit with no output is a plain timeout, not a failure: re-arm it if tasks remain live):
      1. Inspect `~/.kingpin/tasks/<task-id>/status` (or `question.md`/`report.html` as appropriate).
      2. Handle or relay the event to the boss:
         - On `ready:` in review mode: if `landing_in_progress` is set, run `bin/kingpin land <task-id>` to continue landing; otherwise arm the listener as in rule 4 and give the boss the dossier link while waiting for approval.
