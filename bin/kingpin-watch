@@ -61,7 +61,7 @@ process_task_event() {
         else
           echo "[kingpin-watch] $id is ready for review (lavish-axi $task_dir/report.html)"
           if [ -f "$task_dir/report.html" ]; then
-            "$KP_BIN/kingpin-report" check "$task_dir/report.html" >/dev/null 2>&1 || echo "[kingpin-watch] WARNING $id report.html would show blank diffs (kingpin report check fails); ask the worker to regenerate the section with kingpin report diffs" >&2
+            "$KP_BIN/kingpin-report" check "$task_dir/report.html" >/dev/null 2>&1 || echo "[kingpin-watch] WARNING $id report.html fails kingpin report check (blank diffs or sloppy prose); run kingpin report check $task_dir/report.html to see the reason" >&2
             "$KP_BIN/kingpin-listen" "$id" --background || true
           fi
         fi

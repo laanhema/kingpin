@@ -53,6 +53,15 @@ The rule that keeps the orchestrator from editing code lives in `.claude/setting
 
 Lint with `./tests/lint.sh` (`bash -n` plus shellcheck; install the version CI pins, shellcheck 0.11.0, with `pip install shellcheck-py==0.11.0.1` in a venv). The suites are `tests/test-*.sh` (one per feature; shared setup in `tests/lib.sh`); run them one at a time in a checkout, since two of them briefly swap `bin/kingpin-send`. CI runs the lint and one matrix leg per suite on every PR, and `./tests/lint.sh` fails when a suite has no leg. Disable a shellcheck rule only with a `# shellcheck disable=SCnnnn # reason` line, or in `.shellcheckrc` with a comment.
 
+## Lavish Artifacts
+
+Every page we hand over is prose first: a worker's `report.html` dossier, and a plan or comparison page you open with `lavish-axi`, gets an unslop pass before it is served.
+
+- Run the `unslop` skill over the page, then `bin/kingpin-report check <file>`. A page with no diff section takes `--prose-only`.
+- `check` fails with `<file>:<line>:` and the offending line for the mechanical tells: em dash, "testament to", "it's not just", "delve", "seamless", "in order to", "let me know", "I hope this helps". Fix the line, or put `<!-- unslop:ignore -->` on it when the word is genuinely wanted.
+- Code blocks, diff output, script and style bodies and HTML attributes are ignored, and style judgement stays with the skill: title-case display headings or a deliberate noir voice in a hand-built page are not slop.
+- `worker/preamble.md` carries the same requirement for workers, and `bin/kingpin-watch` warns when a dossier fails the check.
+
 ## How to Handle Requests
 
 When the boss asks to build, fix, or investigate something on a project:
