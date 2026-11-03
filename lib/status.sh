@@ -10,6 +10,10 @@
 # appends two kinds of notes, approved: and feedback:. They are reminders for the
 # orchestrator, not worker events, so the worker's current state is the last line
 # that is not one of them.
+#
+# The `review=` verdict of a ready:/fixed: line is read here too (`kp_status_field`,
+# `kp_status_field_count`, `kp_status_verdict`, `kp_verdict_kind`), so the landing
+# gate in kingpin-land and the approval gate in kingpin-listen share one parser.
 
 # kp_status_last <status-file>
 # The worker's last event: the last line that is not an approved:/feedback: note.
@@ -41,6 +45,80 @@ kp_status_is_terminal() {
   case "${1:-}" in
     merged:*|failed:*|cleanup-refused:*) return 0 ;;
     *) return 1 ;;
+  esac
+}
+
+# kp_status_field <status-line> <key>
+# The value of one key= field of a status line, whatever its position: everything
+# up to the next "<word>=" field or the end of the line, trimmed. Empty when the
+# line has no such field, and also when it repeats the field: two values for one
+# key are ambiguous, so the gate must not trust either. Used for the ready:/fixed:
+# fields review=, report= and high=.
+kp_status_field() {
+  local line=${1:-} key=${2:-} out="" seen=0 w
+  [ -n "$key" ] || return 0
+  [ "$(kp_status_field_count "$line" "$key")" -le 1 ] || return 0
+  local -a words=()
+  read -ra words <<< "$line"
+  for w in ${words[@]+"${words[@]}"}; do
+    if [ "$seen" -eq 0 ]; then
+      case $w in
+        "$key="*) out=${w#"$key="}; seen=1 ;;
+      esac
+    else
+      case $w in
+        # The next field ends the value, so a reordered line parses the same.
+        [A-Za-z_][A-Za-z0-9_]*=*) break ;;
+        *) out="$out $w" ;;
+      esac
+    fi
+  done
+  printf '%s\n' "$out"
+}
+
+# kp_status_field_count <status-line> <key>
+# How many key= fields the status line carries (always prints a number). Lets a
+# caller tell an absent field from an empty one and from a repeated one, which
+# decide different refusal messages in kingpin-land.
+kp_status_field_count() {
+  local line=${1:-} key=${2:-} n=0 w
+  [ -n "$key" ] || { printf '0\n'; return 0; }
+  local -a words=()
+  read -ra words <<< "$line"
+  for w in ${words[@]+"${words[@]}"}; do
+    case $w in
+      "$key="*) n=$((n + 1)) ;;
+    esac
+  done
+  printf '%s\n' "$n"
+}
+
+# kp_status_verdict <status-line>
+# The review verdict of a ready:/fixed: line, normalized for the landing gate:
+# upper case, "-" and "_" read as spaces, a trailing "(...)" note dropped, runs of
+# spaces squeezed. Empty when the line carries no review= field.
+#   review=needs_changes (2 high)  ->  NEEDS CHANGES
+kp_status_verdict() {
+  local v
+  v=$(kp_status_field "${1:-}" review)
+  [ -n "$v" ] || return 0
+  printf '%s\n' "$v" \
+    | tr '[:lower:]' '[:upper:]' \
+    | tr '_-' '  ' \
+    | sed -E 's/[[:space:]]*\([^()]*\)[[:space:]]*$//' \
+    | tr -s '[:space:]' ' ' \
+    | sed -e 's/^ //' -e 's/ $//'
+}
+
+# kp_verdict_kind <verdict>
+# What the landing gate does with a verdict: "clean" (APPROVE, land),
+# "findings" (APPROVE WITH NITS, NEEDS CHANGES: run /fix-findings first) or
+# "unknown" (anything else, including an empty verdict: never land).
+kp_verdict_kind() {
+  case "${1:-}" in
+    APPROVE) printf 'clean\n' ;;
+    "APPROVE WITH NITS"|"NEEDS CHANGES") printf 'findings\n' ;;
+    *) printf 'unknown\n' ;;
   esac
 }
 
