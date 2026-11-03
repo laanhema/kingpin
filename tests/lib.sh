@@ -3,12 +3,25 @@
 #
 # A suite sources this file, then calls kp_test_setup once. It gets an isolated
 # KINGPIN_HOME, a private tmux server, a git identity, a scratch project repo with an
-# origin remote, and a cleanup trap. Everything lives under $T and goes away on exit.
+# origin remote, a default lavish-axi stub, and a cleanup trap. Everything lives under
+# $T and goes away on exit.
+#
+# The default stub (kp_test_stub_lavish) answers every call without touching a Lavish
+# session and records each call's argv in $KP_TEST_LAVISH_CALLS_LOG. $T/bin, first on
+# PATH, also holds a `lavish-axi` shim that records a call that resolved the real
+# binary in $KP_TEST_LAVISH_REAL_LOG and exits 1, so unsetting KINGPIN_LAVISH cannot
+# reach Lavish either. A call no suite declared is a leak, so kp_test_finish fails and
+# names it; a suite that drives the stub on purpose declares that with
+# kp_test_expect_lavish_calls, which is checked too: the log must grow after the
+# declaration, and every recorded line must match one of the patterns it was given.
+# A suite that asserts specific calls installs its own mock over KINGPIN_LAVISH
+# instead (tests/test-listen.sh).
 #
 # Usage in a suite:
 #   . "$(dirname "$0")/lib.sh"
 #   kp_test_setup <suite-name>
 #   kp_test_project           # unless the suite tests `kingpin init` itself
+#   kp_test_expect_lavish_calls [pattern...]   # only when the suite drives the stub
 #   ... pass "..." / fail "..." ...
 #   kp_test_finish <LABEL>    # prints ALL <LABEL> TESTS PASSED, or exits 1
 
@@ -23,6 +36,8 @@ kp_test_setup() {
 
   T=$(mktemp -d)
   export KINGPIN_HOME=$T/kp
+  export KP_TEST_LAVISH_CALLS_LOG=$T/lavish-calls.log
+  export KP_TEST_LAVISH_REAL_LOG=$T/real-lavish-calls.log
   export KINGPIN_SKIP_GUARD=1
   # CI runners have no global git identity
   export GIT_AUTHOR_NAME=kingpin-test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=kingpin-test GIT_COMMITTER_EMAIL=test@example.com
@@ -78,6 +93,24 @@ exec bash
 F
   chmod +x "$T/fake-worker"
   export KINGPIN_AGY=$T/fake-worker
+
+  # No suite reaches the real Lavish server by omission (issue #129): the default stub
+  # records each call, so kp_test_finish can fail on one the suite did not declare.
+  kp_test_stub_lavish
+
+  # ...and none reaches it by unsetting or overriding KINGPIN_LAVISH: $T/bin is first
+  # on PATH for the whole run, so a `lavish-axi` resolved there lands here, is recorded,
+  # and exits 1. kp_test_finish fails on a non-empty log and names every argument.
+  : > "$KP_TEST_LAVISH_REAL_LOG"
+  cat > "$T/bin/lavish-axi" << 'LAVEOF'
+#!/usr/bin/env bash
+# kp_test_setup: a suite reached the real lavish-axi. Record it and refuse the call.
+printf '%s\n' "$*" >> "${KP_TEST_LAVISH_REAL_LOG:?kp_test_setup: KP_TEST_LAVISH_REAL_LOG is unset}"
+echo "lavish-axi: refusing a real call from a test suite" >&2
+exit 1
+LAVEOF
+  chmod +x "$T/bin/lavish-axi"
+  KP_TEST_LAVISH_CALLS_PATTERNS=()
 }
 
 kp_test_cleanup() {
@@ -98,17 +131,90 @@ kp_test_project() {
   "$KP_BIN/kingpin" init demo-auto "$T/proj" --harness agy --setup "echo setup" >/dev/null
 }
 
-# kp_test_stub_lavish: a quiet stand-in for lavish-axi (poll idles, every other call answers OK).
+# kp_test_stub_lavish: the suite-wide stand-in for lavish-axi, installed by kp_test_setup.
+# `poll` idles and every other call answers OK without touching a session, so no dossier
+# reaches Lavish's state and no browser opens; each call's argv is appended to
+# $KP_TEST_LAVISH_CALLS_LOG. Re-calling it is safe (the file is written only when missing),
+# so a suite that overrode KINGPIN_LAVISH with its own mock can put the default back.
 kp_test_stub_lavish() {
-  cat > "$T/mock-lavish-quiet" << 'MLEOF'
+  if [ ! -x "$T/mock-lavish-quiet" ]; then
+    cat > "$T/mock-lavish-quiet" << 'MLEOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "${KP_TEST_LAVISH_CALLS_LOG:?kp_test_stub_lavish: KP_TEST_LAVISH_CALLS_LOG is unset}"
 case "${1:-}" in
   poll) sleep 0.2 ;;
   *) echo "OK" ;;
 esac
 MLEOF
-  chmod +x "$T/mock-lavish-quiet"
+    chmod +x "$T/mock-lavish-quiet"
+  fi
   export KINGPIN_LAVISH="$T/mock-lavish-quiet"
+}
+
+# kp_test_expect_lavish_calls [pattern...]: declare that this suite drives the default
+# stub on purpose (it runs a listener, or kingpin-done against a report.html). Without
+# this, kp_test_finish fails when the stub recorded any call: a call no suite declared
+# is the leak issue #129 describes, not noise to be ignored. The declaration is checked
+# in turn, so it cannot switch the guard off for good: the log must grow after this call,
+# and when patterns are given every recorded line must match one of them (a shell glob,
+# so a suite that drives the stub for one task keeps the guard armed for the rest).
+kp_test_expect_lavish_calls() {
+  export KP_TEST_LAVISH_CALLS_EXPECTED=1
+  export KP_TEST_LAVISH_CALLS_BASELINE
+  KP_TEST_LAVISH_CALLS_BASELINE=$(kp_test_lavish_count "${KP_TEST_LAVISH_CALLS_LOG:-}")
+  KP_TEST_LAVISH_CALLS_PATTERNS=("$@")
+}
+
+# kp_test_lavish_count <log>: the number of calls recorded in <log>, or 0.
+kp_test_lavish_count() {
+  local log=${1:-}
+  [ -n "$log" ] && [ -f "$log" ] || { echo 0; return 0; }
+  wc -l < "$log" | tr -d ' '
+}
+
+# kp_test_check_lavish_calls: return 1 and name every recorded argument when the suite
+# reached a real lavish-axi, when the default stub was called and the suite did not
+# declare it expects calls, when a declaration recorded nothing, or when a declared call
+# does not match the patterns it gave. kp_test_finish runs it; a suite also tests it
+# directly, which is how the failure path stays covered.
+kp_test_check_lavish_calls() {
+  local log=${KP_TEST_LAVISH_CALLS_LOG:-} real=${KP_TEST_LAVISH_REAL_LOG:-}
+  local line count baseline pattern matched rc=0
+  if [ -n "$real" ] && [ -s "$real" ]; then
+    echo "FAIL: a real lavish-axi ran during this suite; a suite must reach the default stub, so check for an unset or overridden KINGPIN_LAVISH:" >&2
+    while IFS= read -r line; do
+      printf '  lavish-axi %s\n' "$line" >&2
+    done < "$real"
+    rc=1
+  fi
+  if [ "${KP_TEST_LAVISH_CALLS_EXPECTED:-0}" = "1" ]; then
+    count=$(kp_test_lavish_count "$log")
+    baseline=${KP_TEST_LAVISH_CALLS_BASELINE:-0}
+    if [ "$count" -le "$baseline" ]; then
+      echo "FAIL: kp_test_expect_lavish_calls declared default-stub calls, but the stub recorded none after the declaration (baseline $baseline, now $count)" >&2
+      return 1
+    fi
+    if [ "${#KP_TEST_LAVISH_CALLS_PATTERNS[@]}" -gt 0 ]; then
+      while IFS= read -r line; do
+        matched=0
+        for pattern in "${KP_TEST_LAVISH_CALLS_PATTERNS[@]}"; do
+          # shellcheck disable=SC2254 # the declaration passes shell globs on purpose
+          case "$line" in $pattern) matched=1; break ;; esac
+        done
+        if [ "$matched" -eq 0 ]; then
+          echo "FAIL: the default lavish-axi stub recorded a call that matches none of the patterns this suite declared: $line" >&2
+          rc=1
+        fi
+      done < "$log"
+    fi
+    return "$rc"
+  fi
+  [ -n "$log" ] && [ -s "$log" ] || return "$rc"
+  echo "FAIL: the default lavish-axi stub recorded calls this suite did not declare (call kp_test_expect_lavish_calls if they are intended):" >&2
+  while IFS= read -r line; do
+    printf '  lavish-axi %s\n' "$line" >&2
+  done < "$log"
+  return 1
 }
 
 # kp_test_stub_treehouse: a stand-in for `treehouse return` that succeeds and
@@ -250,6 +356,7 @@ kp_test_touch_ago() {
 
 # kp_test_finish <LABEL>
 kp_test_finish() {
+  kp_test_check_lavish_calls || FAILED=1
   if [ "$FAILED" -eq 0 ]; then
     echo "ALL $1 TESTS PASSED"
   else

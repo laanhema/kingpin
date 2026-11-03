@@ -10,6 +10,11 @@ set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 kp_test_setup "worker-stop"
 kp_test_project
+# The watcher below legitimately arms dossier listeners for the kp102-* report.html
+# tasks this suite leaves in the fleet; every recorded call must name one of them, so a
+# call for any other task is still caught. The real binary is never expected, which is
+# what Test 5b proves.
+kp_test_expect_lavish_calls '*kp102-*'
 
 # The real Claude Code Stop command, read from the tracked settings file.
 claude_stop_cmd=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).hooks.Stop[0].hooks[0].command)' "$KP_ROOT/worker/hooks.json")
@@ -243,6 +248,56 @@ d=$(mk_task kp102-watch claude)
 printf 'waiting: needs-input /some/question.md\n' > "$d/status"
 watch_out=$("$KP_BIN/kingpin-watch" --once 2>/dev/null || true)
 grep -q "\[kingpin-watch\] kp102-watch is waiting: needs-input /some/question.md" <<< "$watch_out" && pass "kingpin-watch reports a waiting task" || fail "no waiting event from watch: $watch_out"
+
+# Test 5b: the watcher's dossier listener must never resolve the real lavish-axi (issue
+# #129). kp_test_setup puts a recorder first on PATH for the whole suite; it logs a real
+# call and exits 1, and kp_test_finish fails on that log. The stub is expected to run
+# here: the task below is a review task with a report.html, so the guard is about which
+# binary got resolved.
+echo "=== Test 5b: the watcher never resolves the real lavish-axi ==="
+# Positive control: an empty log proves nothing unless the recorder really records.
+lavish_before=$(cat "$KP_TEST_LAVISH_REAL_LOG" 2>/dev/null || true)
+lavish-axi poll /control/report.html --owner kingpin:control >/dev/null 2>&1 || true
+grep -Fq "poll /control/report.html" "$KP_TEST_LAVISH_REAL_LOG" \
+  && pass "the real-call recorder logs a real lavish-axi call" \
+  || fail "the real-call recorder logged nothing: $(cat "$KP_TEST_LAVISH_REAL_LOG" 2>/dev/null || true)"
+printf '%s' "$lavish_before" > "$KP_TEST_LAVISH_REAL_LOG"
+
+d=$(mk_task kp102-guard claude)
+printf 'ready: branch=b review=APPROVE report=none\n' > "$d/status"
+echo '<html><body>guard dossier</body></html>' > "$d/report.html"
+"$KP_BIN/kingpin-watch" --once >/dev/null 2>&1 || true
+for _ in $(seq 1 40); do
+  if grep -Fq "$d/report.html" "$KP_TEST_LAVISH_CALLS_LOG" 2>/dev/null; then break; fi
+  sleep 0.05
+done
+grep -Fq "$d/report.html" "$KP_TEST_LAVISH_CALLS_LOG" 2>/dev/null \
+  && pass "the watcher armed its listener against the default lavish-axi stub" \
+  || fail "the watcher never reached the default stub for $d/report.html (calls: $(cat "$KP_TEST_LAVISH_CALLS_LOG" 2>/dev/null || true))"
+[ ! -s "$KP_TEST_LAVISH_REAL_LOG" ] \
+  && pass "the watcher never resolved the real lavish-axi" \
+  || fail "the watcher ran the real lavish-axi: $(cat "$KP_TEST_LAVISH_REAL_LOG")"
+
+# A call the suite did not declare fails the run, and the failure names the arguments.
+printf 'poll %s --owner kingpin:kp102-guard --takeover\n' "$d/report.html" > "$T/unexpected-lavish.log"
+if KP_TEST_LAVISH_CALLS_EXPECTED=0 KP_TEST_LAVISH_CALLS_LOG="$T/unexpected-lavish.log" \
+     kp_test_check_lavish_calls > "$T/unexpected-lavish.out" 2>&1; then
+  fail "an undeclared default-stub call did not fail the suite"
+else
+  grep -Fq "poll $d/report.html --owner kingpin:kp102-guard --takeover" "$T/unexpected-lavish.out" \
+    && pass "an undeclared stub call fails the suite and names the arguments" \
+    || fail "the undeclared-call failure does not name the arguments: $(cat "$T/unexpected-lavish.out")"
+fi
+
+# A real call fails the run too, whatever the suite declared, and names the arguments.
+printf 'poll %s --owner kingpin:real\n' "$d/report.html" > "$T/real-call.log"
+if KP_TEST_LAVISH_REAL_LOG="$T/real-call.log" kp_test_check_lavish_calls > "$T/real-call.out" 2>&1; then
+  fail "a real lavish-axi call did not fail the suite"
+else
+  grep -Fq "poll $d/report.html --owner kingpin:real" "$T/real-call.out" \
+    && pass "a real lavish-axi call fails the suite and names the arguments" \
+    || fail "the real-call failure does not name the arguments: $(cat "$T/real-call.out")"
+fi
 
 # Test 6: the hook is wired into all four harnesses
 echo "=== Test 6: all four harnesses ==="
