@@ -75,12 +75,15 @@ if [ -n "$setup" ]; then
   echo "  SETUP_CMD:    $setup"
 fi
 
-# The orchestrator-only tool guard lives untracked in the Kingpin checkout, so a
-# fresh clone gets it here. Skipped (not fatal) when this runs from a worker checkout.
+# The orchestrator-only tool guard and the orchestrator contract live untracked in
+# the Kingpin checkout, so a fresh clone gets them here. Skipped (not fatal) when
+# this runs from a worker checkout.
 # KINGPIN_SKIP_GUARD=1 skips it (used by the test suites).
 if [ "${KINGPIN_SKIP_GUARD:-}" != 1 ]; then
   if guard_out=$("$(dirname "$0")/kingpin-guard" install 2>&1); then
-    echo "  GUARD:        $(printf '%s' "$guard_out" | sed 's/^OK: //')"
+    while IFS= read -r line; do
+      echo "  GUARD:        ${line#OK: }"
+    done <<< "$guard_out"
   else
     echo "  GUARD:        not installed ($guard_out)" >&2
   fi
