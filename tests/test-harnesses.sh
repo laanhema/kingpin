@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verification test for Kingpin multi-harness support (claude, agy, opencode).
+# Verification test for Kingpin multi-harness support (claude, agy, opencode, pi).
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -18,6 +18,22 @@ chmod +x "$T/fake-agent"
 export KINGPIN_CLAUDE=$T/fake-agent
 export KINGPIN_AGY=$T/fake-agent
 export KINGPIN_OPENCODE=$T/fake-agent
+
+# A stub Pi records its argv and environment, then stays alive like a real TUI would.
+# CI has no pi binary, so this stub is the only path that reaches the pi launch branch.
+cat > "$T/fake-pi" << 'P'
+#!/usr/bin/env bash
+d=$(cd "$(dirname "$0")" && pwd)
+printf '%s\n' "$@" > "$d/pi-argv"
+{
+  printf 'KINGPIN_TASK_DIR=%s\n' "${KINGPIN_TASK_DIR:-}"
+  printf 'KINGPIN_WORKTREE=%s\n' "${KINGPIN_WORKTREE:-}"
+  printf 'KINGPIN_ROOT=%s\n' "${KINGPIN_ROOT:-}"
+} > "$d/pi-env"
+exec bash
+P
+chmod +x "$T/fake-pi"
+export KINGPIN_PI=$T/fake-pi
 
 # Test 1: Claude spawn
 echo "=== Test 1: Claude Spawn ==="
@@ -117,11 +133,77 @@ status_out=$(git -C "$wt_oc" status --porcelain -u)
 echo "$status_out" | grep -q "\.opencode/notes\.txt" && pass "new .opencode/notes.txt shows in git status" || fail "new .opencode file hidden from git status"
 rm -f "$wt_oc/.opencode/notes.txt"
 
+# Test 3b: Pi spawn
+echo "=== Test 3b: Pi Spawn ==="
+"$KP_BIN/kingpin-spawn" demo --issue 130 --id task-pi --harness pi >/dev/null
+[ -f "$KINGPIN_HOME/tasks/task-pi/task.env" ] && pass "task-pi task.env created" || fail "missing task.env"
+grep -q "^HARNESS=pi$" "$KINGPIN_HOME/tasks/task-pi/task.env" && pass "task-pi recorded HARNESS=pi" || fail "wrong harness in task.env"
+grep -q -- "--append-system-prompt" "$KINGPIN_HOME/tasks/task-pi/launch.sh" && pass "task-pi launch script has --append-system-prompt" || fail "wrong launch script"
+grep -q -- "-e .*worker/pi/kingpin-harness.ts" "$KINGPIN_HOME/tasks/task-pi/launch.sh" && pass "task-pi launch script loads the checkout extension" || fail "extension not loaded from the checkout"
+grep -q "(cat .*prompt.txt)" "$KINGPIN_HOME/tasks/task-pi/launch.sh" && pass "task-pi launch script reads the prompt file" || fail "prompt is not read from its file"
+# Pi expands a skill only when the job message starts with `/skill:` (issue #93
+# review, M2), so the pi prompt is the bare command and nothing else.
+grep -q '^/skill:issue-flow 130$' "$KINGPIN_HOME/tasks/task-pi/prompt.txt" && pass "task-pi prompt is the bare /skill:issue-flow 130 command" || fail "prompt: $(cat "$KINGPIN_HOME/tasks/task-pi/prompt.txt")"
+! grep -q "no subagent tool" "$KINGPIN_HOME/tasks/task-pi/prompt.txt" && pass "task-pi prompt carries no prose before the skill command" || fail "the inline sentence is back in the pi prompt"
+grep -q "no subagent tool" "$KINGPIN_HOME/tasks/task-pi/preamble.md" && pass "task-pi preamble tells the worker to run skills inline" || fail "no inline-delegation sentence in the pi preamble"
+for h in claude agy opencode; do
+  ! grep -q "no subagent tool" "$KINGPIN_HOME/tasks/task-$h/preamble.md" \
+    && pass "$h preamble carries no pi-only inline-delegation sentence" || fail "the pi-only sentence leaked into the $h preamble"
+done
+grep -q "background code worker" "$KINGPIN_HOME/tasks/task-pi/preamble.md" && pass "pi preamble instructs background worker role" || fail "missing worker role in pi preamble"
+! grep -q "You are the underboss" "$KINGPIN_HOME/tasks/task-pi/preamble.md" && pass "pi preamble carries no orchestrator persona" || fail "orchestrator persona in pi preamble"
+
+wt_pi=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/task-pi/task.env")
+[ -n "$wt_pi" ] && [ -d "$wt_pi" ] && pass "pi task leased a worktree" || fail "no pi worktree"
+status_out=$(git -C "$wt_pi" status --porcelain)
+[ -z "$status_out" ] && pass "the pi worktree stays clean" || fail "pi worktree dirty: $status_out"
+pi_excl=$(git -C "$wt_pi" config --get --worktree core.excludesFile 2>/dev/null || true)
+[ -z "$pi_excl" ] && pass "pi sets no worktree exclude file" || fail "pi worktree reads '${pi_excl}' as core.excludesFile"
+[ ! -e "$KINGPIN_HOME/tasks/task-pi/injected" ] && pass "pi records no injected path" || fail "pi recorded an injected path: $(cat "$KINGPIN_HOME/tasks/task-pi/injected")"
+[ ! -e "$KINGPIN_HOME/tasks/task-pi/exclude" ] && pass "pi creates no task exclude file" || fail "pi created a task exclude file"
+
+# The tmux launch is asynchronous: poll for the stub's argv, then assert the preamble,
+# the extension and the prompt arrived as arguments rather than on stdin.
+for _ in $(seq 1 50); do
+  [ -s "$T/pi-argv" ] && break
+  sleep 0.1
+done
+[ -s "$T/pi-argv" ] && pass "pi stub recorded its argv" || fail "pi stub never ran"
+grep -qxF -- "$KINGPIN_HOME/tasks/task-pi/preamble.md" "$T/pi-argv" && pass "the preamble path is an argv element" || fail "argv: $(cat "$T/pi-argv" 2>/dev/null)"
+grep -qxF -- "$KP_ROOT/worker/pi/kingpin-harness.ts" "$T/pi-argv" && pass "the extension path is an argv element" || fail "extension missing from argv"
+grep -qxF -- "/skill:issue-flow 130" "$T/pi-argv" && pass "the prompt is an argv element" || fail "prompt missing from argv"
+grep -qxF "KINGPIN_TASK_DIR=$KINGPIN_HOME/tasks/task-pi" "$T/pi-env" && pass "the launcher exports KINGPIN_TASK_DIR" || fail "pi env: $(cat "$T/pi-env" 2>/dev/null)"
+grep -qxF "KINGPIN_WORKTREE=$wt_pi" "$T/pi-env" && pass "the launcher exports KINGPIN_WORKTREE" || fail "KINDGIN_WORKTREE missing"
+grep -qxF "KINGPIN_ROOT=$KP_ROOT" "$T/pi-env" && pass "the launcher exports KINGPIN_ROOT" || fail "KINGPIN_ROOT missing"
+
+# The measured Pi 1.5.0 working rule must hold `quiet`, and a cleared pane must release it.
+echo "100" > "$KINGPIN_HOME/tasks/task-pi/stopped"
+echo "50" > "$KINGPIN_HOME/tasks/task-pi/seen_stopped"
+tmux send-keys -t kingpin:task-pi 'printf "── ⠏ Working ─────────────────────────\n"' Enter
+sleep 0.5
+res=$("$KP_BIN/kingpin-wait" --once 2>&1 || true)
+if echo "$res" | grep -q "task-pi quiet"; then
+  fail "task-pi reported quiet while the Pi Working rule was present"
+else
+  pass "task-pi correctly held quiet while the Pi Working rule was present"
+fi
+tmux send-keys -t kingpin:task-pi 'clear' Enter
+tmux clear-history -t kingpin:task-pi
+sleep 0.5
+res=$("$KP_BIN/kingpin-wait" --once 2>&1 || true)
+echo "$res" | grep -q "task-pi quiet" && pass "task-pi reported quiet after pane cleared" || fail "task-pi did not report quiet"
 # Test 4: Project-default harness configuration
 echo "=== Test 4: Project Default Harness ==="
 printf 'PROJECT_PATH=%q\nHARNESS=opencode\n' "$T/proj" > "$KINGPIN_HOME/projects/demo-oc.env"
 "$KP_BIN/kingpin-spawn" demo-oc --issue 104 --id task-default-oc >/dev/null
 grep -q "^HARNESS=opencode$" "$KINGPIN_HOME/tasks/task-default-oc/task.env" && pass "task-default-oc picked up HARNESS=opencode from project env" || fail "failed project default harness"
+
+# A project that pins pi gets a pi worker from the project env alone (issue #93
+# review, L4): the pi legs above all pass --harness explicitly.
+printf 'PROJECT_PATH=%q\nHARNESS=pi\n' "$T/proj" > "$KINGPIN_HOME/projects/demo-pi.env"
+"$KP_BIN/kingpin-spawn" demo-pi --issue 105 --id task-default-pi >/dev/null
+grep -q "^HARNESS=pi$" "$KINGPIN_HOME/tasks/task-default-pi/task.env" && pass "task-default-pi picked up HARNESS=pi from project env" || fail "project-env pi: $(cat "$KINGPIN_HOME/tasks/task-default-pi/task.env" 2>/dev/null)"
+grep -q -- "-e .*worker/pi/kingpin-harness.ts" "$KINGPIN_HOME/tasks/task-default-pi/launch.sh" && pass "the project-env pi spawn loads the pi extension" || fail "project-env pi spawn did not launch pi"
 
 # Test 4b: Default harness follows the orchestrator lock holder
 echo "=== Test 4b: Lock Holder Harness Precedence ==="
@@ -151,6 +233,12 @@ rm -f "$KINGPIN_HOME/config.env"
 "$KP_BIN/kingpin-spawn" demo --issue 116 --id task-fallback-claude >/dev/null
 [ "$(harness_of task-fallback-claude)" = "claude" ] && pass "falls back to claude with no lock and no config" || fail "fallback: $(harness_of task-fallback-claude)"
 
+# A pi lock holder is the default harness too
+KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin-lock" acquire --harness pi >/dev/null
+"$KP_BIN/kingpin-spawn" demo --issue 117 --id task-lock-pi >/dev/null
+[ "$(harness_of task-lock-pi)" = "pi" ] && pass "a pi lock holder is the spawn default" || fail "lock default: $(harness_of task-lock-pi)"
+KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin-lock" release >/dev/null
+
 # Test 5: Qualified quiet state in kingpin-wait
 echo "=== Test 5: Qualified Quiet State ==="
 echo "100" > "$KINGPIN_HOME/tasks/task-agy/stopped"
@@ -175,7 +263,7 @@ echo "$res" | grep -q "task-agy quiet" && pass "task-agy reported quiet after pa
 # Test 6: kingpin list shows all 3 harnesses
 echo "=== Test 6: List Harness Column ==="
 list_out=$("$KP_BIN/kingpin" list)
-for h in claude agy opencode; do
+for h in claude agy opencode pi; do
   echo "$list_out" | grep -Eq "[[:space:]]${h}[[:space:]]" && pass "list shows $h harness" || fail "$h harness missing from list"
 done
 

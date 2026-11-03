@@ -29,6 +29,11 @@ usage: kingpin-report diffs [--repo <dir>] [--base <ref>]
          `minmax(0, ...)` guard, and a `src`/`href`/`url()` that is an absolute path or
          climbs out with `..`. Each failure names the offending line, like the prose
          pass. A fragment has no page layout, so it is not judged.
+         It also walks every `<style>` block by brace depth: a declaration at the
+         top level of a block, outside any selector, fails with its line, because
+         the browser drops the rule that follows it. After parsing, a page that
+         claims `color-scheme: dark` must carry a `background` on `body`, `html` or
+         `:root`, or it fails too.
          It also runs a prose pass (the mechanical slice of the `unslop` skill) and
          fails with file:line and the offending line on an AI tell: em dash,
          "testament to", "it's not just", "delve", "seamless", "in order to",

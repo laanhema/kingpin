@@ -17,7 +17,7 @@
 #   kingpin list [--all|-a]
 #   kingpin lock [status|check|acquire [--harness <name>]|release|harness] [pid]
 #   kingpin guard [install|check|warn] [--dir <kingpin-checkout>]
-#   kingpin scope files|check --harness <name> --worktree <dir> [--preamble <file>]
+#   kingpin scope files|check|doctor --harness <name> --worktree <dir> [--preamble <file>]
 #   kingpin report diffs [--repo <dir>] [--base <ref>] | check [--prose-only] <report.html>
 #   kingpin curate [--dry-run]
 set -euo pipefail
@@ -51,7 +51,7 @@ Commands:
   list      Display active tasks in the terminal (--all adds finished ones)
   lock      Check, acquire, or release the orchestrator session lock (records its harness)
   guard     Install or verify the orchestrator-only tool guard (a hook) and contract
-  scope     Name the instruction files a harness loads for a worker, and check them
+  scope     Name the instruction files a harness loads for a worker, check them, or report pi readiness
   report    Generate or check the @pierre/diffs blocks and the prose of a review dossier
   curate    Aggregate critique logs from finished workers
 

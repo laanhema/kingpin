@@ -402,4 +402,221 @@ grep -qxF 'guard-last-note.txt' "$guard_last_excl" \
   && pass "the install after the appended guard path kept the user's line" \
   || fail "the install after the appended guard path dropped the user's line"
 
+echo "=== Test 18: a reused slot's provable Kingpin leftovers are removed ==="
+# Issue #127. An older Kingpin hid its harness files through the main checkout's
+# .git/info/exclude, so treehouse handed a slot with leftovers out as clean; removing
+# those dead lines surfaced the files and the next task's done refused. Seed exactly
+# that state in a one-slot pool: four files whose content proves Kingpin wrote them (two
+# historical ones and the opencode plugin pair), one file at a Kingpin path whose content
+# does not, and an unrelated file the user hides with a line of their own.
+#
+# generated_stop_plugin: the OpenCode Stop plugin exactly as `bin/kingpin-spawn` writes
+# it, lifted from its heredoc so the fixture follows the script.
+generated_stop_plugin() {
+  sed -n "/EOF_OC_PLUG'$/,/^EOF_OC_PLUG\$/p" "$KP_BIN/kingpin-spawn" | sed '1d;$d'
+}
+git init -q --bare "$T/reuse-origin.git"
+git clone -q "$T/reuse-origin.git" "$T/reuse-proj" 2>/dev/null
+(
+  cd "$T/reuse-proj" || exit 1
+  git checkout -q -b main
+  echo "reuse code" > app.txt
+  git add app.txt
+  git commit -qm "init"
+  git push -q -u origin main
+  git remote set-head origin main
+)
+printf 'PROJECT_PATH=%q\nSETUP_CMD=%q\n' "$T/reuse-proj" "" > "$KINGPIN_HOME/projects/demo-reuse.env"
+
+"$KP_BIN/kingpin-spawn" demo-reuse --issue 915 --id excl-reuse-a --harness claude >/dev/null 2>&1
+wt_reuse=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/excl-reuse-a/task.env" || true)
+"$KP_BIN/kingpin-done" excl-reuse-a >/dev/null 2>&1 || true
+[ -n "$wt_reuse" ] && [ -d "$wt_reuse" ] && pass "the first task left one returned slot to reuse" \
+  || fail "the first task left no worktree to reuse"
+
+reuse_excl=$(git -C "$T/reuse-proj" rev-parse --path-format=absolute --git-path info/exclude)
+printf '.agents/hooks.json\n.opencode/config.json\n.opencode/plugins/package.json\n.opencode/plugins/kingpin-stop.js\n.agents/rules/kingpin.md\nworker-note.txt\n' >> "$reuse_excl"
+mkdir -p "${wt_reuse:-/nonexistent}/.agents/rules" "${wt_reuse:-/nonexistent}/.opencode/plugins"
+cat > "${wt_reuse:-/nonexistent}/.agents/hooks.json" << 'EOF'
+{
+  "kingpin": {
+    "Stop": [
+      { "type": "command", "command": "true", "timeout": 30 }
+    ]
+  }
+}
+EOF
+cat > "${wt_reuse:-/nonexistent}/.opencode/config.json" << EOF
+{
+  "permission": {
+    "*": "allow"
+  },
+  "instructions": [
+    "$KINGPIN_HOME/tasks/older/preamble.md"
+  ]
+}
+EOF
+printf '{ "private": true, "type": "module" }\n' > "${wt_reuse:-/nonexistent}/.opencode/plugins/package.json"
+generated_stop_plugin > "${wt_reuse:-/nonexistent}/.opencode/plugins/kingpin-stop.js"
+printf 'my own rules\n' > "${wt_reuse:-/nonexistent}/.agents/rules/kingpin.md"
+printf 'do not delete me\n' > "${wt_reuse:-/nonexistent}/worker-note.txt"
+[ -s "${wt_reuse:-/nonexistent}/.opencode/plugins/kingpin-stop.js" ] \
+  && pass "the fixture carries the plugin the spawn really writes" \
+  || fail "could not lift the Stop plugin out of bin/kingpin-spawn"
+[ -z "$(git -C "${wt_reuse:-/nonexistent}" status --porcelain -uall 2>/dev/null)" ] \
+  && pass "the stale lines keep the seeded slot clean for treehouse" \
+  || fail "the seeded slot is already dirty before the spawn"
+
+spawn_err=$("$KP_BIN/kingpin-spawn" demo-reuse --issue 916 --id excl-reuse-b --harness claude 2>&1 >/dev/null)
+wt_reuse_b=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/excl-reuse-b/task.env" || true)
+[ -n "$wt_reuse_b" ] && [ "$wt_reuse_b" = "$wt_reuse" ] \
+  && pass "the second spawn leased the seeded slot again" \
+  || fail "the second spawn leased '${wt_reuse_b:-nothing}' instead of $wt_reuse"
+for rel in .agents/hooks.json .opencode/config.json .opencode/plugins/package.json .opencode/plugins/kingpin-stop.js; do
+  echo "$spawn_err" | grep -qF "removed $rel" \
+    && pass "the spawn removed the provable earlier-task $rel" \
+    || fail "the spawn does not name $rel as removed: $spawn_err"
+  [ ! -e "${wt_reuse:-/nonexistent}/$rel" ] \
+    && pass "the provable leftover $rel is gone from the slot" \
+    || fail "the provable leftover $rel is still in the slot"
+done
+echo "$spawn_err" | grep -qF "left .agents/rules/kingpin.md" \
+  && pass "the spawn names the file whose content does not prove Kingpin wrote it" \
+  || fail "the spawn does not name the unprovable Kingpin-path file: $spawn_err"
+[ -f "${wt_reuse:-/nonexistent}/.agents/rules/kingpin.md" ] \
+  && pass "the unprovable Kingpin-path file is left in place" \
+  || fail "the spawn deleted a file it cannot prove it wrote"
+
+# The user acts on the warning and removes their file, then removes the dead Kingpin
+# lines, the change that surfaced the leftovers in the incident. The unrelated file keeps
+# its own line, so it never dirties the tree.
+rm -f "${wt_reuse:-/nonexistent}/.agents/rules/kingpin.md"
+grep -v -x -e '.agents/hooks.json' -e '.opencode/config.json' \
+  -e '.opencode/plugins/package.json' -e '.opencode/plugins/kingpin-stop.js' \
+  -e '.agents/rules/kingpin.md' \
+  "$reuse_excl" > "$T/reuse.excl" || true
+cat "$T/reuse.excl" > "$reuse_excl"
+reuse_status=$(git -C "${wt_reuse:-/nonexistent}" status --porcelain -uall 2>/dev/null || true)
+echo "$reuse_status" | grep -qF '.agents/hooks.json' \
+  && fail "the worker's git status names the stale .agents/hooks.json" \
+  || pass "the worker's git status stays silent about .agents/hooks.json after the lines are gone"
+echo "$reuse_status" | grep -qF '.opencode/config.json' \
+  && fail "the worker's git status names the stale .opencode/config.json" \
+  || pass "the worker's git status stays silent about .opencode/config.json after the lines are gone"
+echo "$reuse_status" | grep -qF '.opencode/plugins' \
+  && fail "the worker's git status names the stale .opencode/plugins pair" \
+  || pass "the worker's git status stays silent about .opencode/plugins after the lines are gone"
+
+rc=0
+done_out=$("$KP_BIN/kingpin-done" excl-reuse-b 2>&1) || rc=$?
+[ "$rc" -eq 0 ] && pass "done returned the reused slot without --force" \
+  || fail "done refused the reused slot (rc=$rc): $done_out"
+echo "$done_out" | grep -q 'cleanup-refused' \
+  && fail "done recorded a cleanup-refused for the reused slot" \
+  || pass "done recorded no cleanup-refused for the reused slot"
+[ -f "$KINGPIN_HOME/archive/excl-reuse-b/status" ] \
+  && ! grep -q 'cleanup-refused' "$KINGPIN_HOME/archive/excl-reuse-b/status" \
+  && pass "the archived task carries no cleanup-refused status line" \
+  || fail "the archived task carries a cleanup-refused status line"
+[ -z "$(git -C "${wt_reuse:-/nonexistent}" status --porcelain -uall 2>/dev/null)" ] \
+  && pass "the returned slot is clean for the next lease" \
+  || fail "the returned slot still reports: $(git -C "${wt_reuse:-/nonexistent}" status --porcelain -uall 2>/dev/null | tr '\n' ' ')"
+[ -f "${wt_reuse:-/nonexistent}/worker-note.txt" ] \
+  && pass "done kept the unrelated untracked file" \
+  || fail "done deleted the unrelated untracked file"
+rm -f "${wt_reuse:-/nonexistent}/worker-note.txt"
+
+echo "=== Test 19: the leftover prover accepts only the shapes Kingpin writes ==="
+# The spawn deletes an earlier task's file only on proof (issue #127). These are the
+# shapes that count, and the near misses a user's own file can take.
+proves() { node "$KP_ROOT/lib/leftover.mjs" "$T/prover" "$1" "$KINGPIN_HOME"; }
+mkdir -p "$T/prover/.agents/rules" "$T/prover/.opencode/plugins"
+printf '{"kingpin":{"Stop":[]}}\n' > "$T/prover/.agents/hooks.json"
+proves .agents/hooks.json && pass "a hooks.json whose only key is kingpin is Kingpin's" \
+  || fail "the prover rejected a hooks.json whose only key is kingpin"
+printf '{"kingpin":{"Stop":[]},"mine":{}}\n' > "$T/prover/.agents/hooks.json"
+proves .agents/hooks.json && fail "the prover accepted a hooks.json with another key" \
+  || pass "a hooks.json with another key is not Kingpin's"
+printf '{"permission":{"*":"allow"},"instructions":["%s/tasks/old/preamble.md"]}\n' "$KINGPIN_HOME" \
+  > "$T/prover/.opencode/config.json"
+proves .opencode/config.json && pass "an old config.json pointing into KINGPIN_HOME is Kingpin's" \
+  || fail "the prover rejected an old config.json pointing into KINGPIN_HOME"
+printf '{"instructions":["/etc/passwd"]}\n' > "$T/prover/.opencode/config.json"
+proves .opencode/config.json && fail "the prover accepted a config.json pointing outside KINGPIN_HOME" \
+  || pass "a config.json pointing outside KINGPIN_HOME is not Kingpin's"
+printf '{"permission":{},"instructions":["%s/tasks/old/preamble.md"],"model":"x"}\n' "$KINGPIN_HOME" \
+  > "$T/prover/.opencode/config.json"
+proves .opencode/config.json && fail "the prover accepted a config.json with another key" \
+  || pass "a config.json with another key is not Kingpin's"
+printf 'not json\n' > "$T/prover/.opencode/config.json"
+proves .opencode/config.json && fail "the prover accepted a config.json that is not JSON" \
+  || pass "a config.json that is not JSON is not Kingpin's"
+
+# The agy rules file: Kingpin's trigger frontmatter above the worker preamble.
+{
+  printf -- '---\ntrigger: always_on\ndescription: Kingpin worker preamble\n---\n\n'
+  sed -n '1,2p' "$KP_ROOT/worker/preamble.md"
+} > "$T/prover/.agents/rules/kingpin.md"
+proves .agents/rules/kingpin.md \
+  && pass "a rules file with the trigger frontmatter and the preamble heading is Kingpin's" \
+  || fail "the prover rejected the rules file Kingpin generates"
+printf -- '---\ntrigger: always_on\ndescription: my project rules\n---\n\n# My rules\n' \
+  > "$T/prover/.agents/rules/kingpin.md"
+proves .agents/rules/kingpin.md && fail "the prover accepted a rules file without the Kingpin preamble" \
+  || pass "a user's rules file with the trigger frontmatter is not Kingpin's"
+printf -- '---\ndescription: Kingpin worker preamble\n---\n\n# Kingpin worker\n' \
+  > "$T/prover/.agents/rules/kingpin.md"
+proves .agents/rules/kingpin.md && fail "the prover accepted a rules file without trigger: always_on" \
+  || pass "a rules file without the agy trigger is not Kingpin's"
+
+# The opencode plugin pair: the exact package object, and the stop plugin's own lines.
+printf '{ "private": true, "type": "module" }\n' > "$T/prover/.opencode/plugins/package.json"
+proves .opencode/plugins/package.json && pass "the package file exact object is Kingpin's" \
+  || fail "the prover rejected the package file Kingpin writes"
+printf '{"private":true,"type":"module","name":"our-plugins"}\n' > "$T/prover/.opencode/plugins/package.json"
+proves .opencode/plugins/package.json && fail "the prover accepted a package file with another field" \
+  || pass "an opencode plugin package file of the user's own is not Kingpin's"
+generated_stop_plugin > "$T/prover/.opencode/plugins/kingpin-stop.js"
+proves .opencode/plugins/kingpin-stop.js \
+  && pass "the stop plugin Kingpin writes proves its own path" \
+  || fail "the prover rejected the stop plugin Kingpin writes"
+sed -e 's/kingpin\.stop/our.plugin/' \
+  "$T/prover/.opencode/plugins/kingpin-stop.js" > "$T/prover/plugin.miss"
+cp "$T/prover/plugin.miss" "$T/prover/.opencode/plugins/kingpin-stop.js"
+proves .opencode/plugins/kingpin-stop.js && fail "the prover accepted a stop plugin under another id" \
+  || pass "an opencode plugin of the user's own is not Kingpin's"
+
+echo "=== Test 20: a slot's visible untracked file is named and kept ==="
+# treehouse will not lease a slot that is already dirty, so the sweep above never sees a
+# visible untracked file in the incident's state. A stubbed `treehouse get` hands this
+# spawn a linked worktree that carries one, which is the state a user's own file was in
+# before the spawn: it must be named on stderr and left alone.
+git -C "$T/proj" worktree add -q -b kingpin/excl-visible "$T/visible-slot"
+printf 'already here\n' > "$T/visible-slot/kept-note.txt"
+mkdir -p "$T/stub-treehouse"
+cat > "$T/stub-treehouse/treehouse" <<EOF
+#!/usr/bin/env bash
+# Only \`get\` matters here: hand back the slot prepared above.
+case "\${1:-}" in
+  get) printf '%s\n' "$T/visible-slot" ;;
+  *) exit 0 ;;
+esac
+EOF
+chmod +x "$T/stub-treehouse/treehouse"
+rc=0
+spawn_err=$(PATH="$T/stub-treehouse:$PATH" "$KP_BIN/kingpin-spawn" demo-auto \
+  --issue 920 --id excl-visible --harness claude 2>&1 >/dev/null) || rc=$?
+[ "$rc" -eq 0 ] && pass "a spawn whose slot carries a visible untracked file still launches" \
+  || fail "the spawn failed on a slot with a visible untracked file (rc=$rc): $spawn_err"
+echo "$spawn_err" | grep -qF "kept-note.txt was already untracked" \
+  && pass "the spawn names the visible untracked file it did not write" \
+  || fail "the spawn did not name the visible untracked file: $spawn_err"
+echo "$spawn_err" | grep -qF "left in place" \
+  && pass "the spawn says the visible untracked file stays" \
+  || fail "the spawn does not say the visible untracked file stays: $spawn_err"
+[ -f "$T/visible-slot/kept-note.txt" ] \
+  && pass "the spawn left the visible untracked file in the slot" \
+  || fail "the spawn deleted the visible untracked file"
+PATH="$T/stub-treehouse:$PATH" "$KP_BIN/kingpin-done" excl-visible --force >/dev/null 2>&1 || true
+
 kp_test_finish "SPAWN EXCLUDE"

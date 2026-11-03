@@ -60,7 +60,28 @@ t62_working agy 'Interrupt' 1
 t62_working opencode $'working\nesc to cancel' 0
 t62_working opencode $'working\nInterrupt' 0
 t62_working opencode '$ ls -la' 1
+# Pi 1.5.0's working rule (spike.md, Check 4): a box rule with a braille spinner and
+# the word, directly above the model footer. The idle footer carries no "Working".
+t62_working pi $'tool output\n── ⠏ Working ─────────────────────────\n…/project (main)\n↑10 ↓157 … anthropic/claude-sonnet-4.5 • medium' 0
+t62_working pi $'$ make test\nok\n…/project (main)\n↑10 ↓157 … claude-sonnet-4.5 • medium' 1
 t62_working unknown 'Waiting for 1 background agent' 1
+
+# The fleet's wire command per harness: pi exposes skills only as /skill:<name>, so a
+# send that used the plain name would reach the model as ordinary text (spike.md,
+# Check 3). An empty harness reads as claude; an unknown one keeps the plain form.
+t62_skill() { # <harness> <expected> [skill args...]
+  local harness=$1 want=$2 got
+  shift 2
+  got=$(kp_skill_command "$harness" "$@")
+  [ "$got" = "$want" ] && pass "t62: skill command on '$harness' is '$want'" || fail "t62: skill command on '$harness' = '$got' (want '$want')"
+}
+t62_skill claude "/review --issue 7" review --issue 7
+t62_skill agy "/review --issue 7" review --issue 7
+t62_skill opencode "/review --issue 7" review --issue 7
+t62_skill pi "/skill:review --issue 7" review --issue 7
+t62_skill "" "/review" review
+t62_skill pi "/skill:create-pr-merge" create-pr-merge
+t62_skill bogus "/review" review
 # The claude marker literals have one owner (#80): a caller that copies an alternative
 # into its own grep drifts out of step, which is how launch-check lost the footer. The
 # alternatives are read from the claude arm itself, so one added there is covered without

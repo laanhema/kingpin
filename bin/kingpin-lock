@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Acquire or inspect the kingpin orchestrator session lock.
-# Usage: kingpin-lock [status|check|acquire|release|harness] [--harness claude|agy|opencode] [pid]
+# Usage: kingpin-lock [status|check|acquire|release|harness] [--harness claude|agy|opencode|pi] [pid]
 #
 # The lock file holds the session pid on line 1 and, when known, the agent
-# harness of the session (claude, agy or opencode) on line 2. `kingpin spawn`
+# harness of the session (claude, agy, opencode or pi) on line 2. `kingpin spawn`
 # uses that harness as the default worker harness (`kingpin-lock harness`).
 #
 # `acquire` and `release` are serialized by a sibling mutex,
@@ -22,7 +22,8 @@
 # How `acquire` picks the harness, first match wins:
 #   1. --harness <name> on `acquire`
 #   2. the KINGPIN_HARNESS environment variable
-#   3. the command name (or argv) of the session pid: claude*, agy*, opencode*
+#   3. the command name (or argv) of the session pid: claude*, agy*, opencode*,
+#      pi*, or the npm package path @earendil-works/pi-coding-agent
 #   4. the calling agent's own environment marker: CLAUDECODE=1 -> claude,
 #      OPENCODE=1 -> opencode
 # Nothing matched (e.g. a codex session): no harness is recorded. The record
@@ -48,7 +49,7 @@ usage: kingpin-lock [status|check|acquire [--harness <name>]|release|harness] [p
   check     exit 0 when this session holds the lock, 1 when it does not
   acquire   take the lock for this session (default command)
   release   drop this session's lock; refuses while another live session holds it
-  harness   print the harness recorded for the holder (claude, agy, opencode)
+  harness   print the harness recorded for the holder (claude, agy, opencode, pi)
 
 --harness records the session's harness on `acquire`. A numeric [pid] overrides
 the detected session pid; KINGPIN_LOCK_PID does the same.
@@ -76,21 +77,28 @@ is_harness_pid() {
 }
 
 valid_harness() {
-  case "$1" in claude|agy|opencode) return 0 ;; *) return 1 ;; esac
+  case "$1" in claude|agy|opencode|pi) return 0 ;; *) return 1 ;; esac
 }
 
 # Harness name for a process, from its command name or argv. Empty if unknown.
 harness_of_pid() {
   local p=$1 comm args
   [ -n "$p" ] || return 0
+  args=$(ps -o args= -p "$p" 2>/dev/null || true)
+  # The npm package path comes first: `node .../@earendil-works/pi-coding-agent/dist/cli.js`
+  # is pi even though its command name is node, and the generic pattern below would
+  # read the package name instead.
+  case $args in
+    *@earendil-works/pi-coding-agent*) echo pi; return 0 ;;
+  esac
   comm=$(ps -o comm= -p "$p" 2>/dev/null | tr -d ' ' || true)
   case "$comm" in
     claude|claude-*) echo claude; return 0 ;;
     agy|agy-*) echo agy; return 0 ;;
     opencode|opencode-*) echo opencode; return 0 ;;
+    pi|pi-*) echo pi; return 0 ;;
   esac
-  args=$(ps -o args= -p "$p" 2>/dev/null || true)
-  local pattern='(^|[ /])(claude|agy|opencode)(-[^ ]*)?([ ]|$)'
+  local pattern='(^|[ /])(claude|agy|opencode|pi)(-[^ ]*)?([ ]|$)'
   if [[ "$args" =~ $pattern ]]; then
     echo "${BASH_REMATCH[2]}"
   fi
@@ -105,7 +113,7 @@ detect_harness() {
     h=$KINGPIN_HARNESS
   fi
   if [ -n "$h" ]; then
-    valid_harness "$h" || { echo "error: unsupported harness: $h (must be claude, agy, or opencode)" >&2; return 1; }
+    valid_harness "$h" || { echo "error: unsupported harness: $h (must be claude, agy, opencode, or pi)" >&2; return 1; }
     echo "$h"
     return 0
   fi

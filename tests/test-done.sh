@@ -11,6 +11,10 @@ kp_test_project
 # `treehouse return` refuses them; every fixture prepends its own stub where it
 # cares about the call (t16, Tests 20-23).
 kp_test_stub_treehouse
+# Test 19's kingpin-done opens and ends each t19-* report.html session through the
+# default Lavish stub; every recorded call must name one of those tasks, so a call for
+# anything else is still caught.
+kp_test_expect_lavish_calls '*t19-*'
 
 # Test 10: Refused cleanup handling and landing queue preservation
 echo "=== Test 10: Refused cleanup handling and landing queue preservation ==="
@@ -407,7 +411,9 @@ t19_ack_rc=0
 
 tmux kill-window -t kingpin:t19-merged 2>/dev/null || true
 rm -rf "$KINGPIN_HOME/archive/t19-"* "$KINGPIN_HOME/tasks/t19-"* "$T"/wt-t19-*
-unset KINGPIN_LAVISH
+# Put the default stub back rather than unsetting KINGPIN_LAVISH: an unset value
+# resolves the real lavish-axi from PATH again (issue #129).
+kp_test_stub_lavish
 
 # Test 20: two concurrent cleanups call treehouse return once and archive once
 echo "=== Test 20: cleanup is single-flight ==="
