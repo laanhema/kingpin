@@ -501,6 +501,17 @@ printf 'ready: branch=b review=APPROVE report=none\n' >> "$KINGPIN_HOME/tasks/t-
 listener_alive() { [ -n "${1:-}" ] && kill -0 "$1" 2>/dev/null; }
 listener_dead() { [ -z "${1:-}" ] || ! kill -0 "$1" 2>/dev/null; }
 
+# live_listener_pid <pid-file> <dead-pid>: the file names a live pid other than
+# the dead one the test wrote. `kingpin-listen --background` returns as soon as
+# any pid file exists, so the child that replaces the dead pid can still be
+# writing it after the launcher has exited; poll for the child, do not read the
+# stale value.
+live_listener_pid() {
+  local pid
+  pid=$(cat "${1:?}" 2>/dev/null || true)
+  [ -n "$pid" ] && [ "$pid" != "${2:?}" ] && listener_alive "$pid"
+}
+
 # A real listener, killed the way a crash kills one: the sweep must replace it.
 "$KP_BIN/kingpin-listen" t-arm --background
 started_pid=$(cat "$KINGPIN_HOME/tasks/t-arm/listener.pid" 2>/dev/null || true)
@@ -510,9 +521,11 @@ wait_until 40 listener_dead "$started_pid" && pass "the listener was killed" || 
 arm_out=$("$KP_BIN/kingpin-watch" --once 2>&1)
 echo "$arm_out" | grep -q "t-arm: dossier listener is gone; re-arming" \
   && pass "watch reports the dead listener" || fail "no re-arming line: $arm_out"
-arm_pid=$(cat "$KINGPIN_HOME/tasks/t-arm/listener.pid" 2>/dev/null || true)
-[ -n "$arm_pid" ] && [ "$arm_pid" != "$started_pid" ] && listener_alive "$arm_pid" \
-  && pass "watch re-armed a live listener (pid $arm_pid)" || fail "listener pid after --once: $arm_pid"
+arm_pid_file="$KINGPIN_HOME/tasks/t-arm/listener.pid"
+wait_until 40 live_listener_pid "$arm_pid_file" "$started_pid" \
+  && pass "watch re-armed a live listener (pid $(cat "$arm_pid_file"))" \
+  || fail "listener pid after --once: $(cat "$arm_pid_file" 2>/dev/null || true)"
+arm_pid=$(cat "$arm_pid_file" 2>/dev/null || true)
 kill -- "-$arm_pid" 2>/dev/null || kill "$arm_pid" 2>/dev/null || true
 wait_until 40 listener_dead "$arm_pid"
 
@@ -546,10 +559,11 @@ default_out=$("$KP_BIN/kingpin-watch" --once 2>&1)
 echo "$default_out" | grep -q "t-arm: dossier listener is gone; re-arming" \
   && pass "a task.env without MODE defaults to review and is re-armed" \
   || fail "a missing MODE skipped the re-arm: $default_out"
-default_pid=$(cat "$KINGPIN_HOME/tasks/t-arm/listener.pid" 2>/dev/null || true)
-[ -n "$default_pid" ] && [ "$default_pid" != "999999" ] && listener_alive "$default_pid" \
-  && pass "the default-mode task got a live listener (pid $default_pid)" \
-  || fail "listener pid after the default-mode sweep: $default_pid"
+default_pid_file="$KINGPIN_HOME/tasks/t-arm/listener.pid"
+wait_until 40 live_listener_pid "$default_pid_file" 999999 \
+  && pass "the default-mode task got a live listener (pid $(cat "$default_pid_file"))" \
+  || fail "listener pid after the default-mode sweep: $(cat "$default_pid_file" 2>/dev/null || true)"
+default_pid=$(cat "$default_pid_file" 2>/dev/null || true)
 kill -- "-$default_pid" 2>/dev/null || kill "$default_pid" 2>/dev/null || true
 wait_until 40 listener_dead "$default_pid"
 

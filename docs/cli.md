@@ -230,7 +230,7 @@ An unrecognized verdict, a line with no `review=` field (or an empty or repeated
 
 ### The project lane
 
-The project lane is claimed atomically, so two concurrent runs for different tasks cannot both dispatch.
+The project lane is claimed atomically, so two concurrent runs for different tasks cannot both dispatch. A holder whose worker reports `ready:`, `fixed:`, `needs-input:`, `feedback:` or `waiting:` after the landing was sent is released: the id and the reason go to stderr, the task's `landing_sent` marker is cleared so it can land again from the queue or the dossier, and the project's queue advances. A release that cannot run is named on stderr and retried on the next pass.
 
 ### A send failure
 

@@ -73,6 +73,39 @@ expect_rc 1 "holder_live: a merged: holder is not live" kp_landing_holder_live "
 unit_task unit-live
 expect_rc 0 "holder_live: a ready: holder is live" kp_landing_holder_live "$unit_home" unit-live
 
+# The send time is the landing_sent marker's mtime: a worker event newer than
+# that marker means the holder is not landing, while a status unchanged since
+# the send keeps the lane. Explicit mtimes keep the cases independent of clock
+# granularity.
+unit_task unit-stale-ready
+printf 'ready: branch=b review=APPROVE report=none\n' >> "$unit_home/tasks/unit-stale-ready/status"
+touch -t 202601010000.00 "$unit_home/tasks/unit-stale-ready/landing_sent"
+touch -t 202601010000.02 "$unit_home/tasks/unit-stale-ready/status"
+expect_rc 1 "holder_live: a ready: appended after the send is not landing" kp_landing_holder_live "$unit_home" unit-stale-ready
+
+unit_task unit-stale-needs
+printf 'needs-input: question.md\n' >> "$unit_home/tasks/unit-stale-needs/status"
+touch -t 202601010000.00 "$unit_home/tasks/unit-stale-needs/landing_sent"
+touch -t 202601010000.02 "$unit_home/tasks/unit-stale-needs/status"
+expect_rc 1 "holder_live: a needs-input: appended after the send is not landing" kp_landing_holder_live "$unit_home" unit-stale-needs
+
+unit_task unit-stale-feedback
+printf 'feedback: Request Changes: after the send\n' >> "$unit_home/tasks/unit-stale-feedback/status"
+touch -t 202601010000.00 "$unit_home/tasks/unit-stale-feedback/landing_sent"
+touch -t 202601010000.02 "$unit_home/tasks/unit-stale-feedback/status"
+expect_rc 1 "holder_live: a feedback: appended after the send is not landing" kp_landing_holder_live "$unit_home" unit-stale-feedback
+
+unit_task unit-mid-landing
+touch -t 202601010000.00 "$unit_home/tasks/unit-mid-landing/status"
+touch -t 202601010000.02 "$unit_home/tasks/unit-mid-landing/landing_sent"
+expect_rc 0 "holder_live: a status unchanged since the send is still landing" kp_landing_holder_live "$unit_home" unit-mid-landing
+
+unit_task unit-note-after-send
+printf 'approved: by user via lavish dossier\n' >> "$unit_home/tasks/unit-note-after-send/status"
+touch -t 202601010000.00 "$unit_home/tasks/unit-note-after-send/landing_sent"
+touch -t 202601010000.02 "$unit_home/tasks/unit-note-after-send/status"
+expect_rc 0 "holder_live: an approved: note after the send does not end a landing" kp_landing_holder_live "$unit_home" unit-note-after-send
+
 # An id is landable only when its task dir, task.env and a non-terminal event survive
 expect_rc 1 "task_landable: a missing task is not landable" kp_landing_task_landable "$unit_home" unit-missing
 mkdir -p "$unit_home/archive/unit-archived"
@@ -324,6 +357,36 @@ rm -f "$KINGPIN_HOME/projects/demo-d2.landing"
 [ "$(lane_marker lane-w2)" = "yes" ] && pass "the direct land dispatched the task" || fail "the direct land did not dispatch"
 lane_drop lane-w2 demo-d2
 lane_drop lane-hold2 demo-d2
+
+# t72g: a holder that reported after its landing was sent releases the lane
+echo "=== t72g: a stale holder releases the lane and the queue drains ==="
+lane_task lane-stale demo-s
+lane_task lane-queued demo-s
+lane_window lane-queued
+# The stale holder was sent the landing first, then its worker reported ready:
+# again (it had answered a question). landing_sent predates that line.
+touch -t 202601010000.00 "$KINGPIN_HOME/tasks/lane-stale/landing_sent"
+printf 'ready: branch=b review=APPROVE report=none\n' >> "$KINGPIN_HOME/tasks/lane-stale/status"
+touch -t 202601010000.02 "$KINGPIN_HOME/tasks/lane-stale/status"
+echo "lane-stale" > "$KINGPIN_HOME/projects/demo-s.landing"
+printf 'lane-queued\n' > "$KINGPIN_HOME/projects/demo-s.landing_queue"
+"$KP_BIN/kingpin" watch --once >/dev/null 2>"$T/watch-stale.err" || true
+[ "$(lane_holder demo-s)" = "lane-queued" ] && pass "the stale holder released the lane to the queued task" || fail "the queue did not drain past the stale holder: holder=$(lane_holder demo-s) queue=$(lane_queue demo-s)"
+[ "$(lane_marker lane-queued)" = "yes" ] && pass "the queued task received landing_sent after the release" || fail "the queued task's landing_sent is missing"
+[ "$(lane_marker lane-stale)" = "no" ] && pass "the released holder's landing_sent is cleared, so it can land again" || fail "the released holder kept landing_sent"
+expect_rc 0 "the released holder is landable again, so the queue or the dossier can restart it" kp_landing_task_landable "$KINGPIN_HOME" lane-stale
+[ -z "$(lane_queue demo-s)" ] && pass "the queue is empty after the stale-holder drain" || fail "the queue still holds $(lane_queue demo-s)"
+grep -qx "kingpin-landing: releasing stale landing holder lane-stale for project demo-s: a new ready: line arrived after the landing was sent" "$T/watch-stale.err" \
+  && pass "the release names the stale holder and the reason" \
+  || fail "no stale-holder release line: $(cat "$T/watch-stale.err")"
+# The released task is landable again, but it is not in the queue and the lane is
+# held by a live task, so a second pass neither releases it again nor lands it.
+"$KP_BIN/kingpin" watch --once >/dev/null 2>"$T/watch-stale2.err" || true
+[ "$(lane_holder demo-s)" = "lane-queued" ] && ! grep -q "releasing stale landing holder" "$T/watch-stale2.err" \
+  && pass "the released task is not released again on the next pass" \
+  || fail "the released task was released again: holder=$(lane_holder demo-s) err=$(cat "$T/watch-stale2.err")"
+lane_drop lane-stale demo-s
+lane_drop lane-queued demo-s
 
 rm -rf "$T"/wt-lane-* "$KINGPIN_HOME/tasks/lane-"* "$KINGPIN_HOME/archive/lane-"*
 rm -rf "$KINGPIN_HOME/projects/demo-"*
