@@ -85,6 +85,11 @@ if [ "$ALL" -eq 1 ]; then
 else
   for id in "${TARGETS[@]}"; do
     task_dir="$tasks_dir/$id"
+    if [ ! -d "$task_dir" ] && [ -d "$KP_HOME/archive/$id" ]; then
+      # kingpin-done archives the task: there is nothing left to acknowledge.
+      echo "kingpin-ack: task $id is already archived; nothing to acknowledge"
+      continue
+    fi
     if [ ! -d "$task_dir" ]; then
       echo "kingpin-ack: task $id not found: $task_dir" >&2
       exit 1
