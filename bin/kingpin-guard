@@ -22,6 +22,8 @@ set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+# shellcheck source=../lib/exclude.sh
+. "$KP_ROOT/lib/exclude.sh"
 # The deny rules older versions wrote; install removes them, check rejects them.
 LEGACY_DENY='["Edit","Write","NotebookEdit","Agent"]'
 MATCHER='Edit|Write|NotebookEdit|Agent'
@@ -81,11 +83,13 @@ opencode_cfg="$dir/.opencode/opencode.json"
 
 ensure_excluded() {
   local file=$1 rel excl
-  git -C "$dir" check-ignore -q -- "$file" && return 0
   rel=${file#"$dir"/}
   excl=$(git -C "$dir" rev-parse --path-format=absolute --git-path info/exclude)
-  mkdir -p "$(dirname "$excl")"
-  grep -qxF "$rel" "$excl" 2>/dev/null || echo "$rel" >> "$excl"
+  # The guard's entries live in the block it owns in that file, rewritten on every
+  # install: a loose copy an older install appended is adopted, never duplicated, so
+  # `kingpin spawn` stops naming files the guard hides (issue #123).
+  kp_exclude_guard_block "$excl" "$rel" \
+    || die "cannot write the guard block in $excl"
 }
 
 # The merge below needs plain JSON, and OpenCode also accepts JSONC (comments) in its

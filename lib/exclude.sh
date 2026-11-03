@@ -1,8 +1,9 @@
 # shellcheck shell=bash
 # Per-worktree excludes for the harness files a spawn writes into a worker's checkout
-# (issue #77). Source it; it only defines functions (no `set` options, no output unless
-# stated, every function returns 0 unless stated, and a failed write names its reason on
-# stderr for the caller to report through its own `die`).
+# (issue #77). Source it; it defines the functions below and the two
+# `KP_GUARD_EXCLUDE_*` marker constants, and nothing else (no `set` options, no output
+# unless stated, every function returns 0 unless stated, and a failed write names its
+# reason on stderr for the caller to report through its own `die`).
 #
 # A linked worktree has no `.git/info/exclude` of its own: `git rev-parse --git-path
 # info/exclude` resolves into the common dir, so that file is the main checkout's and
@@ -15,6 +16,13 @@
 #
 #   kp_exclude_write <worktree> <task-dir> <task-id> <harness> <path>...
 #   kp_exclude_clear <worktree> <task-dir>
+#
+# The main checkout's `.git/info/exclude` is the user's file, and the only part of it
+# `kingpin guard install` rewrites is the block it owns there for its contract copies
+# (`KP_GUARD_EXCLUDE_*` below); the install may also append a plain
+# `.claude/settings.local.json` line outside that block. A spawn names a Kingpin-shaped
+# line outside the block and skips the lines inside it, because the guard rewrites the
+# block on every install (issue #123).
 #
 # `kp_exclude_write` also mirrors the ignore file the worktree would otherwise inherit:
 # a worktree-scoped core.excludesFile replaces it, and a worker that started seeing the
@@ -33,6 +41,75 @@ kp_exclude_injected_paths() {
     .opencode/opencode.json \
     .opencode/plugins/package.json \
     .opencode/plugins/kingpin-stop.js
+}
+
+# The markers of the block `kingpin guard install` owns in the main checkout's
+# `.git/info/exclude`. A spawn names a Kingpin-shaped line outside it and skips the
+# lines inside it, because the guard rewrites the block on every install (issue #123).
+KP_GUARD_EXCLUDE_BEGIN='# kingpin guard'
+KP_GUARD_EXCLUDE_END='# end kingpin guard'
+
+# kp_exclude_guard_block <exclude-file> <path>...
+# Add <path>... to the guard-owned block of <exclude-file>, rewriting the whole block so
+# a repeated install leaves no duplicate line. Everything outside the block keeps its
+# order, and an unmarked line that equals one of <path>... is adopted into the block
+# instead of duplicated, so one install silences the warning an older install left behind
+# (issue #123). A file that cannot be read or written names its reason on stderr and
+# returns 1.
+kp_exclude_guard_block() {
+  local file=$1
+  shift
+  local line keep want tmp
+  local in_block=0
+  local outside=() inside=() entries=()
+  if [ -f "$file" ]; then
+    [ -r "$file" ] || { echo "cannot read $file" >&2; return 1; }
+    while IFS= read -r line || [ -n "$line" ]; do
+      case $line in
+        "$KP_GUARD_EXCLUDE_BEGIN") in_block=1; continue ;;
+        "$KP_GUARD_EXCLUDE_END") in_block=0; continue ;;
+      esac
+      if [ "$in_block" = 1 ]; then
+        inside+=("$line")
+        continue
+      fi
+      keep=1
+      for want in "$@"; do
+        if [ "$line" = "$want" ]; then keep=0; break; fi
+      done
+      if [ "$keep" = 1 ]; then outside+=("$line"); fi
+    done < "$file"
+  fi
+  # Keep the entries an earlier install left in the block, without duplicates.
+  for line in ${inside[@]+"${inside[@]}"}; do
+    [ -n "$line" ] || continue
+    keep=1
+    for want in ${entries[@]+"${entries[@]}"}; do
+      if [ "$line" = "$want" ]; then keep=0; break; fi
+    done
+    [ "$keep" = 1 ] && entries+=("$line")
+  done
+  for want in "$@"; do
+    keep=1
+    for line in ${entries[@]+"${entries[@]}"}; do
+      if [ "$line" = "$want" ]; then keep=0; break; fi
+    done
+    [ "$keep" = 1 ] && entries+=("$want")
+  done
+  mkdir -p "$(dirname "$file")" || { echo "cannot create the directory of $file" >&2; return 1; }
+  tmp="$file.tmp.$$"
+  {
+    for line in ${outside[@]+"${outside[@]}"}; do
+      printf '%s\n' "$line"
+    done
+    printf '%s\n' "$KP_GUARD_EXCLUDE_BEGIN"
+    for line in ${entries[@]+"${entries[@]}"}; do
+      printf '%s\n' "$line"
+    done
+    printf '%s\n' "$KP_GUARD_EXCLUDE_END"
+  } > "$tmp" || { rm -f "$tmp"; echo "cannot write $file" >&2; return 1; }
+  mv -f "$tmp" "$file" || { rm -f "$tmp"; echo "cannot write $file" >&2; return 1; }
+  return 0
 }
 
 # kp_exclude_file <task-dir>: the exclude file Kingpin owns for one task.
