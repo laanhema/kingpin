@@ -128,7 +128,7 @@ grep -qx "trigger: always_on" "$wt_agy/.agents/rules/kingpin.md" && pass "agy ru
 ! grep -q "You are the underboss" "$wt_agy/.agents/rules/kingpin.md" && pass "agy rules carry no orchestrator persona" || fail "orchestrator persona in agy rules"
 ! grep -q "{{WORKTREE}}" "$wt_agy/.agents/rules/kingpin.md" && pass "agy rules substituted WORKTREE" || fail "unsubstituted WORKTREE in agy rules"
 [ -f "$wt_agy/.agents/hooks.json" ] && pass "agy hooks.json written in worktree" || fail "missing agy hooks"
-grep -q "KINGPIN_TASK_DIR/stopped" "$wt_agy/.agents/hooks.json" && pass "agy hook command writes to stopped file" || fail "wrong agy hook"
+grep -q "kingpin-stop" "$wt_agy/.agents/hooks.json" && pass "agy hook command runs the shared stop hook" || fail "wrong agy hook"
 # Verify specific agy files excluded from git, broad .agents migrated
 git_excl=$(git -C "$wt_agy" rev-parse --git-path info/exclude)
 case "$git_excl" in /*) ;; *) git_excl="$wt_agy/$git_excl" ;; esac

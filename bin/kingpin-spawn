@@ -237,7 +237,7 @@ EOF
     "Stop": [
       {
         "type": "command",
-        "command": "[ -n \"${KINGPIN_TASK_DIR:-}\" ] && date +%s > \"$KINGPIN_TASK_DIR/stopped\" || true",
+        "command": "[ -n \"${KINGPIN_TASK_DIR:-}\" ] || exit 0; if [ -x \"${KINGPIN_ROOT:-/nonexistent}/bin/kingpin-stop\" ]; then \"$KINGPIN_ROOT/bin/kingpin-stop\" || true; else echo \"kingpin: stop hook unavailable (KINGPIN_ROOT unset or kingpin-stop missing); the worker's outcome is not recorded\" >&2; fi; exit 0",
         "timeout": 30
       }
     ]
@@ -249,6 +249,7 @@ EOF_HOOKS
     cat > "$task_dir/launch.sh" <<EOF
 #!/usr/bin/env bash
 export KINGPIN_TASK_DIR='$task_dir'
+export KINGPIN_ROOT='$KP_ROOT'
 exec $AGY_CMD --prompt-interactive "\$(cat '$task_dir/prompt.txt')" --dangerously-skip-permissions
 EOF
     ;;
@@ -289,15 +290,24 @@ EOF
 { "private": true, "type": "module" }
 EOF_OC_PKG
     cat > "$worktree/.opencode/plugins/kingpin-stop.js" << 'EOF_OC_PLUG'
-import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 
+// The one Stop hook: bin/kingpin-stop records the turn end and appends the missing
+// outcome (issue #102). A failed hook warns here and never blocks the stop.
 const recordStop = () => {
   const taskDir = process.env.KINGPIN_TASK_DIR;
   if (!taskDir) return;
+  const root = process.env.KINGPIN_ROOT;
+  if (!root) {
+    console.error("kingpin: stop hook unavailable (KINGPIN_ROOT unset); the worker's outcome is not recorded");
+    return;
+  }
   try {
-    fs.writeFileSync(path.join(taskDir, "stopped"), `${Math.floor(Date.now() / 1000)}\n`, "utf8");
-  } catch (err) {}
+    execFileSync(path.join(root, "bin", "kingpin-stop"), [], { stdio: ["ignore", "ignore", "inherit"] });
+  } catch (err) {
+    console.error(`kingpin: stop hook failed: ${err && err.message ? err.message : err}`);
+  }
 };
 
 const setupEventSubscription = (ctx, handler) => {
@@ -347,6 +357,7 @@ EOF_OC_PLUG
     cat > "$task_dir/launch.sh" <<EOF
 #!/usr/bin/env bash
 export KINGPIN_TASK_DIR='$task_dir'
+export KINGPIN_ROOT='$KP_ROOT'
 exec $OPENCODE_CMD --standalone --auto --prompt "\$(cat '$task_dir/prompt.txt')"
 EOF
     ;;

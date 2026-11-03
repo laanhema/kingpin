@@ -118,7 +118,24 @@ LAVISH_PATH=$(command -v "$LAVISH_CMD")
 PROMPTS_MJS="$KP_BIN/../lib/lavish-prompts.mjs"
 
 # Listener notes in the status file wake the orchestrator (kingpin-wait).
-note() { printf '%s\n' "$1" >> "$task_dir/status"; }
+# A note is the listener's, not the worker's report, so it must not move the Stop
+# hook's turn boundary: a worker that stops silently after a note would look as if
+# it had reported. Only the mtime changes here; kingpin-wait, kingpin-launch-check
+# and kingpin-ack read the file's contents, so the boundary value is untouched.
+# The exception is a worker that already reported since the last stop: it owns this
+# turn's boundary, and moving it would make its ready:/fixed: look like the previous
+# turn's report, so the Stop hook would append a waiting: line over a real one.
+note() {
+  local reported=0
+  if [ -f "$task_dir/stopped" ] && [ "$task_dir/status" -nt "$task_dir/stopped" ]; then
+    reported=1
+  fi
+  printf '%s\n' "$1" >> "$task_dir/status"
+  if [ "$reported" -eq 0 ] && [ -f "$task_dir/stopped" ]; then
+    touch "$task_dir/stopped" 2>/dev/null \
+      || echo "kingpin-listen: cannot move the stop boundary $task_dir/stopped" >&2
+  fi
+}
 reply() { "$LAVISH_CMD" reply "$task_dir/report.html" --agent-reply "$1" >/dev/null 2>&1 || true; }
 
 

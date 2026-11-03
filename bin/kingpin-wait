@@ -73,11 +73,12 @@ is_launching() {
   [ "$age" -lt "$LAUNCH_GRACE" ]
 }
 
-# True when the worker already reported `needs-input:` (acknowledged) and its pane
-# shows no activity since that ack: a stop in that state is the same idle wait.
+# True when the worker already reported a wait (needs-input:, a feedback: note, or
+# the Stop hook's waiting: line) and its pane shows no activity since that ack: a
+# stop in that state is the same idle wait.
 quiet_held() {
   local dir=$1 target=$2 last=$3 count=$4 seen=$5
-  case "$last" in needs-input:*) ;; *) return 1 ;; esac
+  kp_status_is_waiting "$last" || return 1
   [ "$count" -eq "$seen" ] || return 1
   [ -f "$dir/seen_activity" ] || return 1
   local now_act
@@ -172,37 +173,12 @@ check_task() {
       local pane_tail
       pane_tail=$(tmux capture-pane -pt "$tmux_target" -S -30 2>/dev/null || true)
 
-      # Working markers: keep in step with the copy in kingpin-launch-check.
-      case "$harness" in
-        claude)
-          if echo "$pane_tail" | grep -qE "Waiting for [0-9]+ background agent|Background agent|/tasks to see subagents"; then
-            :
-          else
-            echo "$id quiet"
-            return 0
-          fi
-          ;;
-        agy)
-          if echo "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel'; then
-            :
-          else
-            echo "$id quiet"
-            return 0
-          fi
-          ;;
-        opencode)
-          if echo "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel|Interrupt'; then
-            :
-          else
-            echo "$id quiet"
-            return 0
-          fi
-          ;;
-        *)
-          echo "$id quiet"
-          return 0
-          ;;
-      esac
+      # A pane that still shows a working marker is not quiet. The list lives in
+      # lib/status.sh, shared with the Stop hook and kingpin-launch-check.
+      if ! kp_pane_shows_working "$pane_tail" "$harness"; then
+        echo "$id quiet"
+        return 0
+      fi
     fi
   fi
 

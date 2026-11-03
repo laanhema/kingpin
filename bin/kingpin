@@ -133,6 +133,7 @@ case "$cmd" in
     print_task_row() {
       local d=$1 suffix=${2:-}
       local tid env_file proj harness mode status_file st listen_info lpid
+      local state last lines seen tmux_target window_id
       tid=$(basename "$d")
       env_file="$d/task.env"
       proj="-" harness="claude" mode="review"
@@ -146,10 +147,40 @@ case "$cmd" in
       fi
       status_file="$d/status"
       st="(pending)"
+      state="-"
       if [ -f "$status_file" ] && [ -s "$status_file" ]; then
         st=$(kp_status_newest "$status_file")
+        last=$(kp_status_last "$status_file")
+        # WAITING and SILENT are states of a live pane: a dead window is already
+        # visible through its last line and `kingpin done`. The window survives
+        # rename, so the recorded window ID wins over the session:name target.
+        tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
+        [ -n "$tmux_target" ] || tmux_target="kingpin:$tid"
+        window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
+        [ -n "$window_id" ] && tmux_target=$window_id
+        if tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
+          if kp_status_is_waiting "$st"; then
+            state="WAITING"
+          elif kp_status_is_silent "$last"; then
+            state="SILENT"
+          fi
+        fi
+        # Events appended since the last `kingpin ack` (the supervisor acks what
+        # it dispatches), so an event nobody has looked at stays visible.
+        lines=$(wc -l < "$status_file" | tr -d ' ')
+        seen=0
+        [ -f "$d/seen" ] && seen=$(tr -d ' ' < "$d/seen" 2>/dev/null || echo 0)
+        case "$seen" in ''|*[!0-9]*) seen=0 ;; esac
+        case "$lines" in ''|*[!0-9]*) lines=0 ;; esac
+        if [ "$lines" -gt "$seen" ]; then
+          if [ "$state" = "-" ]; then
+            state="Unseen: $((lines - seen))"
+          else
+            state="$state Unseen: $((lines - seen))"
+          fi
+        fi
       fi
-      printf "%-22s %-10s %-8s %-12s %s%s\n" "$tid" "$proj" "$harness" "$mode" "$st" "$suffix"
+      printf "%-22s %-10s %-8s %-12s %-18s %s%s\n" "$tid" "$proj" "$harness" "$mode" "$state" "$st" "$suffix"
       if [ -z "$suffix" ] && [ -f "$d/report.html" ]; then
         listen_info=""
         if [ -f "$d/listener.pid" ]; then
@@ -180,8 +211,8 @@ case "$cmd" in
     if [ ${#live_dirs[@]} -eq 0 ] && [ ${#archived_dirs[@]} -eq 0 ]; then
       echo "No tasks in fleet."
     else
-      printf "%-22s %-10s %-8s %-12s %s\n" "TASK ID" "PROJECT" "HARNESS" "MODE" "LAST STATUS"
-      printf "%-22s %-10s %-8s %-12s %s\n" "-------" "-------" "-------" "----" "-----------"
+      printf "%-22s %-10s %-8s %-12s %-18s %s\n" "TASK ID" "PROJECT" "HARNESS" "MODE" "STATE" "LAST STATUS"
+      printf "%-22s %-10s %-8s %-12s %-18s %s\n" "-------" "-------" "-------" "----" "-----" "-----------"
       for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
         suffix=""
         [ -f "$d/done_cleaned" ] && suffix=" (finished)"
