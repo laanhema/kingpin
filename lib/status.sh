@@ -15,7 +15,9 @@
 # `kp_status_field_count`, `kp_status_verdict`, `kp_verdict_kind`), so the landing
 # gate in kingpin-land and the approval gate in kingpin-listen share one parser.
 # The one pane decision the outcome writers share (`kp_pane_shows_working`) lives
-# here as well, so the per-harness working-marker list exists once.
+# here as well, so the per-harness working-marker list exists once. The one command
+# builder the fleet sends share (`kp_skill_command`) lives here for the same reason:
+# spawn and land must ask a harness for the skill name it really expands.
 
 # kp_status_last <status-file>
 # The worker's last event: the last line that is not an approved:/feedback: note.
@@ -154,13 +156,35 @@ kp_env_get() {
   sed -n "s/^${2:?}=//p" "$1" 2>/dev/null | tail -n 1 || true
 }
 
+# kp_skill_command <harness> <skill> [args...]
+# The wire command that fires one skill on a harness: `/<skill>` for claude, agy and
+# opencode, `/skill:<skill>` for pi, whose command list exposes skills only under that
+# prefix (spike.md, Check 3: a plain `/review` reaches the model as ordinary text).
+# kingpin-spawn's prompt and kingpin-land's sends go through this helper, so a fleet
+# send always names a command the worker's harness really expands. An empty harness
+# reads as claude (older task.env files), and an unknown one prints the plain form and
+# returns 0: callers validate harness names, and a send must not silently vanish.
+kp_skill_command() {
+  local harness=${1:-} skill=${2:-}
+  [ $# -ge 2 ] || return 0
+  shift 2
+  case "$harness" in
+    pi) printf '/skill:%s' "$skill" ;;
+    *) printf '/%s' "$skill" ;;
+  esac
+  local arg
+  for arg in "$@"; do printf ' %s' "$arg"; done
+  printf '\n'
+}
+
 # kp_pane_shows_working <pane-tail> <harness>
 # Exit 0 when a capture of the worker's pane still shows the harness's working
 # marker: a background agent, or a turn that has not finished. The three callers
 # that must not call a working worker idle or failed (kingpin-stop's hook,
 # kingpin-wait's `quiet` check, kingpin-launch-check) share this one list, so a
-# marker added for one harness cannot drift out of step between them. The pane is
-# captured by the caller; an unknown harness shows nothing (exit 1).
+# marker added for one harness cannot drift out of step between them. The list
+# covers all four harnesses (claude, agy, opencode, pi). The pane is captured by
+# the caller; an unknown harness shows nothing (exit 1).
 kp_pane_shows_working() {
   local pane_tail=${1:-} harness=${2:-claude} bottom=""
   case "$harness" in
@@ -175,6 +199,14 @@ kp_pane_shows_working() {
     opencode)
       bottom=$(printf '%s\n' "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 || true)
       printf '%s\n' "$bottom" | grep -qiE 'esc[[:space:]]+to[[:space:]]+cancel|Interrupt'
+      ;;
+    pi)
+      # Measured on Pi 1.5.0 (spike.md, Check 4): the rule sits directly above the
+      # model footer and reads "── ⠏ Working ───...". Match the box rule and the
+      # word, not the braille spinner, which changes per frame; re-measure the line
+      # on a Pi version bump rather than widening this pattern.
+      bottom=$(printf '%s\n' "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 || true)
+      printf '%s\n' "$bottom" | grep -qE '──.*Working'
       ;;
     *) return 1 ;;
   esac

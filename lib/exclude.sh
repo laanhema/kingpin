@@ -31,14 +31,22 @@
 # file that exists but cannot be read fails the spawn instead of dropping the user's
 # ignore rules without a word.
 
-# The files a spawn can inject into a worktree, one path per line. `kp_exclude_clear`
-# removes the ones a spawn recorded for its task, and `kingpin-spawn` names any of these
-# lines an older version left in the shared exclude file.
+# The files a spawn writes into a worktree, and the historical paths an older spawn
+# wrote, one path per line. `kp_exclude_clear` removes the ones a spawn recorded for its
+# task, `kingpin-spawn` looks for any of them a reused slot already carries, and it names
+# any of these lines an older version left in the shared exclude file. The list is
+# therefore the only definition of a Kingpin-owned path.
+#
+# `.opencode/config.json` is historical: OpenCode V2 reads opencode.json(c) or
+# `.opencode/opencode.json` and ignores this path without a word (the fact
+# `bin/kingpin-spawn` records at its opencode branch), but the OpenCode wiring before
+# #96 wrote it. A pooled slot can still carry it, so it stays on the list (issue #127).
 kp_exclude_injected_paths() {
   printf '%s\n' \
     .agents/rules/kingpin.md \
     .agents/hooks.json \
     .opencode/opencode.json \
+    .opencode/config.json \
     .opencode/plugins/package.json \
     .opencode/plugins/kingpin-stop.js
 }

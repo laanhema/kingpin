@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Record a worker's turn end and make its outcome explicit (issue #102).
 #
-# One Stop hook for all three harnesses: Claude Code's worker/hooks.json, agy's
-# .agents/hooks.json, and OpenCode's .opencode/plugins/kingpin-stop.js. It writes the
-# `stopped` timestamp exactly as the old one-line hook did, then fills the one hole
-# the status protocol allows: a worker that ended a turn without reporting.
+# One Stop hook for all four harnesses: Claude Code's worker/hooks.json, agy's
+# .agents/hooks.json, OpenCode's .opencode/plugins/kingpin-stop.js, and Pi's
+# worker/pi/kingpin-harness.ts extension, which runs this script on agent_settled.
+# It writes the `stopped` timestamp exactly as the old one-line hook did, then fills
+# the one hole the status protocol allows: a worker that ended a turn without reporting.
 #
 # The turn boundary is the previous `stopped` file. A status file that is newer than
 # it was written during this turn (bash's -nt compares mtimes, so the protocol needs
@@ -17,6 +18,10 @@
 #   no status this turn, anything else, pane idle          -> failed: no status: stopped without reporting
 #   no status this turn, pane still shows a working marker -> left untouched (background agents run)
 #   a status was written this turn                         -> left untouched
+#
+# Pi is exempt from the pane check: its extension runs this hook synchronously from
+# `agent_settled`, before the TUI repaints, so the pane still shows the working rule
+# while the turn is over (see pane_is_working).
 #
 # A stop hook that fails must not trap the session: every write is best effort, a
 # failure is named on stderr, and the exit status is always 0.
@@ -55,6 +60,14 @@ pane_is_working() {
   [ -n "$target" ] || target="kingpin:$(basename "$task_dir")"
   harness=$(kp_env_get "$env_file" HARNESS)
   [ -n "$harness" ] || harness=claude
+  # Pi is never "still working" here. `agent_settled` is Pi's final idle signal (it
+  # fires after agent_end, with no retry or compaction left), Pi has no subagent tool,
+  # and the extension runs this hook synchronously inside that event, before the TUI
+  # repaints: the pane still shows the working rule for a finished turn. Gating on it
+  # would drop the failed: line every silent pi turn (issue #93 review, H4). The
+  # shared marker list still covers pi for kingpin-wait and kingpin-launch-check,
+  # where the pane is live.
+  if [ "$harness" = pi ]; then return 1; fi
   pane_tail=$(tmux capture-pane -pt "$target" -S -30 2>/dev/null) || return 1
   kp_pane_shows_working "$pane_tail" "$harness"
 }

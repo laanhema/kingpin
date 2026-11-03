@@ -34,12 +34,13 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-sync.sh` | `sync` |
 | `test-cli-help.sh` | `--help` on every command in `kingpin --help`: usage text, exit 0, no window or task started |
 | `test-launch-check.sh` | `kingpin-launch-check`: workers that die at launch |
-| `test-worker-stop.sh` | `bin/kingpin-stop`: the outcome a Stop leaves (`failed:`/`waiting:`), fail-soft, `WAITING`/`SILENT`/`Unseen` in `list`, all three harnesses |
+| `test-worker-stop.sh` | `bin/kingpin-stop`: the outcome a Stop leaves (`failed:`/`waiting:`), fail-soft, `WAITING`/`SILENT`/`Unseen` in `list`, all four harnesses |
 | `test-status.sh` | `lib/status.sh`, the shared status protocol |
 | `test-report.sh` | `report`: generated diffs are renderable, blank-diff reports are rejected |
 | `test-ranks.sh` | rank voice: the contract's Ranks section, the capo preamble, and the neutral status lines |
 | `test-noir-template.sh` | noir dossier template: the three files ship together, every ref stays inside the folder, the diffs keep static fallbacks, the prose stays clean |
 | `test-harnesses.sh` | Multi-harness contract and isolation |
+| `test-pi-harness.sh` | Pi worker extension (`lib/pi-harness.mjs`): the `agent_settled` stop call, the `resources_discover` skills bridge, and the per-worktree `project_trust` answer |
 | `test-worker-scope.sh` | Worker instruction context: what each harness really loads, the spawn refusal, the installed contract |
 | `test-worker-settings.sh` | Orchestrator tool guard and worker edit boundary |
 | `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |

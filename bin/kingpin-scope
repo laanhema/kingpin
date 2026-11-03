@@ -5,11 +5,12 @@
 # A worker's context is assembled by the harness from files the worker never chose:
 # the repository's AGENTS.md, a harness's own config, the global config directory.
 # A rule that matters has to be a file the harness really loads (issue #96: two of
-# the three harnesses silently ignored the preamble file the spawn pointed at), and
-# the orchestrator contract must not be one of those files.
+# the harnesses silently ignored the preamble file the spawn pointed at), and the
+# orchestrator contract must not be one of those files.
 #
-# Usage: kingpin-scope files --harness <claude|agy|opencode> --worktree <dir>
-#        kingpin-scope check --harness <claude|agy|opencode> --worktree <dir> --preamble <file>
+# Usage: kingpin-scope files --harness <claude|agy|opencode|pi> --worktree <dir>
+#        kingpin-scope check --harness <claude|agy|opencode|pi> --worktree <dir> --preamble <file>
+#        kingpin-scope doctor --harness pi [--worktree <dir>] [--provider <name>] [--model <id>]
 #
 # `files` prints one "<kind>\t<path>" line per source that exists:
 #   discovery   the harness loads it by discovery (AGENTS.md, CLAUDE.md, rules/)
@@ -24,7 +25,20 @@
 # It also exits 1 when the preamble is not among the sources the harness actually
 # loads; for Claude Code it arrives through --append-system-prompt-file, so it is
 # never a discovered source and is not checked. `check` never edits anything.
+#
+# `doctor` is the readiness view of the pi harness: the binary, its credential state,
+# the skills directory and the extension in one command, then the same source list
+# `files` prints. It reads `--provider`/`--model`, or `PI_PROVIDER`/`PI_MODEL` when the
+# flag is absent, and runs `pi auth check --no-refresh --json`, so it is local and
+# offline. With no provider named it reports whether the Pi agent directory holds
+# credentials in `auth.json` (default `$HOME/.pi/agent`, override `PI_CODING_AGENT_DIR`),
+# so a host with no login reads differently from a logged-in one. Exit 0 when the binary,
+# credentials and extension are usable (or the credential state is unverified because no
+# provider was named), 1 when the binary or extension is missing or the credentials
+# report not_ready.
 set -euo pipefail
+
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 # The sentences that make a file the orchestrator contract. Each one is a marker
 # that must never reach a worker; `orchestrator/contract.md` carries the first.
@@ -37,23 +51,37 @@ MARKERS=(
 
 die() { echo "kingpin-scope: $*" >&2; exit 2; }
 
-cmd='' harness='' worktree='' preamble=''
+cmd='' harness='' worktree='' preamble='' provider='' model=''
 while [ $# -gt 0 ]; do
   case $1 in
-    files|check) cmd=$1; shift ;;
+    files|check|doctor) cmd=$1; shift ;;
     --harness) harness=${2:?--harness needs a value}; shift 2 ;;
     --worktree) worktree=${2:?--worktree needs a directory}; shift 2 ;;
     --preamble) preamble=${2:?--preamble needs a file}; shift 2 ;;
+    --provider) provider=${2:?--provider needs a value}; shift 2 ;;
+    --model) model=${2:?--model needs a value}; shift 2 ;;
     -h|--help)
-      echo "usage: kingpin-scope files|check --harness <claude|agy|opencode> --worktree <dir> [--preamble <file>]"
+      echo "usage: kingpin-scope files|check --harness <claude|agy|opencode|pi> --worktree <dir> [--preamble <file>]"
+      echo "       kingpin-scope doctor --harness pi [--worktree <dir>] [--provider <name>] [--model <id>]"
       exit 0
       ;;
     *) die "unknown argument: $1" ;;
   esac
 done
 
-[ -n "$cmd" ] || die "give files or check"
-case $harness in claude|agy|opencode) ;; *) die "--harness must be claude, agy, or opencode" ;; esac
+# No subcommand but a harness or a provider flag reads as doctor, so the issue #93
+# criterion `kingpin scope --harness pi` reports readiness too.
+if [ -z "$cmd" ]; then
+  [ -n "$harness$provider$model" ] || die "give files, check, or doctor"
+  cmd=doctor
+fi
+case $harness in claude|agy|opencode|pi) ;; *) die "--harness must be claude, agy, opencode, or pi" ;; esac
+case $cmd in
+  doctor) [ "$harness" = pi ] || die "doctor supports --harness pi (the other harnesses have no readiness probe)" ;;
+  *) [ -z "$provider$model" ] || die "--provider and --model belong to doctor" ;;
+esac
+# doctor defaults to the current directory; files and check need an explicit one.
+if [ -z "$worktree" ] && [ "$cmd" = doctor ]; then worktree=$PWD; fi
 [ -n "$worktree" ] || die "--worktree is required"
 [ -d "$worktree" ] || die "worktree does not exist: $worktree"
 worktree=$(cd "$worktree" && pwd -P)
@@ -193,12 +221,153 @@ scope_files() {
         while IFS= read -r d; do [ -n "$d" ] && emit global "$d"; done < <(opencode_instructions "$f" "$oc_dir")
       done
       ;;
+    pi)
+      # Pi loads AGENTS.override.md, AGENTS.md, AGENTS.MD, CLAUDE.md and CLAUDE.MD
+      # from the working directory and each ancestor, without trust, and applies a
+      # directory's file to every directory below it (Pi docs, configuration.md).
+      # Walking the parents covers that downward rule without a nested `find`.
+      for f in AGENTS.override.md AGENTS.md AGENTS.MD CLAUDE.md CLAUDE.MD; do
+        emit discovery "$worktree/$f"
+      done
+      d=$worktree
+      while case $d in "$HOME"/*) true ;; *) false ;; esac; do
+        d=$(dirname "$d")
+        for f in AGENTS.override.md AGENTS.md AGENTS.MD CLAUDE.md CLAUDE.MD; do
+          emit discovery "$d/$f"
+        done
+      done
+      # The project's .pi/ config: SYSTEM.md replaces the system prompt and
+      # APPEND_SYSTEM.md adds to it (Pi docs, configuration.md).
+      emit configured "$worktree/.pi/SYSTEM.md"
+      emit configured "$worktree/.pi/APPEND_SYSTEM.md"
+      local pi_dir=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
+      for f in AGENTS.override.md AGENTS.md AGENTS.MD CLAUDE.md CLAUDE.MD SYSTEM.md APPEND_SYSTEM.md; do
+        emit global "$pi_dir/$f"
+      done
+      # Pi also loads every skill it discovers, and a skill's name and description
+      # reach the system prompt before the model asks for it (issue #93 review, H3).
+      # The project's own skill dirs are trust-protected resources, so a contract in
+      # one would arrive through the extension's automatic trust answer: walk them as
+      # `configured`. The user-level dirs Pi scans go as `global`, because a leak there
+      # is the operator's own file: the bridged skills directory, the Agent Skills
+      # directory `~/.agents/skills/`, and `<agent-dir>/skills/` (Pi docs, skills.md
+      # and configuration.md). All of them are walked recursively, the way Pi finds a
+      # SKILL.md.
+      local skills_root=${KINGPIN_SKILLS_DIR:-$HOME/.claude/skills}
+      for d in "$worktree/.agents/skills" "$worktree/.pi/skills"; do
+        [ -d "$d" ] || continue
+        while IFS= read -r f; do emit configured "$f"; done \
+          < <(find "$d" -name SKILL.md -type f -print 2>/dev/null || true)
+      done
+      for d in "$skills_root" "$HOME/.agents/skills" "$pi_dir/skills"; do
+        [ -d "$d" ] || continue
+        while IFS= read -r f; do emit global "$f"; done \
+          < <(find "$d" -name SKILL.md -type f -print 2>/dev/null || true)
+      done
+      ;;
   esac
+}
+
+# auth_json_has_credentials <file>
+# True when the Pi agent directory's auth.json holds at least one credential entry.
+# Pi writes an empty object before the first login, so a non-empty file alone would
+# call a logged-out host logged in. An unreadable or unparseable file reads as none.
+auth_json_has_credentials() {
+  local file=${1:-}
+  [ -s "$file" ] || return 1
+  # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
+  node -e '
+    const fs = require("fs");
+    let o = {};
+    try { o = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
+    process.exit(o && typeof o === "object" && Object.keys(o).length > 0 ? 0 : 1);
+  ' "$file" 2>/dev/null
+}
+
+# One readiness line per check, then the same source list `files` prints.
+doctor() {
+  local bin=${KINGPIN_PI:-pi} bin_path='' rc=0 json='' parsed=''
+  local status='' got_provider='' auth='' reason=''
+  local skills='' n=0 pi_dir='' auth_json=''
+  local -a auth_args=() fields=()
+  # The flags fall back to the project env the spawn reads, so the short form
+  # `kingpin scope --harness pi` checks the provider the worker will launch with.
+  provider=${provider:-${PI_PROVIDER:-}}
+  model=${model:-${PI_MODEL:-}}
+  pi_dir=${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}
+  auth_json=$pi_dir/auth.json
+  bin_path=$(command -v "$bin" 2>/dev/null || true)
+  if [ -n "$bin_path" ]; then
+    printf 'pi: %s\n' "$bin_path"
+  else
+    printf 'pi: MISSING (%s is not on PATH)\n' "$bin"
+    rc=1
+  fi
+
+  if [ -z "$provider" ]; then
+    # No provider named: the state is genuinely undetermined, because a vendor
+    # `/login` cannot be checked without one. A host with no login must still not
+    # read like a logged-in one, so name what the agent directory holds.
+    if [ -n "$bin_path" ] && auth_json_has_credentials "$auth_json"; then
+      printf 'credentials: unverified (no provider; %s holds credentials: pass --provider or set PI_PROVIDER to check them)\n' "$auth_json"
+    else
+      printf 'credentials: unverified (no provider; %s holds no credentials: run %s and /login, or pass --provider or set PI_PROVIDER)\n' "$auth_json" "$bin"
+    fi
+  elif [ -z "$bin_path" ]; then
+    printf 'credentials: unverified (%s is missing)\n' "$bin"
+  else
+    auth_args=(auth check --provider "$provider" --no-refresh --json)
+    [ -z "$model" ] || auth_args+=(--model "$model")
+    json=$("$bin_path" "${auth_args[@]}" 2>/dev/null || true)
+    # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
+    parsed=$(printf '%s' "$json" | node -e '
+      const fs = require("fs");
+      let o = {};
+      try { o = JSON.parse(fs.readFileSync(0, "utf8")); } catch {}
+      process.stdout.write([o.status || "", o.provider || "", o.authType || "", o.reason || ""].join("\n"));
+    ' 2>/dev/null || true)
+    # Four lines, so an empty authType does not collapse the fields the way an
+    # IFS tab (whitespace, and therefore collapsed) would.
+    mapfile -t fields <<< "$parsed"
+    status=${fields[0]:-} got_provider=${fields[1]:-} auth=${fields[2]:-} reason=${fields[3]:-}
+    case "$status" in
+      ready) printf 'credentials: ready (%s, %s)\n' "${got_provider:-$provider}" "${auth:-unknown}" ;;
+      *)
+        printf 'credentials: not_ready (%s)\n' "${reason:-unknown}"
+        rc=1
+        ;;
+    esac
+  fi
+
+  skills=${KINGPIN_SKILLS_DIR:-$HOME/.claude/skills}
+  if [ -d "$skills" ]; then
+    # Pi discovers a skill by its SKILL.md, recursively, not by a fixed depth: count
+    # the files the same way the source list finds them (issue #93 review, L5).
+    n=$(find "$skills" -name SKILL.md -type f 2>/dev/null | wc -l | tr -d ' ')
+    printf 'skills: %s (%s skills)\n' "$skills" "$n"
+  else
+    printf 'skills: MISSING (%s)\n' "$skills"
+  fi
+
+  if [ -f "$KP_ROOT/worker/pi/kingpin-harness.ts" ]; then
+    printf 'extension: %s\n' "$KP_ROOT/worker/pi/kingpin-harness.ts"
+  else
+    printf 'extension: MISSING (%s)\n' "$KP_ROOT/worker/pi/kingpin-harness.ts"
+    rc=1
+  fi
+
+  scope_files
+  return "$rc"
 }
 
 if [ "$cmd" = files ]; then
   scope_files
   exit 0
+fi
+
+if [ "$cmd" = doctor ]; then
+  doctor
+  exit $?
 fi
 
 list=$(mktemp)
@@ -235,7 +404,8 @@ done < "$list"
 
 # The preamble must be a source the harness really loads, not just a file the spawn
 # wrote somewhere. For Claude Code it arrives through --append-system-prompt-file,
-# which the launch script passes, so it is not part of discovery.
+# which the launch script passes, so it is not part of discovery. Pi is the same
+# shape: --append-system-prompt reads the file, so there is nothing to verify here.
 case $harness in
   opencode)
     grep -qxF "configured	$preamble" "$list" \

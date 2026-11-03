@@ -285,4 +285,63 @@ tmux kill-window -t kingpin:t14-alias 2>/dev/null || true
 rm -f "$KINGPIN_HOME/projects/demo-t14.landing" "$KINGPIN_HOME/projects/demo-t14.landing_queue"
 rm -rf "$KINGPIN_HOME/tasks/t14-nits" "$KINGPIN_HOME/tasks/t14-clean" "$KINGPIN_HOME/tasks/t14-nover" "$KINGPIN_HOME/tasks/t14-alias"
 
+# Test 15: fleet sends follow the worker's harness (issue #93). Pi exposes a skill
+# only as /skill:<name>, so a plain /review would reach the model as ordinary text.
+echo "=== Test 15: pi sends use /skill:<name> ==="
+mk_t15() { # <name> <status-line> [issue]
+  local name=$1 status=$2 issue=${3-315}
+  local d="$KINGPIN_HOME/tasks/$name"
+  mkdir -p "$d"
+  tmux new-window -d -t kingpin: -n "$name" cat
+  cat > "$d/task.env" << ENVEOF
+TASK_ID=$name
+PROJECT=demo-t15
+HARNESS=pi
+MODE=review
+WORKTREE=$T/proj
+ISSUE=$issue
+TMUX_TARGET=kingpin:$name
+ENVEOF
+  printf '%s\n' "$status" > "$d/status"
+}
+t15_done() {
+  tmux kill-window -t "kingpin:$1" 2>/dev/null || true
+  rm -f "$KINGPIN_HOME/projects/demo-t15.landing" "$KINGPIN_HOME/projects/demo-t15.landing_queue"
+}
+rm -f "$KINGPIN_HOME/projects/demo-t15.landing" "$KINGPIN_HOME/projects/demo-t15.landing_queue"
+
+mk_t15 t15-pi-nits "ready: branch=b review=APPROVE WITH NITS report=r.md"
+"$KP_BIN/kingpin" land t15-pi-nits >/dev/null
+sleep 0.1
+pane_out=$(tmux capture-pane -pt kingpin:t15-pi-nits -S -5)
+echo "$pane_out" | grep -q "/skill:fix-findings $T/proj/r.md" && pass "pi: APPROVE WITH NITS sends /skill:fix-findings" || fail "pi fix-findings: $pane_out"
+t15_done t15-pi-nits
+
+mk_t15 t15-pi-done "ready: branch=b review=APPROVE report=none"
+"$KP_BIN/kingpin" land t15-pi-done >/dev/null
+sleep 0.1
+pane_out=$(tmux capture-pane -pt kingpin:t15-pi-done -S -5)
+echo "$pane_out" | grep -q "/skill:issue-flow-done 315" && pass "pi: a clean review sends /skill:issue-flow-done" || fail "pi done: $pane_out"
+t15_done t15-pi-done
+
+mk_t15 t15-pi-pr "ready: branch=b review=APPROVE report=none" ""
+"$KP_BIN/kingpin" land t15-pi-pr >/dev/null
+sleep 0.1
+pane_out=$(tmux capture-pane -pt kingpin:t15-pi-pr -S -5)
+echo "$pane_out" | grep -q "/skill:create-pr-merge" && pass "pi: no issue sends /skill:create-pr-merge" || fail "pi pr: $pane_out"
+t15_done t15-pi-pr
+
+# The other harnesses keep the plain command.
+mk_t15 t15-claude "ready: branch=b review=APPROVE WITH NITS report=r.md"
+kp_test_sub "$KINGPIN_HOME/tasks/t15-claude/task.env" 's/^HARNESS=pi$/HARNESS=claude/'
+"$KP_BIN/kingpin" land t15-claude >/dev/null
+sleep 0.1
+pane_out=$(tmux capture-pane -pt kingpin:t15-claude -S -5)
+echo "$pane_out" | grep -q "/fix-findings $T/proj/r.md" && ! echo "$pane_out" | grep -q "/skill:fix-findings" \
+  && pass "claude still sends the plain /fix-findings" || fail "claude fix-findings: $pane_out"
+t15_done t15-claude
+
+rm -rf "$KINGPIN_HOME/tasks/t15-pi-nits" "$KINGPIN_HOME/tasks/t15-pi-done" "$KINGPIN_HOME/tasks/t15-pi-pr" "$KINGPIN_HOME/tasks/t15-claude"
+
 kp_test_finish LAND
+
