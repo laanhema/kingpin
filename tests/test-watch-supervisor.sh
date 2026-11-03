@@ -110,6 +110,20 @@ echo "$list_out" | grep -q "Supervisor: running (pid $WATCH_PID, since " \
   && pass "list shows the running supervisor with pid and start time" \
   || fail "list did not show the running supervisor: $list_out"
 
+# Test 3b: a warning from a healthy wait pass reaches the fleet log (#78)
+echo "=== Test 3b: a healthy pass's warning is logged ==="
+mk_task t-warn
+: > "$KINGPIN_HOME/tasks/t-warn/status"
+printf 'CREATED=not-a-time\n' >> "$KINGPIN_HOME/tasks/t-warn/task.env"
+wait_until 75 log_has "[kingpin-watch] kingpin-wait warning: kingpin-launch-check: cannot parse CREATED='not-a-time'" \
+  && pass "a warning from a healthy wait pass reaches the log" \
+  || fail "the healthy-pass warning never reached the log: $(cat "$LOG")"
+sleep 2
+[ "$(grep -cF '[kingpin-watch] kingpin-wait warning:' "$LOG")" = "1" ] \
+  && pass "the healthy-pass warning is logged once, not on every pass" \
+  || fail "the warning repeated: $(grep -cF '[kingpin-watch] kingpin-wait warning:' "$LOG")"
+rm -rf "$KINGPIN_HOME/tasks/t-warn"
+
 # Test 4: a second copy is refused quickly and never disturbs the first copy's claim
 echo "=== Test 4: second supervisor refused ==="
 before=$(cat "$PID_FILE")

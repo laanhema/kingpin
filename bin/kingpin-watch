@@ -364,6 +364,7 @@ echo "[kingpin-watch] Watching fleet events (pid $$)..."
 WAIT_CHILD=''
 EVENTS_FILE=''
 WAIT_ERR=''
+LAST_WARN=''
 # One warning per failure streak, then a fixed pause: a wait that cannot scan the
 # fleet (an unusable fleet directory, for example) will not recover by polling
 # faster, and the supervisor must stay alive instead of burning a core.
@@ -384,15 +385,16 @@ while true; do
   wait "$WAIT_CHILD" || wait_rc=$?
   WAIT_CHILD=''
   updates=$(cat "$EVENTS_FILE" 2>/dev/null || true)
+  wait_warn=$(head -n 1 "$WAIT_ERR" 2>/dev/null || true)
   if [ "$wait_rc" -ne 0 ]; then
-    # kingpin-wait exits 0 on a quiet fleet and prints a reason on stderr only when
-    # the scan itself failed. Warn once per streak, then back off.
+    # kingpin-wait exits 0 on a quiet fleet and prints a reason on stderr when the
+    # scan itself failed. Warn once per streak, then back off.
     if [ "$WARNED" -eq 0 ]; then
-      wait_msg=$(head -n 1 "$WAIT_ERR" 2>/dev/null || true)
-      [ -n "$wait_msg" ] || wait_msg='(no message)'
-      echo "[kingpin-watch] kingpin-wait failed (exit $wait_rc): $wait_msg; retrying every ${BACKOFF} s" >&2
+      [ -n "$wait_warn" ] || wait_warn='(no message)'
+      echo "[kingpin-watch] kingpin-wait failed (exit $wait_rc): $wait_warn; retrying every ${BACKOFF} s" >&2
       WARNED=1
     fi
+    LAST_WARN=''
     rm -f "$EVENTS_FILE" "$WAIT_ERR"
     EVENTS_FILE=''
     WAIT_ERR=''
@@ -400,6 +402,13 @@ while true; do
     continue
   fi
   WARNED=0
+  # A healthy pass can still warn about one task it could not judge (an unreadable
+  # mtime, an unparseable CREATED). Log the first line once per streak so it
+  # reaches the fleet log, not only the terminal of a manual `kingpin wait`.
+  if [ -n "$wait_warn" ] && [ "$wait_warn" != "$LAST_WARN" ]; then
+    echo "[kingpin-watch] kingpin-wait warning: $wait_warn" >&2
+  fi
+  LAST_WARN=$wait_warn
   rm -f "$EVENTS_FILE" "$WAIT_ERR"
   EVENTS_FILE=''
   WAIT_ERR=''
