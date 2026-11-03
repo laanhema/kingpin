@@ -338,6 +338,117 @@ cat > "$T/pre-single-quote.html" <<'HTML'
 HTML
 "$KP_BIN/kingpin" report check --prose-only "$T/pre-single-quote.html" >/dev/null 2>&1 && pass "an inline style in single quotes is read" || fail "a single-quoted inline style was rejected"
 
+# H4: a layout container with no element children (a text-only badge or a flex heading) has nothing
+# that can overflow, and a layout rule that matches no element has no rendered layout. Neither is a
+# finding. Both pages carry the documented block and measured 1280/1280 and 1024/1024 in Chrome.
+{
+  echo '<!DOCTYPE html>'
+  echo '<html><head>'
+  awk '/^```html$/ { if (!seen) { seen = 1; inside = 1; next } } inside && /^```$/ { exit } inside { print }' "$KP_ROOT/worker/preamble.md"
+  echo '<style>'
+  echo '  .badge { display: inline-flex; align-items: center; padding: 1px 10px; }'
+  echo '</style>'
+  echo '</head><body>'
+  echo '<p>Status: <span class="badge">APPROVE</span></p>'
+  echo '</body></html>'
+} > "$T/block-badge.html"
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/block-badge.html" 2>&1) && pass "a text-only inline-flex badge passes" || fail "the documented block cannot pass for a text-only badge: $out"
+
+{
+  echo '<!DOCTYPE html>'
+  echo '<html><head>'
+  awk '/^```html$/ { if (!seen) { seen = 1; inside = 1; next } } inside && /^```$/ { exit } inside { print }' "$KP_ROOT/worker/preamble.md"
+  echo '<style>'
+  echo '  .cards-2up { display: grid; grid-template-columns: 1fr 1fr; }'
+  echo '</style>'
+  echo '</head><body>'
+  echo '<p>A rule for a class no element uses.</p>'
+  echo '</body></html>'
+} > "$T/block-unused-grid.html"
+"$KP_BIN/kingpin" report check --prose-only "$T/block-unused-grid.html" >/dev/null 2>&1 && pass "a layout rule that matches no element is skipped" || fail "an unmatched layout rule still failed the page"
+
+# The same flex rule over text and no element children cannot overflow either; measured 1280/1280
+# and 1024/1024 in Chrome.
+cat > "$T/flex-heading.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  body { margin: 0; }
+  h2 { display: flex; align-items: center; gap: 10px; }
+</style></head><body>
+<h2>5. The report names its own line</h2>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/flex-heading.html" >/dev/null 2>&1 && pass "a text-only flex heading passes" || fail "a text-only flex heading was rejected"
+
+# A flex row with real children and no guard still fails: H4 skips only the childless case.
+cat > "$T/flex-row-bare.html" <<'HTML'
+<!DOCTYPE html>
+<html><head><style>
+  .row { display: flex; }
+</style></head><body>
+<div class="row"><span>left</span><span>right</span></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/flex-row-bare.html" 2>&1) && fail "check accepted an unguarded flex row with real children" || pass "an unguarded flex row with real children still fails"
+echo "$out" | grep -q 'flex-row-bare.html:3: grid/flex layout has no shrink guard' && pass "the unguarded flex row failure names its rule line" || fail "no file:line for the unguarded flex row: $out"
+
+# M5: a selector list inside :where()/:is() is still a selector list. Both pages measured 1280/1280
+# and 1024/1024 in Chrome and were rejected by the old parser, which split them on the inner comma.
+cat > "$T/where-wrap.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  :where(p, td) { overflow-wrap: anywhere; }
+  table { width: 100%; max-width: 100%; table-layout: fixed; }
+</style></head><body>
+<p><code>${long}</code></p>
+<table><tbody><tr><td><code>${long}</code></td><td>b</td></tr></tbody></table>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/where-wrap.html" >/dev/null 2>&1 && pass ":where(p, td) contributes a wrap rule" || fail "a selector list inside :where was not matched"
+
+cat > "$T/where-guard.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  code { overflow-wrap: anywhere; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; }
+  :where(.cell) { min-width: 0; }
+</style></head><body>
+<div class="grid"><div class="cell"><code>${long}</code></div><div class="cell">right</div></div>
+</body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/where-guard.html" >/dev/null 2>&1 && pass ":where(.cell) contributes a shrink guard" || fail "a selector inside :where was not matched"
+
+# M6: a scoped rule reaches only what the whole chain matches. The old matcher credited the last
+# compound only, so these two pages printed OK while measuring 3128/1280 and 2879/1280 in Chrome.
+cat > "$T/scoped-wrap.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  .panel p { overflow-wrap: anywhere; }
+</style></head><body>
+<div class="panel"><p>Short text.</p></div>
+<p><code>${long}</code></p>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/scoped-wrap.html" 2>&1) && fail "check lent a scoped .panel p wrap rule to a p outside the panel" || pass "a scoped wrap rule reaches only p inside the panel"
+echo "$out" | grep -q 'scoped-wrap.html:7: <code> has no wrap rule' && pass "the scoped wrap failure names the unreached code" || fail "no file:line for the scoped wrap: $out"
+
+cat > "$T/scoped-guard.html" <<HTML
+<!DOCTYPE html>
+<html><head><style>
+  .grid-a { display: grid; grid-template-columns: 1fr 1fr; }
+  .grid-b { display: grid; grid-template-columns: 1fr 1fr; }
+  .grid-a .cell { min-width: 0; }
+</style></head><body>
+<div class="grid-a"><div class="cell">left</div><div class="cell">right</div></div>
+<div class="grid-b"><div class="cell">${long}</div><div class="cell">right</div></div>
+</body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/scoped-guard.html" 2>&1) && fail "check lent a .grid-a .cell guard to .grid-b" || pass "a scoped guard reaches only cells inside its own grid"
+echo "$out" | grep -q 'scoped-guard.html:4: grid/flex layout has no shrink guard' && pass "the scoped guard failure names the other grid's rule line" || fail "no file:line for the scoped guard: $out"
+
 # The documented block and the checker cannot drift: a page built from the block in
 # worker/preamble.md must pass, with a table, a long pre, a grid, inline code and an image.
 {
