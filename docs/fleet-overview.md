@@ -12,7 +12,7 @@ Monitor all active workers, leased worktrees, and current statuses:
 kingpin list
 ```
 
-When a task finishes in `review` mode, `kingpin list` displays its review dossier link directly below the task row.
+For any live task whose folder holds a `report.html`, whatever its mode or status, `kingpin list` displays the dossier command directly below the task row, with `(listening: pid <n>)` while that task's listener runs; finished and archived rows show no dossier line, and `--all` shows the archived rows without one.
 
 The `STATE` column describes a live pane: `WAITING` means the worker is blocked on a human (`needs-input:`, a listener's `feedback:` note, or the Stop hook's `waiting:` line), `SILENT` means it stopped without reporting (`failed: no status:`), and `Unseen: N` counts status lines written since the supervisor last acknowledged the task. `-` is a worker that is running normally or whose window is gone.
 

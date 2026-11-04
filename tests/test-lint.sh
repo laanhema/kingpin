@@ -146,4 +146,36 @@ else
   fail "an unknown argument was accepted (rc=$LINT_RC): $LINT_OUT"
 fi
 
+echo "=== Test 6: a token documented in the README but missing from docs/cli.md fails the lint ==="
+mkdir -p "$FIX/docs"
+cat > "$FIX/README.md" << 'F'
+# Fixture
+
+Run `kingpin fixture --fixture-flag` and set `KINGPIN_FIXTURE_VAR`.
+F
+cat > "$FIX/docs/cli.md" << 'F'
+# Reference
+F
+lint
+if [ "$LINT_RC" -ne 0 ] \
+  && grep -qF -- '--fixture-flag (README.md)' <<< "$LINT_OUT" \
+  && grep -qF 'KINGPIN_FIXTURE_VAR (README.md)' <<< "$LINT_OUT" \
+  && grep -qF 'docs/cli.md' <<< "$LINT_OUT"; then
+  pass "a documented token missing from the reference fails the lint and is named with its file"
+else
+  fail "the lint accepted a documented token missing from docs/cli.md (rc=$LINT_RC): $LINT_OUT"
+fi
+
+echo "=== Test 7: documenting that token in docs/cli.md makes the lint green ==="
+cat >> "$FIX/docs/cli.md" << 'F'
+
+`--fixture-flag` and `KINGPIN_FIXTURE_VAR`.
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q '3 shell files' <<< "$LINT_OUT"; then
+  pass "the docs pass goes green once docs/cli.md documents the token"
+else
+  fail "the lint stayed red after docs/cli.md documented the token (rc=$LINT_RC): $LINT_OUT"
+fi
+
 kp_test_finish LINT

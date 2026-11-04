@@ -20,7 +20,7 @@ each task back as a visual review dossier. This file describes the repository.
 
 ```bash
 # bash -n, shellcheck, node --check over lib/*.mjs, the CI-matrix check, the README/docs
-# CLI-reference check, and the tracked .agents artifact check
+# CLI-reference check in both directions, and the tracked .agents artifact check
 ./tests/lint.sh
 
 # One suite at a time (two suites briefly swap bin/kingpin-send)
@@ -105,6 +105,13 @@ The person running the fleet (the orchestrator) works in the main checkout with 
 contract installed by `kingpin guard install`; a spawned worker in a leased worktree
 gets `worker/preamble.md` instead. The two never share a file, so neither has to
 argue with the other. If you are a worker, follow the preamble you were given.
+
+A task record lives in `~/.kingpin/tasks/<id>` while it runs. `kingpin done` moves it to
+`~/.kingpin/archive/<id>`, or the next free `<id>.2`, `<id>.3`, ... when that name is taken,
+and leaves a symlink at the old path so an open dossier keeps resolving. `kingpin list --all`
+shows the archived rows. An archived task is not live: `kingpin peek` and `kingpin send` exit 1,
+`kingpin wait` raises no event, and `kingpin listen` says it is finished. `lib/status.sh` holds
+the reader every command uses to tell a live `tasks/<id>` from that link.
 
 A fresh clone has neither the guard nor the contract: run `kingpin init` (or
 `kingpin guard install`) in the main checkout once.

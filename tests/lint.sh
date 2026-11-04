@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Lint every shell script (bin/*, lib/*.sh, tests/*.sh) and every node module (lib/*.mjs):
 # `bash -n` and `node --check` for syntax, then shellcheck (settings in .shellcheckrc).
+# The README/docs CLI-reference check runs in both directions: every parsed flag and
+# KINGPIN_* variable has to be documented, and every flag a docs page shows has to reach
+# docs/cli.md.
 #
 # Usage: tests/lint.sh [--root <dir>]
 #   --root <dir>  lint that checkout instead of the one this script lives in, which is what
 #                 tests/test-lint.sh uses to run the real lint against a throwaway fixture.
 set -euo pipefail
 
-root=$(cd "$(dirname "$0")/.." && pwd)
+script_dir=$(cd "$(dirname "$0")" && pwd)
+root=$(cd "$script_dir/.." && pwd)
 while [ $# -gt 0 ]; do
   case $1 in
     --root)
@@ -22,6 +26,7 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+root=$(cd "$root" && pwd) || { echo "lint: no such directory: $root" >&2; exit 2; }
 cd "$root"
 
 command -v shellcheck >/dev/null || {
@@ -76,6 +81,8 @@ if [ -n "$tracked" ]; then
   exit 1
 fi
 
-if [ -x tests/readme-cli-reference.sh ]; then ./tests/readme-cli-reference.sh; fi
+if [ -x "$script_dir/readme-cli-reference.sh" ]; then
+  "$script_dir/readme-cli-reference.sh" --root "$root"
+fi
 
 echo "lint: ${#files[@]} shell files and ${#node_files[@]} node files clean"
