@@ -310,6 +310,30 @@ The tmux window, and the task's Lavish listener with its pid file. The worktree 
 
 `--harness` records `claude`, `agy`, `opencode` or `pi`; without it, `acquire` detects the harness from the session process (including the `@earendil-works/pi-coding-agent` npm path) or from the calling agent's environment marker. `acquire` also warns on stderr when no fleet supervisor is running, and when the guard or the contract is missing or stale, even with `KINGPIN_SKIP_GUARD=1`, because it calls `kingpin guard check` directly. A numeric `[pid]` overrides the detected session pid, as does `KINGPIN_LOCK_PID`.
 
+## kingpin afk
+
+**Usage:** `kingpin afk [on [--ttl <duration>]|off|status]`
+
+**Flags:** `--ttl <duration>`
+
+**Environment:** `KINGPIN_HOME`
+
+`on` arms auto-landing for this orchestrator session, `off` disarms it, and `status` prints `AFK: on until HH:MM (pid N)` or `AFK: off`. The state is the three-line file `$KINGPIN_HOME/afk` (holder pid, arm epoch, expiry epoch), published whole with a rename, and it is never a project or global setting.
+
+`--ttl` takes one or more `<n><unit>` segments with unit `s`, `m` or `h` (`30m`, `8h`, `1h30m`); the default is `8h`. A bare number, an unknown unit, a zero total, an unknown subcommand or an unknown flag exits 2; a state file that cannot be written exits 1.
+
+The arm reads as off once the expiry passes or the recorded pid is gone, so a session that died cannot leave the fleet landing on its own. `kingpin lock release` removes the file as well.
+
+While armed, `kingpin watch` reacts to a new `ready:` line:
+
+- a clean `APPROVE` verdict goes through `kingpin land` exactly as an operator's `kingpin land` would, and a landing that starts gains `approved: auto (afk)`; a line that only queues behind a busy project lane gains none, because the note records a decision that has completed;
+- `APPROVE WITH NITS` and `NEEDS CHANGES` reach the same command, which starts the fix pass and waits for the re-review, so they never merge on that line. A clean `fixed:` landing that follows an AFK-started pass gains the same `approved: auto (afk)` note in `review` and `auto` mode alike, while a `fixed:` line that only queues gains none and drops its marker; a pass that still leaves High findings asks for `/review` and gains none. If the arm is off or expired by the time that `fixed:` line arrives, the landing still continues but gains no note;
+- an unreadable verdict, a `needs-input:` question, a `cleanup-refused:` case and a `failed:` task hold for the operator, and nothing is forced.
+
+The dossier listener's `landing_sent` and `approve_pending` markers are checked first, so an approval the listener already took is never landed twice. AFK adds no merge path: the verdict gate and the per-project landing lane are the ones `kingpin land` always uses. The `kingpin report check` warning belongs to `kingpin watch`, not to `kingpin land`: the supervisor runs it on the dossier in its review branch and, while AFK is armed, in the clean branch before it lands. With AFK off or expired, `kingpin watch` behaves exactly as before.
+
+`kingpin list` prints the same `AFK: on until ...` line below the supervisor line only while the arm is live.
+
 ## kingpin guard
 
 **Usage:** `kingpin guard [install|check|warn] [--dir <kingpin-checkout>]`

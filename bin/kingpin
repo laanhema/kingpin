@@ -16,6 +16,7 @@
 #   kingpin ack [--through <line>] <task-id>... | --all
 #   kingpin list [--all|-a]
 #   kingpin lock [status|check|acquire [--harness <name>]|release|harness] [pid]
+#   kingpin afk [on [--ttl <duration>]|off|status]
 #   kingpin guard [install|check|warn] [--dir <kingpin-checkout>]
 #   kingpin scope files|check|doctor --harness <name> --worktree <dir> [--preamble <file>]
 #   kingpin report diffs [--repo <dir>] [--base <ref>] | check [--prose-only] <file>
@@ -28,6 +29,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_BIN/../lib/status.sh"
 # shellcheck source=../lib/supervisor.sh
 . "$KP_BIN/../lib/supervisor.sh"
+# shellcheck source=../lib/afk.sh
+. "$KP_BIN/../lib/afk.sh"
 
 usage() {
   cat << 'HELP'
@@ -50,6 +53,7 @@ Commands:
   ack       Acknowledge task events to advance seen counters
   list      Display active tasks in the terminal (--all adds finished ones)
   lock      Check, acquire, or release the orchestrator session lock (records its harness)
+  afk       Arm or disarm automatic landing while you are away (session-scoped)
   guard     Install or verify the orchestrator-only tool guard (a hook) and contract
   scope     Name the instruction files a harness loads for a worker, check them, or report pi readiness
   report    Generate or check the @pierre/diffs blocks and the prose of a review dossier
@@ -98,6 +102,9 @@ case "$cmd" in
   lock)
     exec "$KP_BIN/kingpin-lock" "$@"
     ;;
+  afk)
+    exec "$KP_BIN/kingpin-afk" "$@"
+    ;;
   guard)
     exec "$KP_BIN/kingpin-guard" "$@"
     ;;
@@ -123,7 +130,8 @@ case "$cmd" in
           echo "usage: kingpin list [--all|-a]"
           echo "  Lists live fleet tasks; --all (or -a) also shows finished (archived) tasks."
           echo "  Always prints a 'Supervisor: running (pid N, since HH:MM)' line, or"
-          echo "  'Supervisor: none - run kingpin watch' when no fleet supervisor runs."
+          echo "  'Supervisor: none - run kingpin watch' when no fleet supervisor runs,"
+          echo "  and 'AFK: on until HH:MM (pid N)' while AFK auto-landing is armed."
           exit 0
           ;;
         *) echo "kingpin list: unknown argument '$arg'" >&2; exit 2 ;;
@@ -227,6 +235,8 @@ case "$cmd" in
     fi
     # Whether anyone is watching the fleet, and how to start a supervisor when not.
     printf "\n%s\n" "$(kp_supervisor_line "$KP_HOME")"
+    afk_line=$(kp_afk_line "$KP_HOME")
+    [ -z "$afk_line" ] || printf '%s\n' "$afk_line"
     lock_line=$("$KP_BIN/kingpin-lock" status 2>/dev/null || true)
     case "$lock_line" in
       "lock: held"*) printf "\nOrchestrator %s (new workers default to its harness)\n" "$lock_line" ;;

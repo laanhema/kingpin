@@ -99,8 +99,11 @@ It loops, so it keeps handling events after it handles one; there is nothing to 
 - Notifies when tasks in `review` mode are ready for inspection or need input.
 - Advances a project's landing queue whose holder released or is gone.
 - Re-arms a review task's dossier listener that died, so a reviewer's clicks always reach a session someone reads.
+- Lands a clean review verdict while AFK is armed, so a fleet you step away from does not wait on a click. A findings verdict still runs the fix pass first, and the clean landing that follows carries the same note; a `needs-input:`, `cleanup-refused:` or `failed:` task waits for you.
 
 Only one supervisor runs at a time. A second `kingpin watch` refuses to start and names the running pid (recorded in `~/.kingpin/supervisor.pid`), and a pidfile left by a supervisor that died is reclaimed by the next one. `kingpin list` prints `Supervisor: running (pid 12345, since 14:03)` or `Supervisor: none - run kingpin watch`, and `kingpin lock acquire` warns when none is running. `kingpin watch --once` runs a single pass without claiming the pidfile; `kingpin wait` is the one-shot primitive underneath, for scripts that want to read fleet events themselves.
+
+`kingpin afk on [--ttl <duration>]` arms auto-landing for this session, `kingpin afk off` disarms it, and `kingpin afk status` reports it. The default TTL is 8 hours (`--ttl 90m`, `8h` or `1h30m` change it). The arm is session-scoped at `~/.kingpin/afk`, it reads as off once the TTL passes or the session pid is gone, `kingpin lock release` clears it, and `kingpin list` prints `AFK: on until 16:40 (pid 12345)` only while it is live. While armed, a clean review verdict is landed through `kingpin land` and the task status gains `approved: auto (afk)`; findings still run the fix pass, and questions, refused cleanups and failures wait for a human.
 
 ## CLI Command Reference
 
@@ -109,6 +112,7 @@ Only one supervisor runs at a time. A second `kingpin watch` refuses to start an
 | `kingpin init` | Auto-configures a project from current directory or path. [Details](docs/cli.md#kingpin-init) |
 | `kingpin run` | Single command that spawns, monitors, and completes a task. [Details](docs/cli.md#kingpin-run) |
 | `kingpin watch` | The fleet's one supervisor: a continuous supervision and auto-landing loop. [Details](docs/cli.md#kingpin-watch) |
+| `kingpin afk` | Arms session-scoped auto-landing while you are away: a clean review verdict is landed through `kingpin land` and gains `approved: auto (afk)`, while findings run the fix pass and questions, refused cleanups and failures wait. Default TTL 8h, cleared by `kingpin lock release`. [Details](docs/cli.md#kingpin-afk) |
 | `kingpin spawn` | Starts a worker on a background tmux window and records its tmux window ID (`TMUX_WINDOW_ID` in `task.env`), so renaming a worker window or moving it to another session is safe; `task.env` files without it fall back to `TMUX_TARGET`. [Details](docs/cli.md#kingpin-spawn) |
 | `kingpin list` | Displays active fleet tasks and states in the terminal: a `STATE` column (`WAITING`, `SILENT`, `Unseen: N`), plus a `Supervisor: running (pid <n>, since <HH:MM>)` or `Supervisor: none - run kingpin watch` line; `--all` (or `-a`) also shows finished (archived) tasks. A finished task's leftover dossier link is never listed as live. [Details](docs/cli.md#kingpin-list) |
 | `kingpin send` | Types the text literally into a worker window, then presses Enter. [Details](docs/cli.md#kingpin-send) |

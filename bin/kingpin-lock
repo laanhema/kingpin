@@ -38,6 +38,10 @@ MUTEX_FILE="$LOCK_FILE.mutex"
 . "$(dirname "$0")/../lib/supervisor.sh"
 # shellcheck source=../lib/mutex.sh
 . "$(dirname "$0")/../lib/mutex.sh"
+# shellcheck source=../lib/session.sh
+. "$(dirname "$0")/../lib/session.sh"
+# shellcheck source=../lib/afk.sh
+. "$(dirname "$0")/../lib/afk.sh"
 
 die() { echo "kingpin-lock: $*" >&2; exit 1; }
 
@@ -54,26 +58,6 @@ usage: kingpin-lock [status|check|acquire [--harness <name>]|release|harness] [p
 --harness records the session's harness on `acquire`. A numeric [pid] overrides
 the detected session pid; KINGPIN_LOCK_PID does the same.
 HELP
-}
-
-is_harness_pid() {
-  local p=$1
-  [ -n "$p" ] || return 1
-  [ "$p" -gt 1 ] 2>/dev/null || return 1
-  kill -0 "$p" 2>/dev/null || return 1
-  local comm
-  comm=$(ps -o comm= -p "$p" 2>/dev/null | tr -d ' ' || true)
-  case "$comm" in
-    bash|sh|zsh|dash|tmux*) return 1 ;;
-    claude|claude-*|agy|agy-*|opencode|opencode-*|codex|codex-*|pi|pi-*|grok|grok-*|kimi|kimi-*) return 0 ;;
-  esac
-  local args
-  args=$(ps -o args= -p "$p" 2>/dev/null || true)
-  local pattern='(^|[ /])(claude|agy|opencode|codex|pi|grok|kimi)(-[^ ]*)?([ ]|$)'
-  if [[ "$args" =~ $pattern ]]; then
-    return 0
-  fi
-  return 1
 }
 
 valid_harness() {
@@ -165,31 +149,14 @@ kp_lock_write() {
   return 0
 }
 
+# KINGPIN_LOCK_PID stays a lock-only override (the test suites use it); the
+# harness walk is lib/session.sh, shared with kingpin afk.
 resolve_session_pid() {
   if [ -n "${KINGPIN_LOCK_PID:-}" ] && [[ "${KINGPIN_LOCK_PID:-}" =~ ^[0-9]+$ ]]; then
     echo "$KINGPIN_LOCK_PID"
     return 0
   fi
-  if [ -n "${2:-}" ] && [[ "$2" =~ ^[0-9]+$ ]]; then
-    echo "$2"
-    return 0
-  fi
-  if [ -n "${1:-}" ] && [[ "$1" =~ ^[0-9]+$ ]]; then
-    echo "$1"
-    return 0
-  fi
-  local c1=$PPID
-  if is_harness_pid "$c1"; then
-    echo "$c1"
-    return 0
-  fi
-  local c2
-  c2=$(ps -o ppid= -p "$c1" 2>/dev/null | tr -d ' ' || true)
-  if [ -n "$c2" ] && is_harness_pid "$c2"; then
-    echo "$c2"
-    return 0
-  fi
-  echo "$c1"
+  kp_session_pid "${2:-}"
 }
 
 cmd=${1:-acquire}
@@ -295,6 +262,9 @@ case "$cmd" in
     fi
     rm -f "$LOCK_FILE"
     kp_mutex_release "$MUTEX_FILE"
+    # AFK is session-scoped and dies with the session's lock: a released lock
+    # must not leave the fleet auto-landing for a session that stepped away.
+    kp_afk_clear "$KP_HOME" || die "released the lock but could not remove $KP_HOME/afk"
     echo "lock: released"
     ;;
   *)
