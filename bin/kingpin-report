@@ -3,7 +3,7 @@
 #
 # Usage:
 #   kingpin-report diffs [--repo <dir>] [--base <ref>]   print the HTML fragment for Section 3
-#   kingpin-report check [--prose-only] <report.html>    fail when a diff would render blank, the
+#   kingpin-report check [--prose-only] <file>           fail when a diff would render blank, the
 #                                                        page would overflow, or the prose carries
 #                                                        an AI tell
 set -euo pipefail

@@ -58,6 +58,21 @@ echo "$out" | grep -q 'masked.md:25: em dash' && pass "the line after the masked
 sed '$d' "$T/masked.md" > "$T/masked-clean.md"
 check --prose-only "$T/masked-clean.md" >/dev/null 2>&1 && pass "a markdown file whose tells all sit in masked regions passes" || fail "masked regions tripped the check"
 
+# Prose inside a nested list item or a list-item continuation paragraph is still read: four spaces
+# there continues the list, it does not open an indented code block, so the tell is not masked.
+printf -- '- parent item\n    - nested item with an em dash \342\200\224 here\n' > "$T/nested.md"
+out=$(check --prose-only "$T/nested.md" 2>&1) && fail "check accepted a tell in a nested list item" || pass "check reads a nested list item's prose"
+echo "$out" | grep -q 'nested.md:2: em dash' && pass "the nested list tell keeps its line number" || fail "nested list line wrong: $out"
+
+printf '1. step one\n\n    A continuation with an em dash \342\200\224 here.\n' > "$T/continuation.md"
+out=$(check --prose-only "$T/continuation.md" 2>&1) && fail "check accepted a tell in a list-item continuation" || pass "check reads a list-item continuation's prose"
+echo "$out" | grep -q 'continuation.md:3: em dash' && pass "the continuation tell keeps its line number" || fail "continuation line wrong: $out"
+
+# The other direction still holds: a code block inside a list item is four columns past the item's
+# content column, so its tell stays masked and it does not cry wolf.
+printf -- '- item\n\n      a code — dash\n' > "$T/nested-code.md"
+check --prose-only "$T/nested-code.md" >/dev/null 2>&1 && pass "an indented code block inside a list item stays masked" || fail "a list item's code block tripped the check"
+
 # CRLF line endings must not shift the reported line.
 printf 'line one\r\nline two\r\nA CRLF em dash \342\200\224 here.\r\n' > "$T/crlf.md"
 out=$(check --prose-only "$T/crlf.md" 2>&1) && fail "check accepted an em dash in a CRLF file" || pass "check rejects an em dash in a CRLF file"
