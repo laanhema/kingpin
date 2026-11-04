@@ -11,6 +11,40 @@ kp_test_project
 # `treehouse return` refuses them; every fixture prepends its own stub where it
 # cares about the call (t16, Tests 20-23).
 kp_test_stub_treehouse
+
+# The issue readout (issue #170) asks gh about the issue a finished task names.
+# The suite's remotes are local bare repos, so a fake gh answers instead, records
+# every call, and can fail a close on demand.
+GH_LOG="$T/gh.log"
+GH_STATE="$T/gh-issue-state"
+GH_CLOSE_FAILS="$T/gh-close-fails"
+: > "$GH_LOG"
+printf 'OPEN\n' > "$GH_STATE"
+rm -f "$GH_CLOSE_FAILS"
+cat > "$T/bin/gh" << 'GHEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${KP_TEST_GH_LOG:?}"
+case "${1:-} ${2:-}" in
+  "issue view")
+    cat "${KP_TEST_GH_STATE:?}"
+    ;;
+  "issue close")
+    if [ -f "${KP_TEST_GH_CLOSE_FAILS:-/nonexistent}" ]; then exit 1; fi
+    printf 'CLOSED\n' > "${KP_TEST_GH_STATE:?}"
+    ;;
+  *) exit 1 ;;
+esac
+GHEOF
+chmod +x "$T/bin/gh"
+# A gh whose `issue view` fails answers the unreadable-state arm; the missing-command
+# arm points KINGPIN_GH at a name that does not exist.
+cat > "$T/bin/gh-view-fails" << 'GHEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${KP_TEST_GH_LOG:?}"
+exit 1
+GHEOF
+chmod +x "$T/bin/gh-view-fails"
+export KP_TEST_GH_LOG="$GH_LOG" KP_TEST_GH_STATE="$GH_STATE" KP_TEST_GH_CLOSE_FAILS="$GH_CLOSE_FAILS"
 # Test 19's kingpin-done opens and ends each t19-* report.html session through the
 # default Lavish stub; every recorded call must name one of those tasks, so a call for
 # anything else is still caught.
@@ -831,5 +865,138 @@ printf 'replaced\n' > "$KINGPIN_HOME/tasks/t25-rep/codex-trust"
 "$KP_BIN/kingpin-done" t25-rep --force >/dev/null 2>&1 || fail "t25: cleanup of the replaced-value task failed"
 cmp -s "$T/t25-rep-before.toml" "$t24_cfg" \
   && pass "t25: the overwritten trust_level value is restored byte-identically" || fail "t25: the overwritten value was not restored: $(cat "$t24_cfg")"
+
+# Test 26: a finished task's issue is closed after a verified merge, or named in
+# the OK: line (issue #170). merged: is the line the supervisor acts on, so a
+# worker that left the issue open has no later step to close it.
+echo "=== Test 26: kingpin done reads the issue a finished task names ==="
+t26_remote="$T/t26-remote.git"
+t26_repo="$T/t26-repo"
+git init --bare -q -b main "$t26_remote"
+git clone -q "$t26_remote" "$t26_repo" 2>/dev/null
+(
+  cd "$t26_repo" || exit 1
+  git checkout -q -b main
+  git config user.name Tester
+  git config user.email test@example.com
+  echo base > base.txt
+  git add base.txt
+  git commit -qm base
+  git push -q -u origin main
+  git remote set-head origin main
+)
+t26_make_task() { # <id> <issue|-> <merged yes|no>
+  local id=$1 issue=$2 merged=$3 wt issue_line
+  wt="$T/t26-wt-$id"
+  git -C "$t26_repo" fetch -q origin
+  git -C "$t26_repo" worktree add -q "$wt" -b "feature/$id" main
+  git -C "$wt" config user.name Tester
+  git -C "$wt" config user.email test@example.com
+  echo "work $id" > "$wt/$id.txt"
+  git -C "$wt" add "$id.txt"
+  git -C "$wt" commit -qm "work $id"
+  git -C "$wt" push -q origin "feature/$id"
+  if [ "$merged" = yes ]; then
+    git -C "$t26_repo" merge -q --ff-only "feature/$id"
+    git -C "$t26_repo" push -q origin main
+  fi
+  # "-" writes a record with no ISSUE line at all, the shape a curator record and a
+  # record from before issue #170 have.
+  issue_line="ISSUE=$issue"
+  [ "$issue" = "-" ] && issue_line="# no ISSUE line"
+  mkdir -p "$KINGPIN_HOME/tasks/$id"
+  cat > "$KINGPIN_HOME/tasks/$id/task.env" << EOF24
+TASK_ID=$id
+PROJECT=demo-t26
+PROJECT_PATH=$t26_repo
+WORKTREE=$wt
+BRANCH=feature/$id
+$issue_line
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
+TMUX_TARGET=kingpin:$id
+EOF24
+  echo "merged: pr=https://github.com/example/demo/pull/1" > "$KINGPIN_HOME/tasks/$id/status"
+}
+
+# (a) merged, still open, and the close fails: the OK: line says so
+t26_make_task t26-open 164 yes
+: > "$GH_LOG"
+printf 'OPEN\n' > "$GH_STATE"
+touch "$GH_CLOSE_FAILS"
+PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-open >"$T/t26-open.out" 2>&1 \
+  && pass "t26: cleanup succeeds when the issue close fails" || fail "t26: cleanup failed: $(cat "$T/t26-open.out")"
+grep -q "issue #164 is still open" "$T/t26-open.out" \
+  && pass "t26: the OK: line reports the issue left open" || fail "t26: the OK: line hides the open issue: $(cat "$T/t26-open.out")"
+[ -f "$KINGPIN_HOME/archive/t26-open/done_cleaned" ] && pass "t26: the task archived despite the open issue" || fail "t26: the task was not archived"
+grep -q "^issue close 164$" "$GH_LOG" && pass "t26: done tried to close the issue" || fail "t26: done never tried to close the issue: $(cat "$GH_LOG")"
+
+# (b) merged and still open: done closes it and says so
+t26_make_task t26-closed 164 yes
+: > "$GH_LOG"
+printf 'OPEN\n' > "$GH_STATE"
+rm -f "$GH_CLOSE_FAILS"
+PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-closed >"$T/t26-closed.out" 2>&1 \
+  && pass "t26: cleanup succeeds after closing the issue" || fail "t26: cleanup failed: $(cat "$T/t26-closed.out")"
+grep -q "closed issue #164 after the merge" "$T/t26-closed.out" \
+  && pass "t26: the OK: line says the issue was closed" || fail "t26: the OK: line does not name the close: $(cat "$T/t26-closed.out")"
+grep -q "^issue close 164$" "$GH_LOG" && pass "t26: the issue was closed through gh" || fail "t26: gh saw no close: $(cat "$GH_LOG")"
+
+# (c) an issue already closed needs no close call
+t26_make_task t26-already 164 yes
+: > "$GH_LOG"
+printf 'CLOSED\n' > "$GH_STATE"
+PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-already >"$T/t26-already.out" 2>&1 \
+  && pass "t26: cleanup succeeds when the issue is already closed" || fail "t26: cleanup failed: $(cat "$T/t26-already.out")"
+grep -q "issue #164 is closed" "$T/t26-already.out" \
+  && pass "t26: the OK: line says the issue is closed" || fail "t26: the OK: line does not say closed: $(cat "$T/t26-already.out")"
+! grep -q "^issue close" "$GH_LOG" && pass "t26: a closed issue is not closed again" || fail "t26: done closed an already closed issue: $(cat "$GH_LOG")"
+
+# (d) no verified merge: never close, and say the issue was not checked
+t26_make_task t26-forced 164 no
+: > "$GH_LOG"
+printf 'OPEN\n' > "$GH_STATE"
+PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-forced --force >"$T/t26-forced.out" 2>&1 \
+  && pass "t26: --force cleanup succeeds on an unmerged task" || fail "t26: --force cleanup failed: $(cat "$T/t26-forced.out")"
+grep -q "issue #164 not checked (the merge was not verified)" "$T/t26-forced.out" \
+  && pass "t26: an unverified merge reports the issue as unchecked" || fail "t26: the unverified merge says nothing: $(cat "$T/t26-forced.out")"
+! grep -q "^issue close" "$GH_LOG" && pass "t26: an unverified merge never closes the issue" || fail "t26: an unverified merge closed the issue: $(cat "$GH_LOG")"
+! grep -q "^issue view" "$GH_LOG" && pass "t26: an unverified merge asks gh nothing" || fail "t26: an unverified merge called gh: $(cat "$GH_LOG")"
+
+# (e) a record that names no issue never picks up an ISSUE from the caller's
+# environment: only the record is read, so a stray export cannot become the target
+t26_make_task t26-norecord - yes
+: > "$GH_LOG"
+printf 'OPEN\n' > "$GH_STATE"
+ISSUE=999 PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-norecord >"$T/t26-norecord.out" 2>&1 \
+  && pass "t26: cleanup succeeds for a record with no issue" || fail "t26: cleanup failed: $(cat "$T/t26-norecord.out")"
+! grep -q "999" "$GH_LOG" && pass "t26: an inherited ISSUE never reaches gh" || fail "t26: gh was called for the inherited ISSUE: $(cat "$GH_LOG")"
+[ -s "$GH_LOG" ] && fail "t26: a record with no issue still called gh: $(cat "$GH_LOG")" || pass "t26: a record with no issue asks gh nothing"
+! grep -q "issue #" "$T/t26-norecord.out" && pass "t26: a record with no issue gets no issue readout" || fail "t26: a record with no issue got a readout: $(cat "$T/t26-norecord.out")"
+
+# (f) gh is not installed: the readout says so and the cleanup still succeeds
+t26_make_task t26-nogh 164 yes
+: > "$GH_LOG"
+KINGPIN_GH=gh-does-not-exist PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-nogh >"$T/t26-nogh.out" 2>&1 \
+  && pass "t26: cleanup succeeds without gh" || fail "t26: cleanup failed without gh: $(cat "$T/t26-nogh.out")"
+grep -q "issue #164 not checked (gh-does-not-exist is not available)" "$T/t26-nogh.out" \
+  && pass "t26: a missing gh is named in the OK: line" || fail "t26: a missing gh is not named: $(cat "$T/t26-nogh.out")"
+[ -s "$GH_LOG" ] && fail "t26: a missing gh still reached the real one: $(cat "$GH_LOG")" || pass "t26: a missing gh is never called"
+
+# (g) gh is there but the state cannot be read: the readout says so
+t26_make_task t26-unreadable 164 yes
+: > "$GH_LOG"
+KINGPIN_GH="$T/bin/gh-view-fails" PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-unreadable >"$T/t26-unreadable.out" 2>&1 \
+  && pass "t26: cleanup succeeds when the issue state is unreadable" || fail "t26: cleanup failed: $(cat "$T/t26-unreadable.out")"
+grep -q "issue #164 state could not be read (check that it is closed)" "$T/t26-unreadable.out" \
+  && pass "t26: an unreadable issue state is named in the OK: line" || fail "t26: an unreadable state is not named: $(cat "$T/t26-unreadable.out")"
+grep -q "^issue view 164" "$GH_LOG" && pass "t26: the failing read was attempted" || fail "t26: gh saw no read: $(cat "$GH_LOG")"
+! grep -q "^issue close" "$GH_LOG" && pass "t26: an unreadable state never closes the issue" || fail "t26: an unreadable state closed the issue: $(cat "$GH_LOG")"
+
+printf 'OPEN\n' > "$GH_STATE"
+rm -f "$GH_CLOSE_FAILS"
+rm -rf "$KINGPIN_HOME/archive/t26-open" "$KINGPIN_HOME/archive/t26-closed" "$KINGPIN_HOME/archive/t26-already" "$KINGPIN_HOME/archive/t26-forced"
+rm -rf "$KINGPIN_HOME/archive/t26-norecord" "$KINGPIN_HOME/archive/t26-nogh" "$KINGPIN_HOME/archive/t26-unreadable"
+rm -rf "$T/t26-wt-t26-open" "$T/t26-wt-t26-closed" "$T/t26-wt-t26-already" "$T/t26-wt-t26-forced" "$t26_repo" "$t26_remote"
+rm -rf "$T/t26-wt-t26-norecord" "$T/t26-wt-t26-nogh" "$T/t26-wt-t26-unreadable"
 
 kp_test_finish DONE

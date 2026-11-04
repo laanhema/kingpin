@@ -31,6 +31,27 @@ Report every event as one line appended to `{{TASK_DIR}}/status`, with `printf '
 - `merged: pr=<PR URL>` when a PR merged.
 - `failed: <the stopping skill's own words>` when a gate stopped the run or a step failed.
 
+## Landing
+
+`/issue-flow-done` is the last step, and its order is fixed: merge the PR, close the issue,
+move its board item to Done, then report. `merged:` is the line the supervisor acts on: the
+cleanup archives this task and closes this window as soon as it reads that line, so a step
+left until after the report is a step nobody takes.
+
+- Open the PR with `Closes #<issue>` in its body, not a bare reference such as `Refs`. The
+  closing keyword lets the merge close the issue even when this session dies before it
+  reports. A skill that asks for a reference without a closing keyword is out of date for
+  this task; the body carries the closing keyword.
+- The board move is what makes the close safe. An issue the merge closed on its own says
+  nothing about its board item, which can stay in Ready with nobody left to move it, so
+  check the board item after the merge instead of trusting the keyword: the issue is closed
+  and its board item is in Done, and you close the issue and move the item yourself when
+  they are not.
+- Report `merged: pr=<PR URL>` only after that: close the issue and move its board item
+  before you append `merged:`.
+
+## Dossier
+
 Before you append `ready:` or `merged:`, write `{{TASK_DIR}}/report.html`: one self-contained page that shows what changed and why, the review verdict and every finding, the diff of each changed file, and before/after screenshots for a visual change. Start from the worker dossier template: copy `{{KP_ROOT}}/assets/lavish/worker-dossier/template.html` to that path, replace every sample value and every `REPLACE` comment with this task's content, and keep its stylesheet, section order and component classes. `{{KP_ROOT}}/assets/lavish/worker-dossier/DESIGN.md` records the rules the look depends on (the dark palette, what each colour means, how the tables and findings are laid out); read it before you edit. The template already carries the dark palette, the action bar with the 'Approve & Land' button (`kingpin land {{TASK_ID}}`, queued through `window.lavish.queuePrompt` or copied to the clipboard) and the 'Request Changes' button, and the dossier layout block below, so change the task id in its buttons and leave the rest alone. Drop a section the task has nothing for, and add the Before and After section only for a visual change. The prose is part of the deliverable, so write it as a person would and run the `unslop` skill over the page before you save it: no em dashes, no "testament to", no "it's not just", no "delve", "seamless", "in order to", "let me know", "I hope this helps". The checker below enforces that mechanical list. Build the diffs as described under "Diffs in `report.html`" below: paste the output of `kingpin-report diffs` over the template's sample diff section (`lavish-axi playbook code` has the general Pierre guidance). <!-- unslop:ignore -->
 
 Dossier layout. A dossier is a page someone reads in a browser, so it has to hold its box at two

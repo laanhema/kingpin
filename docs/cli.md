@@ -301,6 +301,10 @@ The project lane is claimed atomically, so two concurrent runs for different tas
 
 A `kingpin-send` failure (a dead worker window, for example) clears `landing_sent`, releases the project landing lock and exits 1, so the lane advances instead of wedging; if the release itself cannot take the lane's mutex it says so on stderr and names `kingpin done <id> --force`.
 
+### The landing message
+
+When the task names an issue, the dispatched message is the bare `/issue-flow-done <n>` and nothing else: that skill's input contract asks for exactly one issue number, so a note appended to the command reads as a malformed argument and can stall the landing. The order reaches the worker through the preamble every spawn receives (`worker/preamble.md`): the PR body says `Closes #<n>`, the merge closes the issue, then the worker checks that the issue is closed and its board item is in Done and reports `merged:`. The closing keyword lets the merge close the issue even when the worker dies mid-flow, and the board item is what the keyword cannot vouch for, since an issue the merge closed on its own can leave its item in Ready. The check has to happen before the report because `merged:` is the line the supervisor acts on: the cleanup archives the task and closes the window as soon as it reads that line.
+
 ### Queued landings
 
 A queued landing is skipped when the task is gone, archived, finished or already dispatched.
@@ -311,7 +315,7 @@ A queued landing is skipped when the task is gone, archived, finished or already
 
 **Flags:** `--force`
 
-**Environment:** `KINGPIN_HOME`, `KINGPIN_LAVISH`, `KINGPIN_SKIP_MERGE_CHECK`
+**Environment:** `KINGPIN_HOME`, `KINGPIN_LAVISH`, `KINGPIN_SKIP_MERGE_CHECK`, `KINGPIN_GH`
 
 ### Single-flight cleanup
 
@@ -340,6 +344,10 @@ Refuses, even with `--force`, when another unfinished task records the same work
 ### Status lines and the listener
 
 A refusal is recorded as a `cleanup-refused:` status line only for a finished task (`merged:`, `failed:`); a worker that may still be live keeps its last status (for example `needs-input:`), and the reason goes to stderr. `done` also stops the task's dossier listener, and `kingpin ack` of an archived task is a no-op that exits 0 with a note.
+
+### The issue a finished task names
+
+A task record that carries `ISSUE` (or, for an older record, a worker's `issue: #<n>` line) gets one more step before the archive. When the merge check passed and `gh` reports the issue `OPEN`, `done` closes it and the `OK:` line says `closed issue #<n> after the merge`; an issue that is already closed is left alone and named `issue #<n> is closed`. A close that fails is reported as `issue #<n> is still open (close it by hand)`, and a state that cannot be read as `issue #<n> state could not be read (check that it is closed)`. The merge check is the permission: a `--force` cleanup or a missing worktree reports `issue #<n> not checked (the merge was not verified)` and never closes anything. A record that names no issue, such as a curator record, gets no readout at all. Every `gh` failure is part of the `OK:` line and never fails the cleanup. `KINGPIN_GH` overrides the command, as it does for `kingpin spawn`, `kingpin rename` and `kingpin curate`.
 
 ### The dossier link
 
@@ -568,7 +576,7 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 | `KINGPIN_OPENCODE` | `lib/launch.sh` | Command `spawn` and `restore` launch for the `opencode` harness (default `opencode`). |
 | `KINGPIN_PI` | `lib/launch.sh`, `bin/kingpin-scope` | Command `spawn` and `restore` launch for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
 | `KINGPIN_CODEX` | `lib/launch.sh`, `bin/kingpin-scope` | Command `spawn` and `restore` launch for the `codex` harness (default `codex`); `kingpin scope doctor --harness codex` probes the same command. |
-| `KINGPIN_GH` | `bin/kingpin-spawn:54`, `bin/kingpin-curate` | `gh` command `spawn` uses to read an issue title for the task slug, and `curate` uses to create, view and merge the curator's PR (default `gh`). |
+| `KINGPIN_GH` | `bin/kingpin-spawn:54`, `bin/kingpin-curate`, `bin/kingpin-done:26` | `gh` command `spawn` uses to read an issue title for the task slug, `curate` uses to create, view and merge the curator's PR, and `done` uses to read and close the issue a finished task names (default `gh`).
 | `KINGPIN_TMUX_SESSION` | `bin/kingpin-spawn:224` | tmux session on the fleet's own server that `spawn` places the worker window in when `--tmux-session` is not given. The session must already exist; an unknown name is refused. Unset, the spawn uses the one attached session on the fleet server, then the only one it holds, and refuses when several are unattached or more than one is attached. |
 | `KINGPIN_SEND_DELAY` | `bin/kingpin-send:60` | Seconds between the literal text and the Enter key (default `0.2`). |
 | `KINGPIN_TMUX_SOCKET` | `lib/tmux.sh:20` | Name of the tmux server the fleet uses (default `kingpin`, that is `tmux -L kingpin`), so worker windows are not on your own server; `default` puts them back on it. `kingpin spawn` records the name in `task.env` as `TMUX_SOCKET`, and every window reader resolves the record's socket. The test suites point it at their own socket. |

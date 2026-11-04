@@ -58,6 +58,13 @@ gate_clean() { # <name> <status-line>
   [ "$gate_rc" -eq 0 ] && pass "$1: clean verdict accepted (exit 0)" || fail "$1: exit $gate_rc, want 0: $gate_out"
   [ "$gate_landing" = "yes" ] && pass "$1: landing dispatched" || fail "$1: landing_sent missing"
   echo "$gate_pane" | grep -q "/issue-flow-done 310" && pass "$1: sent /issue-flow-done" || fail "$1: wrong done command: $gate_pane"
+  # Issue #170: the dispatch stays the bare command, because /issue-flow-done takes
+  # exactly one issue number and a trailing reminder reads as a malformed argument.
+  # The landing order lives in the worker's preamble instead (Test 16).
+  echo "$gate_pane" | grep -qE "/issue-flow-done 310[[:space:]]*$" \
+    && pass "$1: the dispatch is the bare command" || fail "$1: the dispatch carries a trailing note: $gate_pane"
+  ! echo "$gate_pane" | grep -q "Closes #" \
+    && pass "$1: the dispatch carries no closing keyword" || fail "$1: the dispatch repeats the preamble: $gate_pane"
   gate_done "$1"
 }
 gate_refused() { # <name> <status-line> <text the message must name>
@@ -336,6 +343,7 @@ mk_t15 t15-pi-pr "ready: branch=b review=APPROVE report=none" ""
 sleep 0.1
 pane_out=$(tmux capture-pane -pt kingpin:t15-pi-pr -S -5)
 echo "$pane_out" | grep -q "/skill:create-pr-merge" && pass "pi: no issue sends /skill:create-pr-merge" || fail "pi pr: $pane_out"
+! echo "$pane_out" | grep -q "Closes #" && pass "pi: a landing with no issue asks for no closing keyword" || fail "pi: a landing with no issue asked for a closing keyword: $pane_out"
 t15_done t15-pi-pr
 
 # The other harnesses keep the plain command.
@@ -349,6 +357,23 @@ echo "$pane_out" | grep -q "/fix-findings $T/proj/r.md" && ! echo "$pane_out" | 
 t15_done t15-claude
 
 rm -rf "$KINGPIN_HOME/tasks/t15-pi-nits" "$KINGPIN_HOME/tasks/t15-pi-done" "$KINGPIN_HOME/tasks/t15-pi-pr" "$KINGPIN_HOME/tasks/t15-claude"
+
+# Test 16: the worker's landing contract closes the issue before it reports (issue #170).
+# This asserts the preamble's wording, not a merge path, and that is the whole reachable
+# surface: the order lives in a document the worker reads, and no code path in this repo
+# can enforce what a worker's prose makes it do. A fake merge path here would exercise the
+# fake worker, not kingpin. The one code path that does act on the order, `done`'s issue
+# readout, is covered by Test 24 in tests/test-done.sh.
+echo "=== Test 16: the worker preamble states the landing order ==="
+preamble="$KP_ROOT/worker/preamble.md"
+landing_block=$(sed -n '/^## Landing$/,/^## /p' "$preamble")
+[ -n "$landing_block" ] && pass "preamble has a Landing section" || fail "preamble has no Landing section"
+grep -q 'Closes #' <<< "$landing_block" && pass "preamble asks for the closing keyword in the PR body" || fail "preamble asks for no closing keyword"
+grep -q 'Refs #' <<< "$landing_block" && fail "preamble still asks for a bare reference" || pass "preamble does not ask for a bare reference"
+grep -qi 'close the issue' <<< "$landing_block" && pass "preamble tells the worker to close the issue" || fail "preamble does not tell the worker to close the issue"
+grep -qi 'board item' <<< "$landing_block" && pass "preamble tells the worker to move the board item" || fail "preamble does not tell the worker to move the board item"
+grep -q 'before you append' <<< "$landing_block" && grep -q 'merged:' <<< "$landing_block" \
+  && pass "preamble puts the close before merged:" || fail "preamble does not order the close before merged:"
 
 kp_test_finish LAND
 

@@ -22,6 +22,10 @@ usage: kingpin-land <task-id>
 Land a ready task: run the fix pass when the review has findings, serialize
 landing per project, and send /issue-flow-done to the worker. The review gate
 fails closed: a `ready:` line whose verdict cannot be read lands nothing.
+When the task names an issue the dispatch is the bare `/issue-flow-done <n>`,
+because that skill's input contract asks for exactly one issue number; the order
+to close the issue and move its board item before `merged:` comes from the
+worker's preamble, which every spawn receives.
 HELP
 }
 
@@ -194,6 +198,10 @@ touch "$task_dir/landing_sent"
 # wire command follows the worker's harness through kp_skill_command.
 if [ -n "$issue" ]; then
   land_cmd=$(kp_skill_command "$harness" issue-flow-done "$issue")
+  # The dispatch stays the bare command: /issue-flow-done takes exactly one issue
+  # number, so anything appended here reads as a malformed argument and can stop
+  # the landing. The order to close the issue and move its board item before
+  # `merged:` rides in the worker's preamble (issue #170), which every spawn gets.
   started_msg="kingpin-land: task $id: $landing_reason; starting landing (sending /issue-flow-done $issue)"
 else
   land_cmd=$(kp_skill_command "$harness" create-pr-merge)
