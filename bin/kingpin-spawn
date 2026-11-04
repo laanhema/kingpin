@@ -46,6 +46,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_ROOT/lib/gitdir.sh"
 # shellcheck source=../lib/tmux.sh
 . "$KP_ROOT/lib/tmux.sh"
+# shellcheck source=../lib/browser.sh
+. "$KP_ROOT/lib/browser.sh"
 # shellcheck source=../lib/launch.sh
 . "$KP_ROOT/lib/launch.sh"
 GH_CMD=${KINGPIN_GH:-gh}
@@ -453,6 +455,23 @@ for rel in ${kingpin_paths[@]+"${kingpin_paths[@]}"}; do
       "$rel" "$worktree" >&2
   fi
 done
+
+# A browser daemon left in this pooled slot belongs to the task that leased it last
+# (issue #160). treehouse can hand a returned slot to this spawn, and the daemon's cwd
+# still names the worktree, so stop it before this task's harness starts and name what
+# went: a worker must not share the host with a browser nobody is looking at.
+browser_stopped=$(kp_browser_stop_under "$worktree" 2>/dev/null || true)
+browser_count=${browser_stopped%%$'\t'*}
+browser_rss=${browser_stopped##*$'\t'}
+case "$browser_count" in ''|*[!0-9]*) browser_count=0 ;; esac
+case "$browser_rss" in ''|*[!0-9]*) browser_rss=0 ;; esac
+if [ "$browser_count" -eq 1 ]; then
+  printf 'kingpin-spawn: stopped 1 browser daemon left in %s by an earlier task (%s freed)\n' \
+    "$worktree" "$(kp_browser_size "$browser_rss")" >&2
+elif [ "$browser_count" -gt 1 ]; then
+  printf 'kingpin-spawn: stopped %s browser daemons left in %s by an earlier task (%s freed)\n' \
+    "$browser_count" "$worktree" "$(kp_browser_size "$browser_rss")" >&2
+fi
 
 # The paths this spawn injected are already in `<task-dir>/injected`, written by
 # lib/launch.sh: one writer owns that file, so the cleanup (`kingpin-done`, or the

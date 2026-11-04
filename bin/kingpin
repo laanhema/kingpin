@@ -34,6 +34,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_BIN/../lib/afk.sh"
 # shellcheck source=../lib/tmux.sh
 . "$KP_BIN/../lib/tmux.sh"
+# shellcheck source=../lib/browser.sh
+. "$KP_BIN/../lib/browser.sh"
 
 usage() {
   cat << 'HELP'
@@ -140,6 +142,8 @@ case "$cmd" in
           echo "  Always prints a 'Supervisor: running (pid N, since HH:MM)' line, or"
           echo "  'Supervisor: none - run kingpin watch' when no fleet supervisor runs,"
           echo "  and 'AFK: on until HH:MM (pid N)' while AFK auto-landing is armed."
+          echo "  A live row also gets a '↳ Browser:' line naming the browser daemons it holds,"
+          echo "  with their memory total, so a leak is visible without ps."
           exit 0
           ;;
         *) echo "kingpin list: unknown argument '$arg'" >&2; exit 2 ;;
@@ -240,6 +244,28 @@ case "$cmd" in
         fi
         printf "  %-20s %s\n" "↳ Window:" "$where ($KP_WINDOW_ID)"
       fi
+      # The browser daemons this task holds right now (issue #160), read from the one table
+      # the caller loaded: a worker that drove chrome-devtools-axi left its bridge and
+      # headless Chrome behind, keyed by the task folder or the worktree it was started
+      # from. The line is the leak made visible without ps; a task that drives no browser
+      # gets none, and an archived row's daemons are the cleanup's business, not the board's.
+      if [ -z "$suffix" ] && [ -n "$browser_table" ]; then
+        local browser_worktree browser_rows browser_count browser_rss browser_pids
+        browser_worktree=''
+        if [ -f "$env_file" ]; then browser_worktree=$(kp_env_get "$env_file" WORKTREE); fi
+        browser_rows=$(printf '%s\n' "$browser_table" \
+          | kp_browser_rows_under "$d" ${browser_worktree:+"$browser_worktree"})
+        if [ -n "$browser_rows" ]; then
+          browser_count=$(printf '%s\n' "$browser_rows" | wc -l | tr -d ' ')
+          browser_rss=$(printf '%s\n' "$browser_rows" | awk -F'\t' '{ total += $2 } END { printf "%d", total }')
+          browser_pids=$(printf '%s\n' "$browser_rows" | awk -F'\t' '{ pids = pids (pids == "" ? "" : ", ") $1 } END { printf "%s", pids }')
+          if [ "$browser_count" -eq 1 ]; then
+            printf "  %-20s %s\n" "↳ Browser:" "1 daemon, $(kp_browser_size "$browser_rss") (pid $browser_pids)"
+          else
+            printf "  %-20s %s\n" "↳ Browser:" "$browser_count daemons, $(kp_browser_size "$browser_rss") (pid $browser_pids)"
+          fi
+        fi
+      fi
       if [ -z "$suffix" ] && [ -f "$d/report.html" ]; then
         listen_info=""
         # The URL the listener recorded when it opened the page (issue #146): handing it
@@ -274,6 +300,13 @@ case "$cmd" in
         [ -d "$d" ] || continue
         archived_dirs+=("$d")
       done
+    fi
+
+    # One `ps` pass feeds every live row's browser line (issue #160); an archived row is
+    # never asked for one, and a fleet with no live task runs no scan at all.
+    browser_table=''
+    if [ ${#live_dirs[@]} -gt 0 ]; then
+      browser_table=$(kp_browser_daemons)
     fi
 
     if [ ${#live_dirs[@]} -eq 0 ] && [ ${#archived_dirs[@]} -eq 0 ]; then
