@@ -29,7 +29,7 @@ each task back as a visual review dossier. This file describes the repository.
 
 ## Lavish Artifacts
 
-Every page we hand over is prose first: a worker's `report.html` dossier, and a plan or comparison page you open with `lavish-axi`, gets an unslop pass before it is served.
+Every page we hand over is prose first: any page written from the `assets/lavish/worker-dossier/` templates (a worker's `report.html` or a handover page), and any plan or comparison page you open with `lavish-axi`, always gets an unslop pass before it is served.
 
 - Start a handover artifact from the handover template, not a blank page: copy `assets/lavish/worker-dossier/handover.html` into the artifact's folder (`.lavish/`), swap the content, and keep the chrome. `assets/lavish/worker-dossier/DESIGN.md` sits beside it and records the rules the look depends on, including how to trim it into a review summary. A worker's review dossier starts from `assets/lavish/worker-dossier/template.html` instead: copy it to the task folder as `report.html`, keep its chrome, and read the same `DESIGN.md`. `tests/test-worker-dossier-template.sh` fails when the folder loses a file, when a section a page is read for goes missing, when a decision form loses its handler, when a page stops passing `check`, or when `worker/preamble.md` stops pointing at the worker template. The noir dossier template (`assets/lavish/noir-dossier/`, tested by `tests/test-noir-template.sh`) stays in the repo for a future look but is not the default for anything.
 - Run the `unslop` skill over the page, then `bin/kingpin-report check <file>`. A page with no diff section takes `--prose-only`.

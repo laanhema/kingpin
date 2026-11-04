@@ -98,7 +98,7 @@
 
   <!-- REPLACE: an h1 that states the point in plain words, then a two or three sentence lede. -->
   <h1 class="text-3xl font-bold text-white">Retry a failed landing once before bothering you</h1>
-  <p class="text-base text-gray-300">When <code>kingpin land</code> hits a merge that moved under it, the task stops and waits for a person. Most of those merges succeed on a second try. This page compares three ways to handle it and asks two questions.</p>
+  <p class="text-base text-gray-300">When <code>kingpin land</code> hits a merge that moved under it, the task stops and waits for a person. Most of those merges succeed on a second try. This page compares three ways to handle it and asks for two decisions.</p>
 
   <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
     <div class="card-custom">
@@ -186,7 +186,7 @@
     <div class="card-custom space-y-2">
       <div class="flex flex-wrap items-center gap-2"><span class="badge badge-outline badge-sm">Option A</span></div>
       <h3 class="text-base font-semibold text-white">Do nothing</h3>
-      <ul class="list-disc list-inside space-y-1 text-sm text-gray-300"><li>Landings that move under us keep stopping, and you re-run them by hand</li><li>No code to maintain</li></ul>
+      <ul class="list-disc list-inside space-y-1 text-sm text-gray-300"><li>Landings that move under us keep stopping</li><li>You re-run them by hand</li><li>No code to maintain</li></ul>
     </div>
     <div class="card-custom space-y-2 border-emerald-700/60">
       <div class="flex flex-wrap items-center gap-2"><span class="badge badge-success badge-sm">RECOMMENDED</span> <span class="badge badge-outline badge-sm">Option B</span></div>
@@ -196,7 +196,7 @@
     <div class="card-custom space-y-2">
       <div class="flex flex-wrap items-center gap-2"><span class="badge badge-outline badge-sm">Option C</span></div>
       <h3 class="text-base font-semibold text-white">Retry with backoff and a queue</h3>
-      <ul class="list-disc list-inside space-y-1 text-sm text-gray-300"><li>Up to 3 retries with a growing wait, and a queue file so retries survive a restart</li><li>Covers rarer cases, adds config to maintain</li></ul>
+      <ul class="list-disc list-inside space-y-1 text-sm text-gray-300"><li>Up to 3 retries with a growing wait</li><li>A queue file so retries survive a restart</li><li>Covers rarer cases, adds config to maintain</li></ul>
     </div>
   </div>
   <div class="overflow-x-auto">
@@ -213,7 +213,7 @@
     </table>
   </div>
   <div class="callout rec">
-    <p class="text-sm text-gray-200"><strong>Recommendation:</strong> Option B. One small loop fixes the common case, and you hear about a failed retry at once. If it turns out to hide something, it reverts cleanly.</p>
+    <p class="text-sm text-gray-200"><strong>Recommendation:</strong> Option B. It fixes the common case with one small loop, tells you at once when the retry fails, and is easy to revert if it turns out to hide something.</p>
   </div>
 </section>
 

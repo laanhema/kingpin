@@ -64,6 +64,7 @@ check_dir() {
   fallbacks=$(grep -c 'class="kp-fallback"' "$dir/template.html" || true)
   [ "$surfaces" -ge 1 ] && [ "$fallbacks" -eq "$surfaces" ] || { echo "a diff surface has no static fallback ($fallbacks for $surfaces surfaces)" >&2; return 1; }
   # The gate every copied report inherits: renderable diffs, contained layout and clean prose.
+  grep -q 'Run the unslop skill' "$dir/template.html" || { echo "the how-to no longer tells the author to run the unslop skill" >&2; return 1; }
   "$KP_BIN/kingpin-report" check "$dir/template.html" >/dev/null || { echo "template.html fails the diff or prose check" >&2; return 1; }
   "$KP_BIN/kingpin-report" check --prose-only "$dir/DESIGN.md" >/dev/null || { echo "DESIGN.md fails the prose check" >&2; return 1; }
   return 0
@@ -198,6 +199,12 @@ cp -a "$TPL" "$T/no-colgroup"
 sed -i 's|<colgroup>.*</colgroup>||' "$T/no-colgroup/template.html"
 out=$(check_dir "$T/no-colgroup" 2>&1) && fail "tables without column widths passed" || pass "tables without column widths fail"
 echo "$out" | grep -q 'colgroup' && pass "the failure names the missing colgroup" || fail "unclear reason: $out"
+
+rm -rf "$T/unslop"
+cp -a "$TPL" "$T/unslop"
+sed -i 's/Run the unslop skill/Skip the prose pass/' "$T/unslop/template.html"
+out=$(check_dir "$T/unslop" 2>&1) && fail "a worker template how-to without the unslop step passed" || pass "a worker template how-to without the unslop step fails"
+echo "$out" | grep -q 'unslop skill' && pass "the failure names the unslop step" || fail "unclear reason: $out"
 
 echo "=== the handover check fails on a broken copy ==="
 cp -a "$TPL" "$T/h-good"
