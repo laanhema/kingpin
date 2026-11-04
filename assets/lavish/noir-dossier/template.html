@@ -6,7 +6,7 @@
 <title>Ranks for the Kingpin fleet: a proposal</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Special+Elite&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&family=Playfair+Display:wght@700;900&family=Special+Elite&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" rel="stylesheet" />
 <style>
   :root {
     --ink: #12100c;
@@ -16,6 +16,9 @@
     --ink-on-paper: #1b1712;
     --sepia: #8a6f4d;
     --blood: #7d2020;
+    --pass: #2d4a24;
+    --warn: #6b4a10;
+    --fail: #7d2020; /* aliases --blood */
     --gold: #a8863a;
     --rule: rgba(27, 23, 18, .22);
     --paper-rule: rgba(27, 23, 18, .16);
@@ -36,8 +39,13 @@
   }
   .shell { max-width: 1160px; margin: 0 auto; padding: 28px 24px 72px; }
   h1, h2, h3 { font-family: "Playfair Display", Georgia, serif; margin: 0; letter-spacing: -.01em; }
-  .kicker, .label, .rule-label, .stamp, code, th, .rank-name {
+  .kicker, .label, .rule-label, .stamp, th, .rank-name {
     font-family: "Special Elite", "Courier New", monospace;
+    overflow-wrap: anywhere;
+  }
+  /* Code and diff text need a typewriter face without the distress of Special Elite. */
+  code, pre {
+    font-family: "Courier Prime", "Courier New", monospace;
     overflow-wrap: anywhere;
   }
   .kicker {
@@ -112,6 +120,18 @@
   .rank-name { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-on-paper); }
   .rank-who { display: block; font-size: 14px; color: #55483a; margin-top: 3px; }
 
+  /* ---------- status chips ---------- */
+  /* Status lives in the chip; table rows stay parchment. */
+  .chip {
+    display: inline-block; vertical-align: baseline;
+    font-family: "Special Elite", "Courier New", monospace; font-size: 10px;
+    letter-spacing: .12em; text-transform: uppercase; line-height: 1.4;
+    padding: 1px 7px 2px; border: 1px solid; border-radius: 2px; white-space: nowrap;
+  }
+  .chip.pass { color: var(--pass); background: #dce4d1; border-color: #b6c5a5; }
+  .chip.warn { color: var(--warn); background: #ece0c2; border-color: #d3bf92; }
+  .chip.fail { color: var(--fail); background: #edd8d2; border-color: #d6b2aa; }
+
   /* ---------- three cards ---------- */
   .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
   .card { border: 1px solid var(--paper-rule); background: #f5eddc; padding: 14px 15px; border-radius: 2px; }
@@ -128,7 +148,7 @@
   /* Static copy of the diff, hidden once @pierre/diffs renders into the surface. */
   .diff-fallback {
     margin: 0; padding: 12px 14px; color: var(--ink-on-paper);
-    font-family: "Special Elite", "Courier New", monospace; font-size: 12.5px; line-height: 1.55;
+    font-family: "Courier Prime", "Courier New", monospace; font-size: 12.5px; line-height: 1.55;
     white-space: pre-wrap; overflow-wrap: anywhere;
   }
   .diff-fallback-note {
@@ -159,11 +179,15 @@
   }
   .opt:hover { background: #f8f1e3; }
   .opt input { margin: 4px 0 0; width: 16px; height: 16px; accent-color: var(--blood); }
-  .opt .opt-title { font-family: "Special Elite", monospace; font-size: 13.5px; display: block; }
+  .opt .opt-title {
+    font-family: "Source Serif 4", Georgia, serif; font-weight: 600;
+    font-size: 16.5px; letter-spacing: 0; display: block;
+  }
   .opt .opt-desc { font-size: 14.5px; color: #4b4031; display: block; margin-top: 2px; }
   .opt.recommended { border-color: rgba(125,32,32,.45); box-shadow: inset 3px 0 0 var(--blood); }
   .opt .flag {
-    font-family: "Special Elite", monospace; font-size: 10px; letter-spacing: .12em;
+    font-family: "Source Serif 4", Georgia, serif; font-weight: 600;
+    font-size: 16.5px; letter-spacing: 0;
     text-transform: uppercase; color: var(--blood); margin-left: 8px;
   }
   .queue-btn {
@@ -414,6 +438,30 @@ diff --git a/worker/preamble.md b/worker/preamble.md
 </pre>
       </div>
     </div>
+
+    <p class="sub">A verification table in its three states. The chip carries the status; the row keeps the parchment.</p>
+    <table>
+      <thead>
+        <tr><th>Check</th><th>State</th><th>Note</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Template suite</td>
+          <td><span class="chip pass">Pass</span></td>
+          <td>Three files, relative refs, static fallbacks.</td>
+        </tr>
+        <tr>
+          <td>Prose check</td>
+          <td><span class="chip warn">Warn</span></td>
+          <td>A copied page still needs one read before it is served.</td>
+        </tr>
+        <tr>
+          <td>Diff renderer</td>
+          <td><span class="chip fail">Fail</span></td>
+          <td>No CDN, so the static fallback shows the change instead.</td>
+        </tr>
+      </tbody>
+    </table>
   </section>
 
   <section class="panel risk">
