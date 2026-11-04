@@ -37,18 +37,21 @@ case "\$cmd" in
     fi
     ;;
   reply)
-    # A fail file makes the next N replies exit 1, so a case can prove a refused
-    # reply is retried instead of recorded as delivered (review M1).
+    # A fail file refuses the next N replies whose text contains the needle on its
+    # second line, so a case can prove a refused reply is retried instead of recorded
+    # as delivered (review M1) and only the reply it means can take the refusal: the
+    # receipt reply of the same task passes through (issue #174). The refusal logs the
+    # whole argument list, so a case can name the reply that consumed it.
     task=\$(basename "\$(dirname "\${2:-}")")
     fail="$T/mock-lavish-fail-reply-\$task"
     if [ -f "\$fail" ]; then
-      n=\$(cat "\$fail" 2>/dev/null || echo 0)
-      if [ "\${n:-0}" -gt 0 ]; then
-        printf '%s\n' "\$((n - 1))" > "\$fail"
-        echo "refused: reply" >> "$T/mock-lavish.log"
+      n=\$(sed -n 1p "\$fail" 2>/dev/null || echo 0)
+      needle=\$(sed -n 2p "\$fail" 2>/dev/null || true)
+      if [ "\${n:-0}" -gt 0 ] && [ -n "\$needle" ] && [[ "\$*" == *"\$needle"* ]]; then
+        printf '%s\n%s\n' "\$((n - 1))" "\$needle" > "\$fail"
+        echo "refused: \$*" >> "$T/mock-lavish.log"
         exit 1
       fi
-      rm -f "\$fail"
     fi
     echo "OK: reply accepted"
     ;;
@@ -68,6 +71,32 @@ export KINGPIN_LAVISH="$T/mock-lavish"
 
 # resp_file <task-dir>: where to queue this task's next poll answer.
 resp_file() { printf '%s/mock-lavish-response-%s.txt\n' "$T" "$(basename "$1")"; }
+
+# arm_refusal <task-dir> <needle> [count]: make the mock refuse the next <count> replies
+# whose text contains <needle> (default 1). The needle binds the refusal to the reply a
+# case means, so a reply it did not mean, such as the receipt, cannot eat it (issue #174).
+arm_refusal() {
+  local task=$1 needle=$2 count=${3:-1}
+  printf '%s\n%s\n' "$count" "$needle" > "$T/mock-lavish-fail-reply-$(basename "$task")"
+}
+
+# refusal_lines <log> [needle]: the replies the mock refused, as it logged them (the full
+# argument list). A case passes its task's report path so an earlier case's refusal is not
+# read as its own, and prints these when its refusal was eaten, so the reply that took it
+# is named (issue #174).
+refusal_lines() { grep -F 'refused: ' "$1" 2>/dev/null | grep -F -- "${2:-}" || true; }
+
+# refused_then_accepted <log> <reply-args>: exit 0 when the mock made exactly two calls for
+# <reply-args> and refused the first of them. The mock logs every call at its start and a
+# refusal adds its own line with the same arguments, so the refusal's line number falls
+# between the two call lines: that is the sequence, not a count (issue #174).
+refused_then_accepted() {
+  local log=$1 reply=$2 at calls=()
+  at=$(grep -nF -- "$reply" "$log" 2>/dev/null | grep '^[0-9]*:refused: ' | cut -d: -f1 | head -1 || true)
+  mapfile -t calls < <(grep -nF -- "$reply" "$log" 2>/dev/null | grep -v '^[0-9]*:refused: ' || true)
+  [ "${#calls[@]}" = "2" ] && [ -n "$at" ] \
+    && [ "${calls[0]%%:*}" -lt "$at" ] && [ "$at" -lt "${calls[1]%%:*}" ]
+}
 
 # parked_file <task-dir>: the task's parked poll response, if one was written.
 # Each event gets its own capture, so the name is not fixed.
@@ -221,7 +250,10 @@ prompts[1]{prompt}:
   kingpin land task-lavish-1
 RESP
 
-for _ in $(seq 1 30); do
+# `kingpin-land` runs a whole landing preparation before the listener records the
+# approval, so poll for both outcomes instead of assuming the 3 s a quiet machine
+# needs: a runner under load takes tens of seconds (issue #174).
+for _ in $(seq 1 600); do
   if [ -f "$t11_task/landing_sent" ] && grep -q "approved:" "$t11_task/status" 2>/dev/null; then
     break
   fi
@@ -233,6 +265,9 @@ grep -q "approved: by user via lavish dossier" "$t11_task/status" && pass "appro
 wait_for 100 pane_has kingpin:task-lavish-1 "/issue-flow-done 401" || true
 pane_out=$(tmux capture-pane -pt kingpin:task-lavish-1 -S -5)
 echo "$pane_out" | grep -q "/issue-flow-done 401" && pass "/issue-flow-done dispatched on approval" || fail "wrong done command: $pane_out"
+# The confirmation is posted after the approval note, so a loaded runner can show the
+# note a moment before the reply reaches the mock: poll for it (issue #174).
+wait_for 400 grep -q "reply $t11_task/report.html --agent-reply Approval received" "$T/mock-lavish.log" || true
 grep -q "reply $t11_task/report.html --agent-reply Approval received" "$T/mock-lavish.log" && pass "approval confirmation reply sent to lavish" || fail "approval reply missing"
 
 # 4. Simulate user feedback / Request Changes
@@ -694,25 +729,38 @@ EOFRF
 tmux new-window -d -t kingpin: -n task-lavish-replyfail cat
 echo "ready: branch=b review=APPROVE report=none" > "$t11_mfail/status"
 printf '%s\n' "session:" "  status: feedback" "prompts[1]:" "  - prompt: \"Request Changes: reply failure prompt\"" "    tag: action" > "$(resp_file "$t11_mfail")"
+mfail_pointer="reply $t11_mfail/report.html --agent-reply The capo updated the page; open it to read the answer"
+# Bind the refusal to the pointer's own text and arm it before the listener starts, so the
+# receipt reply this task also gets cannot take it, whatever order the two land in (issue #174).
+arm_refusal "$t11_mfail" "The capo updated the page; open it to read the answer"
 KINGPIN_LISTEN_ANSWER_TIMEOUT=30 "$KP_BIN/kingpin" listen task-lavish-replyfail --background
+# The pointer fires only for a worker event after the prompt's baseline, so wait for the
+# listener to record the prompt instead of appending the status line first.
 for _ in $(seq 1 60); do
-  grep -Fq "reply $t11_mfail/report.html --agent-reply Feedback received" "$T/mock-lavish.log" 2>/dev/null && break
+  [ -s "$t11_mfail/answer.pending" ] && break
   sleep 0.1
 done
 mfail_pid=$(cat "$t11_mfail/listener.pid" 2>/dev/null || true)
-mfail_pointer="reply $t11_mfail/report.html --agent-reply The capo updated the page; open it to read the answer"
-# Refuse the next pointer reply once; the receipt above was already delivered.
-printf '1\n' > "$T/mock-lavish-fail-reply-task-lavish-replyfail"
 printf 'ready: branch=b review=APPROVE report=none\n' >> "$t11_mfail/status"
 for _ in $(seq 1 60); do
   [ -f "$t11_mfail/answer.done" ] && grep -qE '^answered[[:space:]]' "$t11_mfail/answer.done" && break
   sleep 0.1
 done
-grep -qE '^answered[[:space:]]' "$t11_mfail/answer.done" 2>/dev/null && pass "refused pointer is marked answered only after a successful retry" || fail "refused pointer: no answered marker after the retry"
-n=$(grep -cF "$mfail_pointer" "$T/mock-lavish.log" || true)
-[ "$n" = "2" ] && pass "refused pointer is retried exactly once" || fail "pointer attempts after a refusal: $n"
-n=$(grep -cF "refused: reply" "$T/mock-lavish.log" || true)
-[ "$n" = "1" ] && pass "mock refused the first pointer reply" || fail "mock refusals: $n"
+# The sequence, not a count: one refusal that names the pointer, then the pointer accepted,
+# then the marker. A refusal another reply took is reported by that reply's own text.
+mapfile -t mfail_refusals < <(refusal_lines "$T/mock-lavish.log" "$t11_mfail")
+if [ "${#mfail_refusals[@]}" = "1" ] && [[ ${mfail_refusals[0]} == *"$mfail_pointer"* ]]; then
+  pass "mock refused the pointer reply, and only that reply"
+else
+  fail "the refusal was not the pointer reply's; refusals: ${mfail_refusals[*]:-none}"
+fi
+if refused_then_accepted "$T/mock-lavish.log" "$mfail_pointer"; then
+  pass "refused pointer is retried once and then accepted"
+else
+  n=$(grep -F -- "$mfail_pointer" "$T/mock-lavish.log" 2>/dev/null | grep -vc '^refused: ' || true)
+  fail "pointer was not refused and then retried; attempts: ${n:-0}; refusals: ${mfail_refusals[*]:-none}"
+fi
+grep -qE '^answered[[:space:]]' "$t11_mfail/answer.done" 2>/dev/null && pass "answered marker present after the refusal sequence" || fail "refused pointer: no answered marker after the refusal sequence"
 kill -- "-$mfail_pid" 2>/dev/null || kill "$mfail_pid" 2>/dev/null || true
 for _ in $(seq 1 40); do
   kill -0 "$mfail_pid" 2>/dev/null || break
@@ -737,21 +785,31 @@ EOFTF
 tmux new-window -d -t kingpin: -n task-lavish-tmoutfail cat
 echo "ready: branch=b review=APPROVE report=none" > "$t11_tfail/status"
 printf '%s\n' "session:" "  status: feedback" "prompts[1]:" "  - prompt: \"Request Changes: timeout failure prompt\"" "    tag: action" > "$(resp_file "$t11_tfail")"
-KINGPIN_LISTEN_ANSWER_TIMEOUT=1 "$KP_BIN/kingpin" listen task-lavish-tmoutfail --background
-for _ in $(seq 1 60); do
-  grep -Fq "reply $t11_tfail/report.html --agent-reply Feedback received" "$T/mock-lavish.log" 2>/dev/null && break
-  sleep 0.1
-done
-tfail_pid=$(cat "$t11_tfail/listener.pid" 2>/dev/null || true)
 tfail_reply="reply $t11_tfail/report.html --agent-reply The capo is still working; the answer will appear on the page."
-printf '1\n' > "$T/mock-lavish-fail-reply-task-lavish-tmoutfail"
+# Same binding as the pointer case: the refusal names the still-working text, so the
+# receipt reply cannot take it even though the timeout is one second away (issue #174).
+arm_refusal "$t11_tfail" "The capo is still working; the answer will appear on the page."
+KINGPIN_LISTEN_ANSWER_TIMEOUT=1 "$KP_BIN/kingpin" listen task-lavish-tmoutfail --background
+tfail_pid=$(cat "$t11_tfail/listener.pid" 2>/dev/null || true)
 for _ in $(seq 1 80); do
   [ -f "$t11_tfail/answer.done" ] && grep -qE '^still-working[[:space:]]' "$t11_tfail/answer.done" && break
   sleep 0.1
 done
-grep -qE '^still-working[[:space:]]' "$t11_tfail/answer.done" 2>/dev/null && pass "refused timeout line is marked only after a successful retry" || fail "refused timeout line: no still-working marker after the retry"
-n=$(grep -cF "$tfail_reply" "$T/mock-lavish.log" || true)
-[ "$n" = "2" ] && pass "refused timeout line is retried exactly once" || fail "timeout attempts after a refusal: $n"
+# The sequence again: one refusal that names the still-working reply, then the accepted
+# retry, then the marker.
+mapfile -t tfail_refusals < <(refusal_lines "$T/mock-lavish.log" "$t11_tfail")
+if [ "${#tfail_refusals[@]}" = "1" ] && [[ ${tfail_refusals[0]} == *"$tfail_reply"* ]]; then
+  pass "mock refused the still-working reply, and only that reply"
+else
+  fail "the refusal was not the still-working reply's; refusals: ${tfail_refusals[*]:-none}"
+fi
+if refused_then_accepted "$T/mock-lavish.log" "$tfail_reply"; then
+  pass "refused timeout line is retried once and then accepted"
+else
+  n=$(grep -F -- "$tfail_reply" "$T/mock-lavish.log" 2>/dev/null | grep -vc '^refused: ' || true)
+  fail "timeout line was not refused and then retried; attempts: ${n:-0}; refusals: ${tfail_refusals[*]:-none}"
+fi
+grep -qE '^still-working[[:space:]]' "$t11_tfail/answer.done" 2>/dev/null && pass "still-working marker present after the refusal sequence" || fail "refused timeout line: no still-working marker after the refusal sequence"
 kill -- "-$tfail_pid" 2>/dev/null || kill "$tfail_pid" 2>/dev/null || true
 for _ in $(seq 1 40); do
   kill -0 "$tfail_pid" 2>/dev/null || break
