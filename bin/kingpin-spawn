@@ -11,6 +11,16 @@
 #              (slug from the request). The id is also the branch (kingpin/<id>) and the
 #              tmux window name. An explicit --id skips slug generation.
 #   --harness  worker harness: claude, agy, opencode, or pi (overrides everything below)
+#   --tmux-session  tmux session for the worker window, for a caller with no tmux
+#              client context (a queue runner under systemd, a cron job)
+#
+# The window's tmux session is resolved, never guessed: --tmux-session, then
+# KINGPIN_TMUX_SESSION (both must name a session that exists), then the session of
+# the calling $TMUX client, then the one attached session on the server, then the
+# only session the server holds. Several unattached sessions, or more than one
+# attached session, are refused with their names; only a server with no session at all
+# gets a `kingpin` session, and the spawn says so (issue #152). The success line names
+# the chosen session.
 #
 # Default harness, first match wins: --harness > project HARNESS (only if set in
 # the project env) > the harness recorded by `kingpin lock acquire` for the live
@@ -45,10 +55,28 @@ GH_TIMEOUT=; ! command -v timeout >/dev/null || GH_TIMEOUT="timeout 10"
 
 die() { echo "kingpin-spawn: $*" >&2; exit 1; }
 
+# The tmux session and where it came from. A process with no tmux client, such as a
+# queue runner under systemd, used to get a session named kingpin created behind the
+# operator's back, and nothing said so (issue #152). The target is resolved now, and
+# this refuses rather than guesses. Sets target_session and target_session_source;
+# prints nothing on stdout.
 resolve_tmux_session() {
-  local session=""
+  local explicit=${1:-} explicit_source=${2:-} sid name attached session=''
+  local all=() attached_names=() joined='' resolved='' measured='' attached_joined=''
+  if [ -n "$explicit" ]; then
+    tmux has-session -t "$explicit" 2>/dev/null \
+      || die "refusing to spawn: the session '$explicit' from $explicit_source does not exist on this tmux server; start it, or name a session that does"
+    # has-session accepts an unambiguous prefix, so record the name tmux resolved it to:
+    # storing the prefix would name a session that does not exist (issue #152).
+    resolved=$(tmux display-message -p -t "$explicit" '#S' 2>/dev/null) || resolved=''
+    [ -n "$resolved" ] \
+      || die "refusing to spawn: the session '$explicit' from $explicit_source could not be resolved to a session name"
+    target_session=$resolved
+    target_session_source="from $explicit_source"
+    return 0
+  fi
   if [ -n "${TMUX:-}" ]; then
-    local sid=${TMUX##*,}
+    sid=${TMUX##*,}
     case "$sid" in
       ''|*[!0-9]*) ;;
       *) session=$(tmux display-message -p -t "\$$sid" '#S' 2>/dev/null || true) ;;
@@ -56,33 +84,74 @@ resolve_tmux_session() {
     if [ -z "$session" ]; then
       session=$(tmux display-message -p '#S' 2>/dev/null || true)
     fi
+    if [ -n "$session" ]; then
+      target_session=$session
+      target_session_source='from the tmux client'
+      return 0
+    fi
   fi
-  if [ -n "$session" ]; then
-    printf '%s\n' "$session"
-  else
-    tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
-    printf 'kingpin\n'
+  # No client context. Join a session that cannot be mistaken for another: the one an
+  # operator has attached, then the only one the server holds. One candidate is not a
+  # guess.
+  while IFS=$'\t' read -r name attached; do
+    [ -n "$name" ] || continue
+    all+=("$name")
+    [ "$attached" = 0 ] || attached_names+=("$name")
+  done < <(tmux list-sessions -F $'#{session_name}\t#{session_attached}' 2>/dev/null || true)
+  if [ "${#attached_names[@]}" -eq 1 ]; then
+    target_session=${attached_names[0]}
+    target_session_source='the only attached session'
+    return 0
   fi
+  if [ "${#all[@]}" -eq 1 ]; then
+    target_session=${all[0]}
+    target_session_source='the only session on the server'
+    return 0
+  fi
+  if [ "${#all[@]}" -gt 1 ]; then
+    for name in "${all[@]}"; do joined=${joined:+"$joined, "}$name; done
+    if [ "${#attached_names[@]}" -eq 0 ]; then
+      measured="this server has ${#all[@]} sessions and none has a client attached ($joined)"
+    else
+      for name in "${attached_names[@]}"; do
+        attached_joined=${attached_joined:+"$attached_joined, "}$name
+      done
+      measured="this server has ${#all[@]} sessions and ${#attached_names[@]} of them have a client attached ($attached_joined)"
+    fi
+    die "refusing to spawn: no tmux client context and no single target session, and $measured; name one with --tmux-session <name> or KINGPIN_TMUX_SESSION=<name>"
+  fi
+  # Nothing to join. This is the one case where a session is created, and the output
+  # says so instead of leaving the worker silently in a session nobody watches.
+  tmux new-session -d -s kingpin -n home \
+    || die "no tmux session to join and the fallback session 'kingpin' could not be created"
+  printf 'kingpin-spawn: no tmux client context and no sessions on this server; created and using the session "kingpin" (name one with --tmux-session or KINGPIN_TMUX_SESSION)\n' >&2
+  target_session=kingpin
+  target_session_source='the named fallback (no session existed)'
+  return 0
 }
 
 usage() {
   cat <<'HELP'
-usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi]
+usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi] [--tmux-session <name>]
 
   --issue    an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
   --text     a free-text request: the worker runs /create-issue first, then the same
   --mode     review (default) stops at a ready branch for the review; auto merges when green
   --id       task id; defaults to kp-<n>-<slug> (issue title) or kp-<slug> (request)
   --harness  worker harness: claude, agy, opencode, or pi (overrides the project and the lock)
+  --tmux-session  tmux session for the worker window when the caller has no tmux client
+             (also read from KINGPIN_TMUX_SESSION); without either, the one attached
+             session or the only session on the server is used, and several unattached
+             sessions or more than one attached session are refused
 HELP
 }
 
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac
-[ $# -ge 1 ] || die "usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi]"
+[ $# -ge 1 ] || die "usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi] [--tmux-session <name>]"
 project=$1; shift
-issue='' text='' mode=review id='' harness_cli=''
+issue='' text='' mode=review id='' harness_cli='' session_cli=''
 while [ $# -gt 0 ]; do
   case $1 in
     -h|--help) usage; exit 0 ;;
@@ -91,6 +160,7 @@ while [ $# -gt 0 ]; do
     --mode) mode=${2:?--mode needs review or auto}; shift 2 ;;
     --id) id=${2:?--id needs a value}; shift 2 ;;
     --harness) harness_cli=${2:?--harness needs a value}; shift 2 ;;
+    --tmux-session) session_cli=${2:?--tmux-session needs a session name}; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -149,6 +219,17 @@ if [ -z "$id" ]; then
   fi
 fi
 [[ $id =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "task id must be lowercase letters, digits, and dashes: $id"
+
+# Resolve the tmux session before anything is leased or written, so a refusal (an
+# unknown target, or an ambiguous server) costs no worktree and leaves no record.
+target_session=''
+target_session_source=''
+session_target=${session_cli:-${KINGPIN_TMUX_SESSION:-}}
+session_source=''
+if [ -n "$session_target" ]; then
+  if [ -n "$session_cli" ]; then session_source='--tmux-session'; else session_source='KINGPIN_TMUX_SESSION'; fi
+fi
+resolve_tmux_session "$session_target" "$session_source"
 
 task_dir=$KP_HOME/tasks/$id
 mkdir -p "$KP_HOME/tasks"
@@ -284,8 +365,6 @@ printf '%s\n' "$prompt" > "$task_dir/prompt.txt"
 # sentence) and kp_harness_launch_script records what it injected into the worktree.
 : > "$task_dir/status"
 
-target_session=$(resolve_tmux_session)
-
 # kingpin-wait does not report "exited" for a task with a fresh marker: task.env
 # exists before the window does. Removed once the window ID is recorded.
 : > "$task_dir/launching"
@@ -401,4 +480,4 @@ kp_window_record_id "$task_dir" "$window_id" \
 rm -f "$task_dir/launching"
 launched=1
 
-echo "OK: spawned $id ($harness) in $worktree on $branch (tmux $target_session:$id, mode $mode)"
+echo "OK: spawned $id ($harness) in $worktree on $branch (tmux $target_session:$id, session $target_session_source, mode $mode)"

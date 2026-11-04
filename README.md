@@ -31,7 +31,7 @@ Ensure the following tools are installed on your host:
 A Pi worker needs a model login done by hand: run `pi`, then `/login`, then `/model`. Kingpin does not provision credentials; it passes `PI_PROVIDER` and `PI_MODEL` from the project env only when they are set.
 
 Optional:
-- `lavish-axi` (for per-task review dossiers and their interactive actions)
+- **`lavish-axi` (HIGHLY RECOMMENDED):** per-task review dossiers and their interactive actions. Kingpin hands every task back as a visual dossier, and this is what renders it.
 - `shellcheck` (contributors only, for `./tests/lint.sh`; `pip install shellcheck-py==0.11.0.1` into a venv, which is the version CI pins, or your package manager at shellcheck 0.11.0)
 
 ## Quick Start (Two Commands)
@@ -113,8 +113,8 @@ Only one supervisor runs at a time. A second `kingpin watch` refuses to start an
 | `kingpin run` | Single command that spawns, monitors, and completes a task. [Details](docs/cli.md#kingpin-run) |
 | `kingpin watch` | The fleet's one supervisor: a continuous supervision and auto-landing loop. [Details](docs/cli.md#kingpin-watch) |
 | `kingpin afk` | Arms session-scoped auto-landing while you are away: a clean review verdict is landed through `kingpin land` and gains `approved: auto (afk)`, while findings run the fix pass and questions, refused cleanups and failures wait. Default TTL 8h, cleared by `kingpin lock release`. [Details](docs/cli.md#kingpin-afk) |
-| `kingpin spawn` | Starts a worker on a background tmux window and records its tmux window ID (`TMUX_WINDOW_ID` in `task.env`), so renaming a worker window or moving it to another session is safe; `task.env` files without it fall back to `TMUX_TARGET`. [Details](docs/cli.md#kingpin-spawn) |
-| `kingpin list` | Displays active fleet tasks and states in the terminal: a `STATE` column (`WAITING`, `SILENT`, `DEAD`, `Unseen: N`), plus a `Supervisor: running (pid <n>, since <HH:MM>)` or `Supervisor: none - run kingpin watch` line; `--all` (or `-a`) also shows finished (archived) tasks. A finished task's leftover dossier link is never listed as live. [Details](docs/cli.md#kingpin-list) |
+| `kingpin spawn` | Starts a worker on a background tmux window and records its tmux window ID (`TMUX_WINDOW_ID` in `task.env`), so renaming a worker window or moving it to another session is safe. With no tmux client it uses the target it was given, the attached session, or refuses when several sessions are unattached, instead of creating a `kingpin` session silently. [Details](docs/cli.md#kingpin-spawn) |
+| `kingpin list` | Displays active fleet tasks and states in the terminal: a `STATE` column (`WAITING`, `SILENT`, `DEAD`, `Unseen: N`) and a `SESSION` column naming the tmux session each worker's window lives in, plus a `Supervisor: running (pid <n>, since <HH:MM>)` or `Supervisor: none - run kingpin watch` line; `--all` (or `-a`) also shows finished (archived) tasks. A finished task's leftover dossier link is never listed as live. [Details](docs/cli.md#kingpin-list) |
 | `kingpin send` | Types the text literally into a worker window, then presses Enter. [Details](docs/cli.md#kingpin-send) |
 | `kingpin peek` | Read-only view of a worker: prints the last 20 non-empty lines of its tmux pane (`--lines N` changes the count), scrollback included. [Details](docs/cli.md#kingpin-peek) |
 | `kingpin sync` | Fast-forwards the main checkout from its upstream branch with `git pull --ff-only`, so the orchestrator never runs raw git against project files. A tracked change blocks it; an untracked file, such as a `.lavish/` handover page, does not, unless the incoming tree would overwrite it, which is refused with every path named and nothing changed. [Details](docs/cli.md#kingpin-sync) |

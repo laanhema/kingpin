@@ -3,8 +3,8 @@
 #
 # Usage:
 #   kingpin init [name] [path] [--harness <name>] [--setup "<cmd>"]
-#   kingpin spawn <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto] [--id <task-id>]
-#   kingpin run <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto] [--id <task-id>]
+#   kingpin spawn <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto] [--id <task-id>] [--tmux-session <name>]
+#   kingpin run <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto] [--id <task-id>] [--tmux-session <name>]
 #   kingpin watch [--once] [--interval <seconds>]
 #   kingpin land <task-id>        (alias: kingpin approve <task-id>)
 #   kingpin done <task-id> [--force]
@@ -136,6 +136,7 @@ case "$cmd" in
         -h|--help)
           echo "usage: kingpin list [--all|-a]"
           echo "  Lists live fleet tasks; --all (or -a) also shows finished (archived) tasks."
+          echo "  The SESSION column names the tmux session each worker's window lives in."
           echo "  Always prints a 'Supervisor: running (pid N, since HH:MM)' line, or"
           echo "  'Supervisor: none - run kingpin watch' when no fleet supervisor runs,"
           echo "  and 'AFK: on until HH:MM (pid N)' while AFK auto-landing is armed."
@@ -148,10 +149,11 @@ case "$cmd" in
     print_task_row() {
       local d=$1 suffix=${2:-}
       local tid env_file proj harness mode status_file st listen_info lpid url
-      local state last lines seen dead window_alive
+      local state last lines seen dead window_alive tmux_target session
       tid=$(basename "$d")
       env_file="$d/task.env"
       proj="-" harness="claude" mode="review"
+      tmux_target=''
       if [ -f "$env_file" ]; then
         proj=$(kp_env_get "$env_file" PROJECT)
         [ -n "$proj" ] || proj="-"
@@ -159,23 +161,37 @@ case "$cmd" in
         [ -n "$harness" ] || harness="claude"
         mode=$(kp_env_get "$env_file" MODE)
         [ -n "$mode" ] || mode="review"
+        tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
       fi
+      # The task's own window, resolved once by name first and by id second (lib/tmux.sh).
+      # A stale recorded id that now names a stranger's window is not this task's, so a
+      # fleet whose tmux server died reads as dead instead of healthy (issue #149).
+      dead=0 window_alive=0
+      if [ -z "$suffix" ] && kp_window_find "$d" >/dev/null 2>&1; then
+        window_alive=1
+      fi
+      # The session the worker's window is in, read from the live window so a move to
+      # another session is reported where it really is (issue #152). A window that is
+      # gone leaves the recorded target as the only answer; an archived row never had a
+      # live window to ask.
+      session='-'
+      if [ "$window_alive" -eq 1 ]; then
+        session=$(tmux display-message -p -t "$KP_WINDOW_ID" '#S' 2>/dev/null || true)
+      fi
+      if [ -z "$session" ] && [ -n "$tmux_target" ]; then
+        session=${tmux_target%%:*}
+      fi
+      [ -n "$session" ] || session='-'
       status_file="$d/status"
       st="(pending)"
       state="-"
       if [ -f "$status_file" ] && [ -s "$status_file" ]; then
         st=$(kp_status_newest "$status_file")
         last=$(kp_status_last "$status_file")
-        # The window is resolved by name first (lib/tmux.sh), so a fleet whose tmux
-        # server died reads as dead instead of healthy: DEAD is a task whose window is
-        # gone, or one whose recorded harness is no longer in the window that carries
-        # its name. WAITING and SILENT still describe a pane that is really there.
-        # Nothing here trusts a raw recorded id, which after a restart may name another
-        # task's window (issue #149).
-        dead=0 window_alive=0
-        if kp_window_find "$d" >/dev/null 2>&1; then
-          window_alive=1
-        fi
+        # DEAD is a live task whose window is gone, or whose recorded harness is no
+        # longer in the window that carries its name. WAITING and SILENT still describe
+        # a pane that is really there. Nothing here trusts a raw recorded id, which after
+        # a restart may name another task's window (issue #149).
         if [ -n "$suffix" ]; then
           # An archived row is finished: its window was killed by `kingpin done`, and a
           # window check on a record that no longer runs would only say "DEAD" for good.
@@ -213,7 +229,7 @@ case "$cmd" in
           fi
         fi
       fi
-      printf "%-22s %-10s %-8s %-12s %-18s %s%s\n" "$tid" "$proj" "$harness" "$mode" "$state" "$st" "$suffix"
+      printf "%-22s %-10s %-8s %-12s %-10s %-18s %s%s\n" "$tid" "$proj" "$harness" "$mode" "$session" "$state" "$st" "$suffix"
       if [ -z "$suffix" ] && [ -f "$d/report.html" ]; then
         listen_info=""
         # The URL the listener recorded when it opened the page (issue #146): handing it
@@ -253,8 +269,8 @@ case "$cmd" in
     if [ ${#live_dirs[@]} -eq 0 ] && [ ${#archived_dirs[@]} -eq 0 ]; then
       echo "No tasks in fleet."
     else
-      printf "%-22s %-10s %-8s %-12s %-18s %s\n" "TASK ID" "PROJECT" "HARNESS" "MODE" "STATE" "LAST STATUS"
-      printf "%-22s %-10s %-8s %-12s %-18s %s\n" "-------" "-------" "-------" "----" "-----" "-----------"
+      printf "%-22s %-10s %-8s %-12s %-10s %-18s %s\n" "TASK ID" "PROJECT" "HARNESS" "MODE" "SESSION" "STATE" "LAST STATUS"
+      printf "%-22s %-10s %-8s %-12s %-10s %-18s %s\n" "-------" "-------" "-------" "----" "-------" "-----" "-----------"
       for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
         suffix=""
         [ -f "$d/done_cleaned" ] && suffix=" (finished)"
