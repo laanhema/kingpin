@@ -2,7 +2,7 @@
 # Checks both directions of the CLI reference:
 #   scripts -> docs  every flag the commands parse and every KINGPIN_* variable the scripts
 #                    read appears in README.md or docs/*.md (issue #82)
-#   docs -> reference  every `--` flag in an inline code span and every KINGPIN_* variable the
+#   docs -> reference  every `--` flag in a backtick span and every KINGPIN_* variable the
 #                    README or a docs page shows appears in docs/cli.md, the per-command
 #                    reference
 #
@@ -16,8 +16,8 @@
 # flags (`--repo`, `--base`, `--prose-only`) beside git argv literals such as `--verify`, which
 # a text scan cannot tell apart; those three are documented but not checked here.
 #
-# The docs -> reference pass reads inline code spans, so a host tool's own flag is exempt
-# through `host_tokens` below rather than being forced into the Kingpin reference.
+# The docs -> reference pass reads backtick spans and does not track fences, so a host tool's own
+# flag is exempt through `host_tokens` below rather than being forced into the Kingpin reference.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
