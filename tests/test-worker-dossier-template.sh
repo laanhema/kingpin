@@ -122,6 +122,8 @@ out=$(check_handover "$TPL" 2>&1) && pass "the handover template is complete, re
 
 echo "=== it is the default for worker dossiers ==="
 grep -q 'assets/lavish/worker-dossier/template.html' "$KP_ROOT/worker/preamble.md" && pass "the worker preamble points at the template" || fail "worker/preamble.md does not name assets/lavish/worker-dossier/template.html"
+grep -q 'assets/lavish/worker-dossier/template.html' "$KP_ROOT/worker/curator-preamble.md" && pass "the curator preamble points at the template" || fail "worker/curator-preamble.md does not name assets/lavish/worker-dossier/template.html"
+grep -q 'kingpin land curator' "$KP_ROOT/worker/curator-preamble.md" && pass "the curator preamble keeps the curator land command" || fail "worker/curator-preamble.md lost the 'kingpin land curator' command"
 grep -q 'assets/lavish/worker-dossier/template.html' "$KP_ROOT/AGENTS.md" && pass "AGENTS.md names the worker template" || fail "AGENTS.md does not name assets/lavish/worker-dossier/template.html"
 grep -q 'assets/lavish/worker-dossier/handover.html' "$KP_ROOT/AGENTS.md" && pass "AGENTS.md names the handover template" || fail "AGENTS.md does not name assets/lavish/worker-dossier/handover.html"
 grep -q 'start a handover artifact from the noir' -i "$KP_ROOT/AGENTS.md" && fail "AGENTS.md still starts handover pages from the noir template" || pass "AGENTS.md no longer starts handover pages from noir"
