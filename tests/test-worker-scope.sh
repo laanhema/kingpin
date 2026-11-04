@@ -410,6 +410,171 @@ missing_out=$(KINGPIN_PI=/nonexistent "$KP_BIN/kingpin-scope" doctor --harness p
 [ "$missing_rc" -eq 1 ] && echo "$missing_out" | grep -q "^pi: MISSING " \
   && pass "doctor: a missing binary exits 1 and says MISSING" || fail "doctor missing rc=$missing_rc: $missing_out"
 
+# 3c. The codex harness: its context files, its check, and the readiness probe
+echo "=== Test 3c: codex scope, check and doctor ==="
+mkdir -p "$T/codexhome/proj/wt/.codex/skills/fleet" "$T/codex-home/skills/user" "$T/codex-skills/one"
+printf '# proj\nneutral instructions\n' > "$T/codexhome/proj/wt/AGENTS.md"
+neutral_skill fleet > "$T/codexhome/proj/wt/.codex/skills/fleet/SKILL.md"
+neutral_skill user > "$T/codex-home/skills/user/SKILL.md"
+neutral_skill one > "$T/codex-skills/one/SKILL.md"
+printf '[projects."/somewhere"]\ntrust_level = "trusted"\n' > "$T/codex-home/config.toml"
+printf 'WORKER-PREAMBLE-TEXT\n' > "$T/codexhome/proj/wt/pre.md"
+cx_wt=$T/codexhome/proj/wt
+
+HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" files --harness codex --worktree "$cx_wt" > "$T/files-codex"
+grep -qxF "discovery	$cx_wt/AGENTS.md" "$T/files-codex" \
+  && pass "codex: AGENTS.md is a discovery source" || fail "codex: worktree AGENTS.md missing"
+grep -qxF "configured	$cx_wt/.codex/skills/fleet/SKILL.md" "$T/files-codex" \
+  && pass "codex: a worktree skill is a configured source" || fail "codex: .codex/skills SKILL.md missing"
+grep -qxF "global	$T/codex-home/skills/user/SKILL.md" "$T/files-codex" \
+  && pass "codex: a CODEX_HOME skill is a global source" || fail "codex: user-level SKILL.md missing"
+grep -qxF "global	$T/codex-home/config.toml" "$T/files-codex" \
+  && pass "codex: config.toml is a global source" || fail "codex: config.toml missing"
+
+HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" \
+  && pass "codex: a neutral worktree passes the check" || fail "codex: neutral worktree rejected"
+! grep -qxF "discovery	$cx_wt/pre.md" "$T/files-codex" \
+  && pass "codex: the preamble is not a discovered source (it arrives by -c model_instructions_file)" || fail "codex: the preamble was listed as a source"
+
+persona_text > "$cx_wt/AGENTS.md"
+cx_err=$(HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" 2>&1 || true)
+if HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" >/dev/null 2>&1; then
+  fail "codex: a contract in AGENTS.md passed the check"
+else
+  pass "codex: a contract in AGENTS.md fails the check"
+fi
+echo "$cx_err" | grep -q "$cx_wt/AGENTS.md" \
+  && pass "codex: the check names the leaking AGENTS.md" || fail "codex: check did not name AGENTS.md: $cx_err"
+printf '# proj\nneutral instructions\n' > "$cx_wt/AGENTS.md"
+
+# The user's config.toml is loaded into every session, so a contract there is a global
+# leak Kingpin cannot edit: it refuses and names the file.
+cp "$T/codex-home/config.toml" "$T/codex-config.bak"
+persona_text > "$T/codex-home/config.toml"
+cx_err=$(HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" 2>&1 || true)
+if HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" >/dev/null 2>&1; then
+  fail "codex: a contract in the global config.toml passed the check"
+else
+  pass "codex: a contract in the global config.toml fails the check"
+fi
+echo "$cx_err" | grep -q "$T/codex-home/config.toml" \
+  && pass "codex: the refusal names the global config.toml" || fail "codex: refusal does not name config.toml: $cx_err"
+cp "$T/codex-config.bak" "$T/codex-home/config.toml"
+
+# Codex loads AGENTS.override.md ahead of AGENTS.md, and the same pair plus its hook
+# program from its own config directory; a contract in any of them refuses the launch and
+# the refusal names the file (issue #106 review, H2).
+printf '# proj override\nneutral\n' > "$cx_wt/AGENTS.override.md"
+HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" files --harness codex --worktree "$cx_wt" > "$T/files-codex-h2"
+grep -qxF "discovery	$cx_wt/AGENTS.override.md" "$T/files-codex-h2" \
+  && pass "codex: AGENTS.override.md is a discovery source" || fail "codex: worktree AGENTS.override.md missing"
+persona_text > "$cx_wt/AGENTS.override.md"
+cx_err=$(HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" 2>&1 || true)
+if HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" >/dev/null 2>&1; then
+  fail "codex: a contract in AGENTS.override.md passed the check"
+else
+  pass "codex: a contract in AGENTS.override.md fails the check"
+fi
+echo "$cx_err" | grep -q "$cx_wt/AGENTS.override.md" \
+  && pass "codex: the check names the leaking AGENTS.override.md" || fail "codex: check did not name AGENTS.override.md: $cx_err"
+rm -f "$cx_wt/AGENTS.override.md"
+
+printf '# global override\nneutral\n' > "$T/codex-home/AGENTS.override.md"
+HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" files --harness codex --worktree "$cx_wt" > "$T/files-codex-h2"
+grep -qxF "global	$T/codex-home/AGENTS.override.md" "$T/files-codex-h2" \
+  && pass "codex: a CODEX_HOME AGENTS.override.md is a global source" || fail "codex: global AGENTS.override.md missing"
+persona_text > "$T/codex-home/AGENTS.override.md"
+cx_err=$(HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" 2>&1 || true)
+if HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" >/dev/null 2>&1; then
+  fail "codex: a contract in the global AGENTS.override.md passed the check"
+else
+  pass "codex: a contract in the global AGENTS.override.md fails the check"
+fi
+echo "$cx_err" | grep -q "$T/codex-home/AGENTS.override.md" \
+  && pass "codex: the refusal names the global AGENTS.override.md" || fail "codex: refusal does not name it: $cx_err"
+rm -f "$T/codex-home/AGENTS.override.md"
+
+printf '# global\nneutral\n' > "$T/codex-home/AGENTS.md"
+HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" files --harness codex --worktree "$cx_wt" > "$T/files-codex-h2"
+grep -qxF "global	$T/codex-home/AGENTS.md" "$T/files-codex-h2" \
+  && pass "codex: a CODEX_HOME AGENTS.md is a global source" || fail "codex: global AGENTS.md missing"
+persona_text > "$T/codex-home/AGENTS.md"
+cx_err=$(HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" 2>&1 || true)
+if HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" >/dev/null 2>&1; then
+  fail "codex: a contract in the global AGENTS.md passed the check"
+else
+  pass "codex: a contract in the global AGENTS.md fails the check"
+fi
+echo "$cx_err" | grep -q "$T/codex-home/AGENTS.md" \
+  && pass "codex: the refusal names the global AGENTS.md" || fail "codex: refusal does not name it: $cx_err"
+rm -f "$T/codex-home/AGENTS.md"
+
+printf '{"hooks":{"stop":[{"command":"true"}]}}\n' > "$T/codex-home/hooks.json"
+HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" files --harness codex --worktree "$cx_wt" > "$T/files-codex-h2"
+grep -qxF "global	$T/codex-home/hooks.json" "$T/files-codex-h2" \
+  && pass "codex: hooks.json is a global source" || fail "codex: global hooks.json missing"
+persona_text > "$T/codex-home/hooks.json"
+cx_err=$(HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" 2>&1 || true)
+if HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" check --harness codex --worktree "$cx_wt" --preamble "$cx_wt/pre.md" >/dev/null 2>&1; then
+  fail "codex: a contract in the global hooks.json passed the check"
+else
+  pass "codex: a contract in the global hooks.json fails the check"
+fi
+echo "$cx_err" | grep -q "$T/codex-home/hooks.json" \
+  && pass "codex: the refusal names the global hooks.json" || fail "codex: refusal does not name it: $cx_err"
+rm -f "$T/codex-home/hooks.json"
+
+# The readiness probe, driven by stubs: no codex binary is needed and no network is used.
+cat > "$T/codex-ready" << 'CXREADY'
+#!/usr/bin/env bash
+case "${1:-}" in
+  login) echo "Logged in as worker@example.com"; exit 0 ;;
+esac
+exit 1
+CXREADY
+cat > "$T/codex-notready" << 'CXNOTREADY'
+#!/usr/bin/env bash
+case "${1:-}" in
+  login) echo "Not logged in"; exit 1 ;;
+esac
+exit 1
+CXNOTREADY
+chmod +x "$T/codex-ready" "$T/codex-notready"
+
+cxr_rc=0
+cxr_out=$(HOME=$T/codexhome CODEX_HOME=$T/codex-home KINGPIN_CODEX=$T/codex-ready KINGPIN_SKILLS_DIR=$T/codex-skills \
+  "$KP_BIN/kingpin-scope" doctor --harness codex --worktree "$cx_wt" 2>&1) || cxr_rc=$?
+[ "$cxr_rc" -eq 0 ] && pass "codex doctor: a logged-in host exits 0" || fail "codex doctor ready rc=$cxr_rc: $cxr_out"
+echo "$cxr_out" | grep -qxF "codex: $T/codex-ready" && pass "codex doctor: prints the binary" || fail "codex doctor binary line: $cxr_out"
+echo "$cxr_out" | grep -qxF "credentials: ready (codex login status: Logged in as worker@example.com)" \
+  && pass "codex doctor: prints the ready credentials verbatim" || fail "codex doctor credentials line: $cxr_out"
+echo "$cxr_out" | grep -qxF "config: $T/codex-home/config.toml (1 trusted project entries)" \
+  && pass "codex doctor: counts the trusted project entries" || fail "codex doctor config line: $cxr_out"
+echo "$cxr_out" | grep -qxF "skills: $T/codex-skills (1 skills)" \
+  && pass "codex doctor: prints the skills directory and count" || fail "codex doctor skills line: $cxr_out"
+echo "$cxr_out" | grep -qxF "discovery	$cx_wt/AGENTS.md" && pass "codex doctor: prints the source list too" || fail "codex doctor source list: $cxr_out"
+
+cxn_rc=0
+cxn_out=$(HOME=$T/codexhome CODEX_HOME=$T/codex-home KINGPIN_CODEX=$T/codex-notready KINGPIN_SKILLS_DIR=$T/codex-skills \
+  "$KP_BIN/kingpin-scope" doctor --harness codex --worktree "$cx_wt" 2>&1) || cxn_rc=$?
+[ "$cxn_rc" -eq 0 ] && echo "$cxn_out" | grep -qxF "credentials: unverified (codex login status exited 1: Not logged in; a provider configured through env keys or a custom provider is not visible here, so this is not proof the worker will fail)" \
+  && pass "codex doctor: a logged-out host reads unverified and still exits 0" || fail "codex doctor notready rc=$cxn_rc: $cxn_out"
+
+cxm_rc=0
+cxm_out=$(HOME=$T/codexhome CODEX_HOME=$T/codex-home KINGPIN_CODEX=/nonexistent \
+  "$KP_BIN/kingpin-scope" doctor --harness codex --worktree "$cx_wt" 2>&1) || cxm_rc=$?
+[ "$cxm_rc" -eq 1 ] && echo "$cxm_out" | grep -q "^codex: MISSING " \
+  && pass "codex doctor: a missing binary exits 1 and says MISSING" || fail "codex doctor missing rc=$cxm_rc: $cxm_out"
+
+# The codex probe reads the binary's own login status and config store, so a provider or
+# model flag would look like it tuned the check while doing nothing (issue #106 review, L2).
+for flag in --provider --model; do
+  cxflag_rc=0
+  cxflag_err=$(HOME=$T/codexhome CODEX_HOME=$T/codex-home "$KP_BIN/kingpin-scope" doctor --harness codex --worktree "$cx_wt" "$flag" openrouter 2>&1 >/dev/null) || cxflag_rc=$?
+  [ "$cxflag_rc" -eq 2 ] && echo "$cxflag_err" | grep -qF -- "--provider and --model belong to --harness pi" \
+    && pass "codex doctor: $flag is refused instead of silently ignored" || fail "codex doctor $flag rc=$cxflag_rc: $cxflag_err"
+done
+
 # 4. Spawn writes the artifact each harness really reads, and refuses a leaky project
 echo "=== Test 4: spawn artifacts and refusal ==="
 "$KP_BIN/kingpin-spawn" demo-auto --issue 401 --id scope-oc --harness opencode >/dev/null

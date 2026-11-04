@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Start one worker for one task: lease a worktree, open a tmux window there,
-# and launch the chosen harness (claude, agy, opencode, pi) with the worker
-# preamble and the turn-end Stop hook.
+# and launch the chosen harness (claude, agy, opencode, pi, codex) with the
+# worker preamble and the turn-end Stop hook.
 #
-# Usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi] [--tmux-session <name>]
+# Usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi|codex] [--tmux-session <name>]
 #   --issue    an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
 #   --text     a free-text request: the worker runs /create-issue first, then the same
 #   --mode     review (default) stops at a ready branch for the Lavish review; auto merges when green
 #   --id       task id; defaults to kp-<n>-<slug> (slug from the issue title) or kp-<slug>
 #              (slug from the request). The id is also the branch (kingpin/<id>) and the
 #              tmux window name. An explicit --id skips slug generation.
-#   --harness  worker harness: claude, agy, opencode, or pi (overrides everything below)
+#   --harness  worker harness: claude, agy, opencode, pi, or codex (overrides everything below)
 #   --tmux-session  tmux session for the worker window on the fleet's own server
 #
 # Workers run on the fleet's own tmux server (issue #142), socket `kingpin` unless
@@ -26,12 +26,13 @@
 # orchestrator session > DEFAULT_HARNESS in $KINGPIN_HOME/config.env > claude.
 #
 # Project config: $KINGPIN_HOME/projects/<project>.env sets PROJECT_PATH (a git
-# clone), optionally HARNESS (claude|agy|opencode|pi), optionally SETUP_CMD
+# clone), optionally HARNESS (claude|agy|opencode|pi|codex), optionally SETUP_CMD
 # (run in the worktree before launch), and for the pi harness optionally
 # PI_PROVIDER and PI_MODEL (passed to pi only when set, so a vendor `/login`
 # user keeps Pi's own default model).
 # KINGPIN_HOME defaults to ~/.kingpin.
-# Command overrides: KINGPIN_CLAUDE, KINGPIN_AGY, KINGPIN_OPENCODE, KINGPIN_PI, KINGPIN_GH.
+# Command overrides: KINGPIN_CLAUDE, KINGPIN_AGY, KINGPIN_OPENCODE, KINGPIN_PI,
+# KINGPIN_CODEX, KINGPIN_GH.
 set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -127,13 +128,13 @@ resolve_tmux_session() {
 
 usage() {
   cat <<'HELP'
-usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi] [--tmux-session <name>]
+usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi|codex] [--tmux-session <name>]
 
   --issue    an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
   --text     a free-text request: the worker runs /create-issue first, then the same
   --mode     review (default) stops at a ready branch for the review; auto merges when green
   --id       task id; defaults to kp-<n>-<slug> (issue title) or kp-<slug> (request)
-  --harness  worker harness: claude, agy, opencode, or pi (overrides the project and the lock)
+  --harness  worker harness: claude, agy, opencode, pi, or codex (overrides the project and the lock)
   --tmux-session  tmux session for the worker window on the fleet's own server
              (also read from KINGPIN_TMUX_SESSION); it must already exist. Without
              either, the one attached session or the only session on the fleet server
@@ -145,7 +146,7 @@ HELP
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac
-[ $# -ge 1 ] || die "usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi] [--tmux-session <name>]"
+[ $# -ge 1 ] || die "usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi|codex] [--tmux-session <name>]"
 project=$1; shift
 issue='' text='' mode=review id='' harness_cli='' session_cli=''
 while [ $# -gt 0 ]; do
@@ -184,11 +185,11 @@ DEFAULT_HARNESS=''
 lock_harness=$("$KP_ROOT/bin/kingpin-lock" harness 2>/dev/null || true)
 harness=${harness_cli:-${HARNESS:-${lock_harness:-${DEFAULT_HARNESS:-claude}}}}
 case $harness in
-  claude|agy|opencode|pi) ;;
-  *) die "unsupported harness: $harness (must be claude, agy, opencode, or pi)" ;;
+  claude|agy|opencode|pi|codex) ;;
+  *) die "unsupported harness: $harness (must be claude, agy, opencode, pi, or codex)" ;;
 esac
 
-harness_cmd=$(kp_harness_command "$harness") || die "unsupported harness: $harness (must be claude, agy, opencode, or pi)"
+harness_cmd=$(kp_harness_command "$harness") || die "unsupported harness: $harness (must be claude, agy, opencode, pi, or codex)"
 harness_bin=${harness_cmd%% *}
 
 for tool in git tmux treehouse node "$harness_bin"; do
@@ -243,6 +244,18 @@ worktree=''
 launched=0
 cleanup() {
   [ "$launched" = 1 ] && return
+  # A codex spawn that seeded a folder-trust entry undoes exactly what it wrote before
+  # the task folder goes away (issue #106 review, M1): a refusal the spawn itself
+  # produces would otherwise leave the entry in the user's config for every failed
+  # attempt. The marker names whether the spawn created the whole section or only added
+  # the trust_level line, so a section the user already had is never deleted (M2).
+  if [ -n "$worktree" ] && [ -f "$task_dir/codex-trust" ]; then
+    case $(cat "$task_dir/codex-trust") in
+      section) node "$KP_ROOT/lib/codex-trust.mjs" --remove "$worktree" >/dev/null 2>&1 || true ;;
+      key) node "$KP_ROOT/lib/codex-trust.mjs" --remove-key "$worktree" >/dev/null 2>&1 || true ;;
+      replaced) node "$KP_ROOT/lib/codex-trust.mjs" --restore-key "$task_dir/codex-trust-prev" "$worktree" >/dev/null 2>&1 || true ;;
+    esac
+  fi
   if [ -n "$worktree" ]; then
     # A failed spawn must not leave its harness files or ignore pointer for the next
     # task that leases the slot (issue #77).
@@ -333,10 +346,14 @@ if [ -n "$issue" ]; then
     review) prompt=$(kp_skill_command "$harness" issue-flow "$issue") ;;
     auto) prompt=$(kp_skill_command "$harness" "do" "$issue") ;;
   esac
-  # Pi expands a skill only when the message starts with its command, so a pi job
-  # prompt is the bare `/skill:<name> <args>` line. The other harnesses keep the
+  # Pi expands a skill only when the message starts with its command, and Codex
+  # 0.166 has no slash command for a skill at all, so those two job prompts are the
+  # bare `/skill:<name> <args>` or `$<name> <args>` line. The other harnesses keep the
   # prose form they have always accepted (`Run /issue-flow 93.`).
-  [ "$harness" = pi ] || prompt="Run $prompt."
+  case $harness in
+    pi|codex) ;;
+    *) prompt="Run $prompt." ;;
+  esac
 else
   printf '%s\n' "$text" > "$task_dir/brief.md"
   case $mode in
@@ -344,21 +361,25 @@ else
     auto) next=$(kp_skill_command "$harness" "do") ;;
   esac
   first=$(kp_skill_command "$harness" create-issue)
-  if [ "$harness" = pi ]; then
-    # The bare command comes first so Pi expands it; the follow-up follows in a
-    # second paragraph, because dropping it would lose the brief entirely.
-    # shellcheck disable=SC2016 # the apostrophe is literal text, not shell quoting
-    prompt=$(printf "%s\n\nWhen the issue exists, run %s on it. The request is in %s (read it first; it is the user's own words)." \
-      "$first" "$next" "$task_dir/brief.md")
-  else
-    prompt="Run $first on the request in $task_dir/brief.md (read it first; it is the user's own words). When the issue exists, run $next on it."
-  fi
+  case $harness in
+    pi|codex)
+      # The bare command comes first so the harness expands it; the follow-up follows
+      # in a second paragraph, because dropping it would lose the brief entirely.
+      # shellcheck disable=SC2016 # the apostrophe is literal text, not shell quoting
+      prompt=$(printf "%s\n\nWhen the issue exists, run %s on it. The request is in %s (read it first; it is the user's own words)." \
+        "$first" "$next" "$task_dir/brief.md")
+      ;;
+    *)
+      prompt="Run $first on the request in $task_dir/brief.md (read it first; it is the user's own words). When the issue exists, run $next on it."
+      ;;
+  esac
 fi
 printf '%s\n' "$prompt" > "$task_dir/prompt.txt"
 
 # The preamble and the launch script are written by lib/launch.sh, below, once task.env
-# exists: kp_worker_preamble reads the harness from the record (the pi arm has one extra
-# sentence) and kp_harness_launch_script records what it injected into the worktree.
+# exists: kp_worker_preamble reads the harness from the record (the pi and codex arms
+# carry one extra sentence) and kp_harness_launch_script records what it injected into
+# the worktree.
 : > "$task_dir/status"
 
 kp_tmux "$fleet_socket" has-session -t "$target_session" 2>/dev/null \

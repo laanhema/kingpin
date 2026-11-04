@@ -61,7 +61,7 @@ Commands:
   lock      Check, acquire, or release the orchestrator session lock (records its harness)
   afk       Arm or disarm automatic landing while you are away (session-scoped)
   guard     Install or verify the orchestrator-only tool guard (a hook) and contract
-  scope     Name the instruction files a harness loads for a worker, check them, or report pi readiness
+  scope     Name the instruction files a harness loads for a worker, check them, or report the readiness of the harness it names (pi, codex)
   report    Generate or check the @pierre/diffs blocks and the prose of a review dossier
   curate    Aggregate critique logs from finished workers
 

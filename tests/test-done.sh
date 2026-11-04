@@ -746,16 +746,136 @@ grep -q "the last git fetch failed" "$KINGPIN_HOME/tasks/t23-stale/status" \
   && pass "t23: the refusal names the failed fetch" || fail "t23: the refusal hides the fetch failure: $(tail -n 1 "$KINGPIN_HOME/tasks/t23-stale/status")"
 [ ! -d "$KINGPIN_HOME/archive/t23-stale" ] && pass "t23: the unverifiable task stays in tasks/" || fail "t23: the unverifiable task was archived"
 
-# Test 24: a finished task's issue is closed after a verified merge, or named in
+# Test 24: kingpin done removes the Codex trusted-project entry the spawn seeded, and
+# leaves the rest of the user's config.toml alone (issue #106).
+echo "=== Test 24: the codex trust entry is removed at teardown ==="
+t24_cfg=$T/cfg-codex/config.toml
+printf '[tui]\nnotifications = true\n\n[projects."/somewhere/else"]\ntrust_level = "trusted"\n' > "$t24_cfg"
+cp "$t24_cfg" "$T/t24-before.toml"
+t24_make_task() { # <id> <harness>
+  local id=$1 h=$2 d wt
+  d="$KINGPIN_HOME/tasks/$id"; wt="$T/wt-$id"
+  mkdir -p "$d" "$wt"
+  git -C "$wt" init -q -b main
+  git -C "$wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  cat > "$d/task.env" << ENVEOF
+TASK_ID=$id
+PROJECT=demo-t24
+HARNESS=$h
+MODE=review
+PROJECT_PATH=$wt
+WORKTREE=$wt
+BRANCH=kingpin/$id
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
+TMUX_TARGET=kingpin:$id
+ENVEOF
+  echo "merged: pr=https://example.invalid/pull/1" > "$d/status"
+}
+t24_section() { # <worktree> -> 0 when its trusted section is in the config
+  awk -v hdr="[projects.\"$(realpath "$1")\"]" '
+    $0 == hdr { inside = 1; next }
+    /^\[/ { inside = 0 }
+    END { exit(inside ? 0 : 1) }
+  ' "$t24_cfg"
+}
+
+t24_make_task t24-codex codex
+CODEX_HOME=$T/cfg-codex node "$KP_ROOT/lib/codex-trust.mjs" --previous-out "$T/t24-prev" "$T/wt-t24-codex" >/dev/null \
+  || fail "t24: the fixture could not seed the trust entry"
+# The spawn records what it wrote; this fixture stands in for it (issue #106 review, M2).
+printf 'section\n' > "$KINGPIN_HOME/tasks/t24-codex/codex-trust"
+grep -qF "[projects.\"$(realpath "$T/wt-t24-codex")\"]" "$t24_cfg" \
+  && pass "t24: the fixture seeded a trusted-project entry" || fail "t24: no seeded entry to remove"
+"$KP_BIN/kingpin-done" t24-codex --force >/dev/null 2>&1 || fail "t24: cleanup of the codex task failed"
+[ -f "$KINGPIN_HOME/archive/t24-codex/done_cleaned" ] && pass "t24: the codex task was cleaned up" || fail "t24: the codex task was not archived"
+! t24_section "$T/wt-t24-codex" && pass "t24: the worktree's trusted-project entry is gone" || fail "t24: the trusted-project entry survived cleanup"
+grep -qxF '[tui]' "$t24_cfg" && grep -qxF 'notifications = true' "$t24_cfg" \
+  && pass "t24: the unrelated [tui] section survives" || fail "t24: the [tui] section was lost: $(cat "$t24_cfg")"
+grep -qxF '[projects."/somewhere/else"]' "$t24_cfg" && grep -qxF 'trust_level = "trusted"' "$t24_cfg" \
+  && pass "t24: the other project entry survives" || fail "t24: the other project entry was lost: $(cat "$t24_cfg")"
+
+# A task on another harness never touched the file, so the two lines above are the file.
+cmp -s "$T/t24-before.toml" "$t24_cfg" \
+  && pass "t24: cleanup leaves the config byte-identical to before the entry" || fail "t24: cleanup changed the rest of config.toml"
+cp "$t24_cfg" "$T/t24-other-before.toml"
+t24_make_task t24-claude claude
+"$KP_BIN/kingpin-done" t24-claude --force >/dev/null 2>&1 || fail "t24: cleanup of the claude task failed"
+cmp -s "$T/t24-other-before.toml" "$t24_cfg" \
+  && pass "t24: a non-codex cleanup leaves the Codex config untouched" || fail "t24: a non-codex cleanup rewrote config.toml"
+
+# Test 25: cleanup removes only what the spawn wrote (issue #106 review, M2). The user's
+# own section keeps every other key, a trust entry that predates the task survives, and a
+# trust_level value the spawn overwrote is put back.
+echo "=== Test 25: the codex trust removal is narrow ==="
+
+# (a) The section already existed with the user's own key: only the trust_level line is
+# removed, and the file goes back byte-identical.
+t25_wt=$T/wt-t25-key
+t25_make_section() { # <worktree> <extra line...>
+  local wt=$1 line
+  shift
+  printf '\n[projects."%s"]\n' "$(realpath "$wt")" >> "$t24_cfg"
+  for line in "$@"; do printf '%s\n' "$line" >> "$t24_cfg"; done
+}
+t25_trusted() { # <worktree> -> 0 when its section still carries the trusted line
+  awk -v hdr="[projects.\"$(realpath "$1")\"]" '
+    $0 == hdr { inside = 1; next }
+    /^\[/ { inside = 0 }
+    inside && $0 == "trust_level = \"trusted\"" { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' "$t24_cfg"
+}
+t24_make_task t25-key codex
+t25_make_section "$t25_wt" 'theme = "dark"'
+cp "$t24_cfg" "$T/t25-key-before.toml"
+CODEX_HOME=$T/cfg-codex node "$KP_ROOT/lib/codex-trust.mjs" --previous-out "$T/t25-key-prev" "$t25_wt" > "$T/t25-key.out" \
+  || fail "t25: the fixture could not seed into the existing section"
+grep -q "^trusted-key: " "$T/t25-key.out" && pass "t25: a seed into an existing section reports trusted-key" || fail "t25 seed output: $(cat "$T/t25-key.out")"
+[ ! -e "$T/t25-key-prev" ] && pass "t25: a seed with nothing to overwrite records no restore line" || fail "t25: a restore line was recorded for a key that was only added"
+printf 'key\n' > "$KINGPIN_HOME/tasks/t25-key/codex-trust"
+"$KP_BIN/kingpin-done" t25-key --force >/dev/null 2>&1 || fail "t25: cleanup of the key task failed"
+grep -qxF 'theme = "dark"' "$t24_cfg" && pass "t25: the user's own key in the section survives" || fail "t25: the user's key was lost: $(cat "$t24_cfg")"
+! t25_trusted "$t25_wt" && pass "t25: the trust_level line the spawn added is gone" || fail "t25: the trust_level line survived"
+cmp -s "$T/t25-key-before.toml" "$t24_cfg" \
+  && pass "t25: the section is byte-identical to before the seed" || fail "t25: the rest of the section changed: $(cat "$t24_cfg")"
+
+# (b) A trust entry that predates the task: the spawn records nothing, so cleanup leaves
+# the file alone.
+t25_pre=$T/wt-t25-pre
+t24_make_task t25-pre codex
+t25_make_section "$t25_pre" 'trust_level = "trusted"'
+cp "$t24_cfg" "$T/t25-pre-before.toml"
+CODEX_HOME=$T/cfg-codex node "$KP_ROOT/lib/codex-trust.mjs" --previous-out "$T/t25-pre-prev" "$t25_pre" > "$T/t25-pre.out" \
+  || fail "t25: the already-trusted fixture failed"
+grep -q "^already-trusted: " "$T/t25-pre.out" && pass "t25: a pre-existing trust entry reports already-trusted" || fail "t25 output: $(cat "$T/t25-pre.out")"
+"$KP_BIN/kingpin-done" t25-pre --force >/dev/null 2>&1 || fail "t25: cleanup of the pre-trusted task failed"
+cmp -s "$T/t25-pre-before.toml" "$t24_cfg" \
+  && pass "t25: a trust entry that predates the task survives cleanup" || fail "t25: cleanup removed a pre-existing trust entry"
+
+# (c) A trust_level value the spawn overwrote (the user had "untrusted"): cleanup puts the
+# user's own line back instead of deleting it.
+t25_rep=$T/wt-t25-rep
+t24_make_task t25-rep codex
+t25_make_section "$t25_rep" 'trust_level = "untrusted"'
+cp "$t24_cfg" "$T/t25-rep-before.toml"
+CODEX_HOME=$T/cfg-codex node "$KP_ROOT/lib/codex-trust.mjs" --previous-out "$KINGPIN_HOME/tasks/t25-rep/codex-trust-prev" "$t25_rep" > "$T/t25-rep.out" \
+  || fail "t25: the replaced-value fixture failed"
+grep -q "^trusted-key: " "$T/t25-rep.out" && pass "t25: overwriting a trust value reports trusted-key" || fail "t25 output: $(cat "$T/t25-rep.out")"
+printf 'replaced\n' > "$KINGPIN_HOME/tasks/t25-rep/codex-trust"
+"$KP_BIN/kingpin-done" t25-rep --force >/dev/null 2>&1 || fail "t25: cleanup of the replaced-value task failed"
+cmp -s "$T/t25-rep-before.toml" "$t24_cfg" \
+  && pass "t25: the overwritten trust_level value is restored byte-identically" || fail "t25: the overwritten value was not restored: $(cat "$t24_cfg")"
+
+# Test 26: a finished task's issue is closed after a verified merge, or named in
 # the OK: line (issue #170). merged: is the line the supervisor acts on, so a
 # worker that left the issue open has no later step to close it.
-echo "=== Test 24: kingpin done reads the issue a finished task names ==="
-t24_remote="$T/t24-remote.git"
-t24_repo="$T/t24-repo"
-git init --bare -q -b main "$t24_remote"
-git clone -q "$t24_remote" "$t24_repo" 2>/dev/null
+echo "=== Test 26: kingpin done reads the issue a finished task names ==="
+t26_remote="$T/t26-remote.git"
+t26_repo="$T/t26-repo"
+git init --bare -q -b main "$t26_remote"
+git clone -q "$t26_remote" "$t26_repo" 2>/dev/null
 (
-  cd "$t24_repo" || exit 1
+  cd "$t26_repo" || exit 1
   git checkout -q -b main
   git config user.name Tester
   git config user.email test@example.com
@@ -765,11 +885,11 @@ git clone -q "$t24_remote" "$t24_repo" 2>/dev/null
   git push -q -u origin main
   git remote set-head origin main
 )
-t24_make_task() { # <id> <issue|-> <merged yes|no>
+t26_make_task() { # <id> <issue|-> <merged yes|no>
   local id=$1 issue=$2 merged=$3 wt issue_line
-  wt="$T/t24-wt-$id"
-  git -C "$t24_repo" fetch -q origin
-  git -C "$t24_repo" worktree add -q "$wt" -b "feature/$id" main
+  wt="$T/t26-wt-$id"
+  git -C "$t26_repo" fetch -q origin
+  git -C "$t26_repo" worktree add -q "$wt" -b "feature/$id" main
   git -C "$wt" config user.name Tester
   git -C "$wt" config user.email test@example.com
   echo "work $id" > "$wt/$id.txt"
@@ -777,8 +897,8 @@ t24_make_task() { # <id> <issue|-> <merged yes|no>
   git -C "$wt" commit -qm "work $id"
   git -C "$wt" push -q origin "feature/$id"
   if [ "$merged" = yes ]; then
-    git -C "$t24_repo" merge -q --ff-only "feature/$id"
-    git -C "$t24_repo" push -q origin main
+    git -C "$t26_repo" merge -q --ff-only "feature/$id"
+    git -C "$t26_repo" push -q origin main
   fi
   # "-" writes a record with no ISSUE line at all, the shape a curator record and a
   # record from before issue #170 have.
@@ -787,8 +907,8 @@ t24_make_task() { # <id> <issue|-> <merged yes|no>
   mkdir -p "$KINGPIN_HOME/tasks/$id"
   cat > "$KINGPIN_HOME/tasks/$id/task.env" << EOF24
 TASK_ID=$id
-PROJECT=demo-t24
-PROJECT_PATH=$t24_repo
+PROJECT=demo-t26
+PROJECT_PATH=$t26_repo
 WORKTREE=$wt
 BRANCH=feature/$id
 $issue_line
@@ -799,84 +919,84 @@ EOF24
 }
 
 # (a) merged, still open, and the close fails: the OK: line says so
-t24_make_task t24-open 164 yes
+t26_make_task t26-open 164 yes
 : > "$GH_LOG"
 printf 'OPEN\n' > "$GH_STATE"
 touch "$GH_CLOSE_FAILS"
-PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t24-open >"$T/t24-open.out" 2>&1 \
-  && pass "t24: cleanup succeeds when the issue close fails" || fail "t24: cleanup failed: $(cat "$T/t24-open.out")"
-grep -q "issue #164 is still open" "$T/t24-open.out" \
-  && pass "t24: the OK: line reports the issue left open" || fail "t24: the OK: line hides the open issue: $(cat "$T/t24-open.out")"
-[ -f "$KINGPIN_HOME/archive/t24-open/done_cleaned" ] && pass "t24: the task archived despite the open issue" || fail "t24: the task was not archived"
-grep -q "^issue close 164$" "$GH_LOG" && pass "t24: done tried to close the issue" || fail "t24: done never tried to close the issue: $(cat "$GH_LOG")"
+PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-open >"$T/t26-open.out" 2>&1 \
+  && pass "t26: cleanup succeeds when the issue close fails" || fail "t26: cleanup failed: $(cat "$T/t26-open.out")"
+grep -q "issue #164 is still open" "$T/t26-open.out" \
+  && pass "t26: the OK: line reports the issue left open" || fail "t26: the OK: line hides the open issue: $(cat "$T/t26-open.out")"
+[ -f "$KINGPIN_HOME/archive/t26-open/done_cleaned" ] && pass "t26: the task archived despite the open issue" || fail "t26: the task was not archived"
+grep -q "^issue close 164$" "$GH_LOG" && pass "t26: done tried to close the issue" || fail "t26: done never tried to close the issue: $(cat "$GH_LOG")"
 
 # (b) merged and still open: done closes it and says so
-t24_make_task t24-closed 164 yes
+t26_make_task t26-closed 164 yes
 : > "$GH_LOG"
 printf 'OPEN\n' > "$GH_STATE"
 rm -f "$GH_CLOSE_FAILS"
-PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t24-closed >"$T/t24-closed.out" 2>&1 \
-  && pass "t24: cleanup succeeds after closing the issue" || fail "t24: cleanup failed: $(cat "$T/t24-closed.out")"
-grep -q "closed issue #164 after the merge" "$T/t24-closed.out" \
-  && pass "t24: the OK: line says the issue was closed" || fail "t24: the OK: line does not name the close: $(cat "$T/t24-closed.out")"
-grep -q "^issue close 164$" "$GH_LOG" && pass "t24: the issue was closed through gh" || fail "t24: gh saw no close: $(cat "$GH_LOG")"
+PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-closed >"$T/t26-closed.out" 2>&1 \
+  && pass "t26: cleanup succeeds after closing the issue" || fail "t26: cleanup failed: $(cat "$T/t26-closed.out")"
+grep -q "closed issue #164 after the merge" "$T/t26-closed.out" \
+  && pass "t26: the OK: line says the issue was closed" || fail "t26: the OK: line does not name the close: $(cat "$T/t26-closed.out")"
+grep -q "^issue close 164$" "$GH_LOG" && pass "t26: the issue was closed through gh" || fail "t26: gh saw no close: $(cat "$GH_LOG")"
 
 # (c) an issue already closed needs no close call
-t24_make_task t24-already 164 yes
+t26_make_task t26-already 164 yes
 : > "$GH_LOG"
 printf 'CLOSED\n' > "$GH_STATE"
-PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t24-already >"$T/t24-already.out" 2>&1 \
-  && pass "t24: cleanup succeeds when the issue is already closed" || fail "t24: cleanup failed: $(cat "$T/t24-already.out")"
-grep -q "issue #164 is closed" "$T/t24-already.out" \
-  && pass "t24: the OK: line says the issue is closed" || fail "t24: the OK: line does not say closed: $(cat "$T/t24-already.out")"
-! grep -q "^issue close" "$GH_LOG" && pass "t24: a closed issue is not closed again" || fail "t24: done closed an already closed issue: $(cat "$GH_LOG")"
+PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-already >"$T/t26-already.out" 2>&1 \
+  && pass "t26: cleanup succeeds when the issue is already closed" || fail "t26: cleanup failed: $(cat "$T/t26-already.out")"
+grep -q "issue #164 is closed" "$T/t26-already.out" \
+  && pass "t26: the OK: line says the issue is closed" || fail "t26: the OK: line does not say closed: $(cat "$T/t26-already.out")"
+! grep -q "^issue close" "$GH_LOG" && pass "t26: a closed issue is not closed again" || fail "t26: done closed an already closed issue: $(cat "$GH_LOG")"
 
 # (d) no verified merge: never close, and say the issue was not checked
-t24_make_task t24-forced 164 no
+t26_make_task t26-forced 164 no
 : > "$GH_LOG"
 printf 'OPEN\n' > "$GH_STATE"
-PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t24-forced --force >"$T/t24-forced.out" 2>&1 \
-  && pass "t24: --force cleanup succeeds on an unmerged task" || fail "t24: --force cleanup failed: $(cat "$T/t24-forced.out")"
-grep -q "issue #164 not checked (the merge was not verified)" "$T/t24-forced.out" \
-  && pass "t24: an unverified merge reports the issue as unchecked" || fail "t24: the unverified merge says nothing: $(cat "$T/t24-forced.out")"
-! grep -q "^issue close" "$GH_LOG" && pass "t24: an unverified merge never closes the issue" || fail "t24: an unverified merge closed the issue: $(cat "$GH_LOG")"
-! grep -q "^issue view" "$GH_LOG" && pass "t24: an unverified merge asks gh nothing" || fail "t24: an unverified merge called gh: $(cat "$GH_LOG")"
+PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-forced --force >"$T/t26-forced.out" 2>&1 \
+  && pass "t26: --force cleanup succeeds on an unmerged task" || fail "t26: --force cleanup failed: $(cat "$T/t26-forced.out")"
+grep -q "issue #164 not checked (the merge was not verified)" "$T/t26-forced.out" \
+  && pass "t26: an unverified merge reports the issue as unchecked" || fail "t26: the unverified merge says nothing: $(cat "$T/t26-forced.out")"
+! grep -q "^issue close" "$GH_LOG" && pass "t26: an unverified merge never closes the issue" || fail "t26: an unverified merge closed the issue: $(cat "$GH_LOG")"
+! grep -q "^issue view" "$GH_LOG" && pass "t26: an unverified merge asks gh nothing" || fail "t26: an unverified merge called gh: $(cat "$GH_LOG")"
 
 # (e) a record that names no issue never picks up an ISSUE from the caller's
 # environment: only the record is read, so a stray export cannot become the target
-t24_make_task t24-norecord - yes
+t26_make_task t26-norecord - yes
 : > "$GH_LOG"
 printf 'OPEN\n' > "$GH_STATE"
-ISSUE=999 PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t24-norecord >"$T/t24-norecord.out" 2>&1 \
-  && pass "t24: cleanup succeeds for a record with no issue" || fail "t24: cleanup failed: $(cat "$T/t24-norecord.out")"
-! grep -q "999" "$GH_LOG" && pass "t24: an inherited ISSUE never reaches gh" || fail "t24: gh was called for the inherited ISSUE: $(cat "$GH_LOG")"
-[ -s "$GH_LOG" ] && fail "t24: a record with no issue still called gh: $(cat "$GH_LOG")" || pass "t24: a record with no issue asks gh nothing"
-! grep -q "issue #" "$T/t24-norecord.out" && pass "t24: a record with no issue gets no issue readout" || fail "t24: a record with no issue got a readout: $(cat "$T/t24-norecord.out")"
+ISSUE=999 PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-norecord >"$T/t26-norecord.out" 2>&1 \
+  && pass "t26: cleanup succeeds for a record with no issue" || fail "t26: cleanup failed: $(cat "$T/t26-norecord.out")"
+! grep -q "999" "$GH_LOG" && pass "t26: an inherited ISSUE never reaches gh" || fail "t26: gh was called for the inherited ISSUE: $(cat "$GH_LOG")"
+[ -s "$GH_LOG" ] && fail "t26: a record with no issue still called gh: $(cat "$GH_LOG")" || pass "t26: a record with no issue asks gh nothing"
+! grep -q "issue #" "$T/t26-norecord.out" && pass "t26: a record with no issue gets no issue readout" || fail "t26: a record with no issue got a readout: $(cat "$T/t26-norecord.out")"
 
 # (f) gh is not installed: the readout says so and the cleanup still succeeds
-t24_make_task t24-nogh 164 yes
+t26_make_task t26-nogh 164 yes
 : > "$GH_LOG"
-KINGPIN_GH=gh-does-not-exist PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t24-nogh >"$T/t24-nogh.out" 2>&1 \
-  && pass "t24: cleanup succeeds without gh" || fail "t24: cleanup failed without gh: $(cat "$T/t24-nogh.out")"
-grep -q "issue #164 not checked (gh-does-not-exist is not available)" "$T/t24-nogh.out" \
-  && pass "t24: a missing gh is named in the OK: line" || fail "t24: a missing gh is not named: $(cat "$T/t24-nogh.out")"
-[ -s "$GH_LOG" ] && fail "t24: a missing gh still reached the real one: $(cat "$GH_LOG")" || pass "t24: a missing gh is never called"
+KINGPIN_GH=gh-does-not-exist PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-nogh >"$T/t26-nogh.out" 2>&1 \
+  && pass "t26: cleanup succeeds without gh" || fail "t26: cleanup failed without gh: $(cat "$T/t26-nogh.out")"
+grep -q "issue #164 not checked (gh-does-not-exist is not available)" "$T/t26-nogh.out" \
+  && pass "t26: a missing gh is named in the OK: line" || fail "t26: a missing gh is not named: $(cat "$T/t26-nogh.out")"
+[ -s "$GH_LOG" ] && fail "t26: a missing gh still reached the real one: $(cat "$GH_LOG")" || pass "t26: a missing gh is never called"
 
 # (g) gh is there but the state cannot be read: the readout says so
-t24_make_task t24-unreadable 164 yes
+t26_make_task t26-unreadable 164 yes
 : > "$GH_LOG"
-KINGPIN_GH="$T/bin/gh-view-fails" PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t24-unreadable >"$T/t24-unreadable.out" 2>&1 \
-  && pass "t24: cleanup succeeds when the issue state is unreadable" || fail "t24: cleanup failed: $(cat "$T/t24-unreadable.out")"
-grep -q "issue #164 state could not be read (check that it is closed)" "$T/t24-unreadable.out" \
-  && pass "t24: an unreadable issue state is named in the OK: line" || fail "t24: an unreadable state is not named: $(cat "$T/t24-unreadable.out")"
-grep -q "^issue view 164" "$GH_LOG" && pass "t24: the failing read was attempted" || fail "t24: gh saw no read: $(cat "$GH_LOG")"
-! grep -q "^issue close" "$GH_LOG" && pass "t24: an unreadable state never closes the issue" || fail "t24: an unreadable state closed the issue: $(cat "$GH_LOG")"
+KINGPIN_GH="$T/bin/gh-view-fails" PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-unreadable >"$T/t26-unreadable.out" 2>&1 \
+  && pass "t26: cleanup succeeds when the issue state is unreadable" || fail "t26: cleanup failed: $(cat "$T/t26-unreadable.out")"
+grep -q "issue #164 state could not be read (check that it is closed)" "$T/t26-unreadable.out" \
+  && pass "t26: an unreadable issue state is named in the OK: line" || fail "t26: an unreadable state is not named: $(cat "$T/t26-unreadable.out")"
+grep -q "^issue view 164" "$GH_LOG" && pass "t26: the failing read was attempted" || fail "t26: gh saw no read: $(cat "$GH_LOG")"
+! grep -q "^issue close" "$GH_LOG" && pass "t26: an unreadable state never closes the issue" || fail "t26: an unreadable state closed the issue: $(cat "$GH_LOG")"
 
 printf 'OPEN\n' > "$GH_STATE"
 rm -f "$GH_CLOSE_FAILS"
-rm -rf "$KINGPIN_HOME/archive/t24-open" "$KINGPIN_HOME/archive/t24-closed" "$KINGPIN_HOME/archive/t24-already" "$KINGPIN_HOME/archive/t24-forced"
-rm -rf "$KINGPIN_HOME/archive/t24-norecord" "$KINGPIN_HOME/archive/t24-nogh" "$KINGPIN_HOME/archive/t24-unreadable"
-rm -rf "$T/t24-wt-t24-open" "$T/t24-wt-t24-closed" "$T/t24-wt-t24-already" "$T/t24-wt-t24-forced" "$t24_repo" "$t24_remote"
-rm -rf "$T/t24-wt-t24-norecord" "$T/t24-wt-t24-nogh" "$T/t24-wt-t24-unreadable"
+rm -rf "$KINGPIN_HOME/archive/t26-open" "$KINGPIN_HOME/archive/t26-closed" "$KINGPIN_HOME/archive/t26-already" "$KINGPIN_HOME/archive/t26-forced"
+rm -rf "$KINGPIN_HOME/archive/t26-norecord" "$KINGPIN_HOME/archive/t26-nogh" "$KINGPIN_HOME/archive/t26-unreadable"
+rm -rf "$T/t26-wt-t26-open" "$T/t26-wt-t26-closed" "$T/t26-wt-t26-already" "$T/t26-wt-t26-forced" "$t26_repo" "$t26_remote"
+rm -rf "$T/t26-wt-t26-norecord" "$T/t26-wt-t26-nogh" "$T/t26-wt-t26-unreadable"
 
 kp_test_finish DONE

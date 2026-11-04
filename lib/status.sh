@@ -194,7 +194,9 @@ kp_env_get() {
 # kp_skill_command <harness> <skill> [args...]
 # The wire command that fires one skill on a harness: `/<skill>` for claude, agy and
 # opencode, `/skill:<skill>` for pi, whose command list exposes skills only under that
-# prefix (spike.md, Check 3: a plain `/review` reaches the model as ordinary text).
+# prefix (spike.md, Check 3: a plain `/review` reaches the model as ordinary text), and
+# `$<skill>` for codex, which has no `/issue-flow` at all: a mention of a skill is
+# `$<name>` (issue #106, Phase 0 check 5).
 # kingpin-spawn's prompt and kingpin-land's sends go through this helper, so a fleet
 # send always names a command the worker's harness really expands. An empty harness
 # reads as claude (older task.env files), and an unknown one prints the plain form and
@@ -205,6 +207,7 @@ kp_skill_command() {
   shift 2
   case "$harness" in
     pi) printf '/skill:%s' "$skill" ;;
+    codex) printf '$%s' "$skill" ;;
     *) printf '/%s' "$skill" ;;
   esac
   local arg
@@ -218,7 +221,7 @@ kp_skill_command() {
 # that must not call a working worker idle or failed (kingpin-stop's hook,
 # kingpin-wait's `quiet` check, kingpin-launch-check) share this one list, so a
 # marker added for one harness cannot drift out of step between them. The list
-# covers all four harnesses (claude, agy, opencode, pi). The pane is captured by
+# covers all five harnesses (claude, agy, opencode, pi, codex). The pane is captured by
 # the caller; an unknown harness shows nothing (exit 1).
 kp_pane_shows_working() {
   local pane_tail=${1:-} harness=${2:-claude} bottom=""
@@ -242,6 +245,14 @@ kp_pane_shows_working() {
       # on a Pi version bump rather than widening this pattern.
       bottom=$(printf '%s\n' "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 || true)
       printf '%s\n' "$bottom" | grep -qE '──.*Working'
+      ;;
+    codex)
+      # Measured on codex-cli 0.166.0 (issue #106, Phase 0 check 8): the bottom rows read
+      # "• Working (3s • esc to interrupt)", sometimes with "· 1 background terminal
+      # running"; the idle footer says "Worked for 3s" and the input line reads
+      # "› Ask Codex to do anything". Re-measure on a Codex version bump.
+      bottom=$(printf '%s\n' "$pane_tail" | grep -v '^[[:space:]]*$' | tail -12 || true)
+      printf '%s\n' "$bottom" | grep -qiE 'esc[[:space:]]+to[[:space:]]+interrupt|background terminal running'
       ;;
     *) return 1 ;;
   esac
