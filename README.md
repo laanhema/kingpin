@@ -31,7 +31,7 @@ Ensure the following tools are installed on your host:
 A Pi worker needs a model login done by hand: run `pi`, then `/login`, then `/model`. Kingpin does not provision credentials; it passes `PI_PROVIDER` and `PI_MODEL` from the project env only when they are set.
 
 Optional:
-- `lavish-axi` (for per-task review dossiers and their interactive actions)
+- **`lavish-axi` (HIGHLY RECOMMENDED):** per-task review dossiers and their interactive actions. Kingpin hands every task back as a visual dossier, and this is what renders it.
 - `shellcheck` (contributors only, for `./tests/lint.sh`; `pip install shellcheck-py==0.11.0.1` into a venv, which is the version CI pins, or your package manager at shellcheck 0.11.0)
 
 ## Quick Start (Two Commands)
