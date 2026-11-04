@@ -129,6 +129,8 @@ Every command in the table exits 0 and prints its usage on `--help` (or `-h`), a
 
 Kingpin is CLI-first for fleet monitoring and visual-first for code review. When a task finishes in `review` mode, `kingpin list` displays its review dossier link directly below the task row. When a worker completes a task, it compiles a visual review dossier (`report.html`) containing problem context, verification tables, independent review verdicts, and syntax-highlighted split code diffs. The full overview, including terminal monitoring, review dossiers and the noir dossier template, is in [docs/fleet-overview.md](docs/fleet-overview.md).
 
+The prose gate covers markdown as well as the dossier. `kingpin report check --prose-only <file>.md` applies the same `unslop` rule list to a review report under `.agents/reviews/` before it is handed back, and to an issue or pull-request body written to a `.md` file before `gh ... --body-file` files it. Fenced and indented code, inline code spans and HTML comments are ignored; `<!-- unslop:ignore -->` is the single escape.
+
 ## Worker permissions
 
 A worker runs in its own leased worktree with every tool. `worker/hooks.json` adds a `PreToolUse` hook (`kingpin guard hook worker`) for `Edit`, `Write` and `NotebookEdit`: it allows files inside the worker's worktree and its task folder (`~/.kingpin/tasks/<id>/`, where it writes `status`, `question.md` and `report.html`), and denies every other path, including the main checkout. The full permission model, including why workers used to lose tools and how to unblock one, is in [docs/worker-permissions.md](docs/worker-permissions.md).

@@ -15,13 +15,17 @@ case "${1:-}" in
   -h|--help|"")
     cat << 'HELP'
 usage: kingpin-report diffs [--repo <dir>] [--base <ref>]
-       kingpin-report check [--prose-only] <report.html>
+       kingpin-report check [--prose-only] <file>
 
   diffs  Print an HTML fragment: one container per changed file (committed since the
          merge-base, uncommitted, untracked), each with a static diff fallback and a
          FileDiff render call that passes oldFile/newFile. Paste it into report.html.
   check  Exit 1 when report.html would show a blank diff: `patch:` used, FileDiff
          without oldFile/newFile, no FileDiff at all, or an empty diff container.
+         A `.md` or `.markdown` file is read as markdown: fenced blocks (backtick and
+         tilde, nested fences included), indented code blocks, inline code spans and
+         HTML comments are ignored, and the diff-section checks do not apply because
+         a markdown file carries no diff section.
          It also runs a layout pass over a full page (`*.html` with an `<html>`
          element): a `<pre>` with no `white-space: pre-wrap` or `overflow-x`, inline
          `<code>` with no `overflow-wrap`, an `<img>` with no `max-width`, a `<table>`
