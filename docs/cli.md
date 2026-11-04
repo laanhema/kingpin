@@ -51,6 +51,10 @@ A worker that reported a status line and whose window is gone before a terminal 
 
 Each cycle also advances a project's landing queue whose holder released or is gone, so an ownerless queue recovers on its own, and re-arms a review task's dossier listener that died (missing or dead `listener.pid`) unless the reviewer ended the session, the task finished, a landing is under way, the task runs in `auto` mode, or its last worker event is not `ready:`/`fixed:`.
 
+### A tmux server that died
+
+Before the wait pass of every cycle, and in `--once`, the supervisor checks each socket a live task record names. When one no longer answers it logs `the tmux server '<socket>' is not running; restoring <ids>` and runs `kingpin restore` for the tasks on that socket, which recreates the session (and with it the server) and re-arms each window with a resume brief. Curator tasks and tasks whose last status is terminal are skipped, because restore refuses them by name. Running it before the wait pass means a restored window is back before `exited` would be raised for it. A supervisor that was itself running inside the server that died dies with it, so start `kingpin watch` outside the workers' server; see [Who owns the server](#who-owns-the-server).
+
 ### `--interval`
 
 `--interval` takes a whole number of seconds, at least 1 and at most nine digits; anything else exits 2, and a `kingpin wait` that fails is retried after one warning on stderr and a two-second pause, so an unusable fleet directory cannot spin the loop.
@@ -78,7 +82,13 @@ It claims `~/.kingpin/supervisor.pid`, refuses a second copy with the running pi
 
 Workers run on a tmux server Kingpin owns, not on yours. `kingpin spawn` and `kingpin curate` talk to the socket `kingpin` (`tmux -L kingpin`) and create their windows in a session there (`kingpin` unless the session is named), so nothing they do reaches your own session or the default server: closing your last session, or restarting your tmux server, leaves a running worker alone. The task record carries both facts, `TMUX_SOCKET` for the socket and `TMUX_TARGET` for `<session>:<task-id>`, and every command that reads a worker window takes both from the same record. `KINGPIN_TMUX_SOCKET` names another socket, and `KINGPIN_TMUX_SOCKET=default` is the deliberate way back onto your own server. A `task.env` written before the split carries no `TMUX_SOCKET`: its window really is on the default server, so the readers resolve it there.
 
-To look at the fleet server by hand, attach from a shell outside tmux with `tmux -L kingpin attach -t kingpin`; from inside your own session, `TMUX= tmux -L kingpin attach -t kingpin` attaches to it instead of switching your client's server. `kingpin list` prints that command under the task rows, and `kingpin peek <task-id>` reads one pane without attaching.
+To look at the fleet server by hand, attach from a shell outside tmux with `tmux -L kingpin attach -t kingpin`; from inside your own session, `TMUX= tmux -L kingpin attach -t kingpin` attaches to it instead of switching your client's server. `kingpin list` prints the attach command for each socket the live records name under the task rows, and `kingpin peek <task-id>` reads one pane without attaching.
+
+### Who owns the server
+
+`kingpin watch` does, and no systemd unit or timer does. The socket is data, not configuration: each task record names its own `TMUX_SOCKET`, a fleet can hold records on more than one server during a move between them, and the same fleet may be running on the operator's default server (`KINGPIN_TMUX_SOCKET=default`) on one host and on a server of its own on the next. A unit would have to name one socket, and on the operator-server configuration it would be a second owner for a server that is not the fleet's. So the supervisor owns the lifecycle of whatever socket the records name: on every sweep it checks each socket a live task record names, and when one no longer answers it hands that socket's tasks to `kingpin restore`, which recreates the session (and with it the server) and re-arms each window with a resume brief. The `OK:` line of a `kingpin spawn` that had to start the server itself says so, for example `, started the tmux server on socket 'kingpin' (it was not running)`.
+
+The one thing this cannot cover is a supervisor that was itself running inside the server that died. Start `kingpin watch` outside the workers' server, for example from a plain shell or from a service that restarts it; on the operator-server configuration that is the same server your own session lives on, and its own lifecycle belongs to whatever started it (a systemd `tmux.service`, or your own tmux). When that server is back, the next sweep restores the windows.
 
 ### Window names
 
@@ -125,7 +135,7 @@ A `codex` spawn writes only per-skill links at `<worktree>/.codex/skills/<name>`
 
 **Flags:** `--all`, `-a`
 
-**Environment:** `KINGPIN_HOME`
+**Environment:** `KINGPIN_HOME`, `KINGPIN_SKIP_SOCKET_WARN`
 
 `kingpin status` is the same command under its older name.
 
@@ -137,7 +147,9 @@ The `STATE` column marks `WAITING` (blocked on a human), `SILENT` (a Stop withou
 
 Every live task whose folder holds a `report.html` gets its dossier line printed below its row, whatever the task's mode or status: the Lavish session URL the listener recorded in the task's `dossier.url` when it opened the page, or the `lavish-axi <path>` command when no URL is recorded yet. Hand the URL over instead of running the command, which opens a second tab on the session the listener already opened (issue #146). The line is followed by `(listening: pid <n>)` while that task's listener runs; a finished or archived row gets no dossier line.
 
-Every live row whose window is still alive also gets a `↳ Window:` line naming the socket, session and window that hold the worker, for example `↳ Window: tmux -L kingpin kingpin (@3)`, and the footer prints the command that attaches to the fleet server: `Workers live on the tmux server 'kingpin': tmux -L kingpin attach -t kingpin (kingpin peek <task-id> reads one pane)`. A worker whose pane is gone gets no line, so the line never points at a session that is empty. A task record from before the split has no socket, so its line reads `tmux kingpin (@n)`: that window is on the default server.
+Every live row whose window is still alive also gets a `↳ Window:` line naming the socket, session and window that hold the worker, for example `↳ Window: tmux -L kingpin kingpin (@3)`, and the footer prints one attach command per socket the live records actually name, for example `Workers live on the tmux server 'default': tmux attach (kingpin peek <task-id> reads one pane)`; a fleet with no live task names the socket a new spawn would use. The footer reads the records, not your `KINGPIN_TMUX_SOCKET`, so it never points at a server that holds no worker. A worker whose pane is gone gets no line, so the line never points at a session that is empty. A task record from before the split has no socket, so its line reads `tmux kingpin (@n)`: that window is on the default server.
+
+When a live task record names a tmux server that is not running, `kingpin list` prints one warning on stderr naming that server, the tasks whose windows died with it, and the command that attaches once it is back, for example `kingpin: the tmux server 'kingpin' is not running; live tasks kp-1, kp-2 name it and their windows are gone. Attach once it is back: tmux -L kingpin attach; kingpin watch restarts it and runs kingpin restore (or run kingpin restore yourself)`. `kingpin wait` prints the same line once per server per process. Set `KINGPIN_SKIP_SOCKET_WARN=1` to silence it, the same kind of switch `KINGPIN_SKIP_GUARD=1` is for the guard warning.
 
 A live row whose task holds a browser daemon also gets `↳ Browser: 1 daemon, 412 MB (pid 1234)`: the `chrome-devtools-axi` bridge the task started, with its `chrome-devtools-mcp` child and headless Chrome, summed over the whole process tree. Ownership is the daemon's working directory, so only a daemon started from the task folder or the task's worktree is counted (`lib/browser.sh`), and only a process whose argv runs the bridge script counts: a log tail or an editor that merely names it is neither listed nor stopped. A task that drives no browser gets no line, and an archived row never gets one, because `kingpin done` stops the daemons before it archives the task. A daemon left by a task archived before this change still runs, and no Kingpin command lists or stops it: its record is under `~/.kingpin/archive/<task-id>`, which `kingpin list` does not scan, and `kingpin done` only runs for a live task. Stop one by hand: find its pid, check that its working directory is that archive path (`readlink /proc/<pid>/cwd` on Linux, `lsof -a -p <pid> -d cwd -Fn` on macOS), and kill it. Two or more daemons print as `2 daemons` with their pids comma-separated.
 
@@ -245,13 +257,17 @@ An archived task resolves: `kingpin listen <task-id>` on one prints `OK: task <t
 
 **Flags:** `--timeout <sec>`, `--once`
 
-**Environment:** `KINGPIN_HOME`
+**Environment:** `KINGPIN_HOME`, `KINGPIN_SKIP_SOCKET_WARN`
 
 ### Exit codes
 
 Exits 0 on events and on a plain timeout (nothing printed); `--once` with no events exits 1; 2 for a bad argument.
 
 An archived task raises no event: its leftover dossier link is not a live task, so it cannot wake the orchestrator twice.
+
+### A server that is gone
+
+A live task record that names a tmux server which no longer answers gets one warning on stderr per server, naming it, the tasks whose windows died with it, and the command that attaches once it is back. The warning is printed once per server per process and the check rides every pass, so a server that dies during a long `kingpin wait` is still named. `KINGPIN_SKIP_SOCKET_WARN=1` silences it.
 
 ### See also
 
@@ -588,6 +604,7 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 | `KINGPIN_STATUS_GRACE` | `bin/kingpin-launch-check:44` | Seconds a worker may stay silent before `wait`/`watch`/`run` record `failed: no status:` (default `30`). |
 | `KINGPIN_ALLOW_GLOBAL_CONTRACT` | `bin/kingpin-scope` | `1` downgrades a contract found in a global instruction file to a warning instead of a refusal. |
 | `KINGPIN_SKIP_GUARD` | `bin/kingpin-guard:54`, `bin/kingpin-init:82` | `1` silences `kingpin guard warn`, which `kingpin list` and `kingpin wait` call, and the install `kingpin init` runs; it does not silence `kingpin lock acquire`, which runs `kingpin guard check` directly, or a hand-run `kingpin guard install`/`check`. Set by the test suites and scripted setups. |
+| `KINGPIN_SKIP_SOCKET_WARN` | `lib/tmux.sh` | `1` silences the warning `kingpin list` and `kingpin wait` print when a live task record names a tmux server that is not running. Set by scripted setups and the suites. |
 | `KINGPIN_LOCK_PID` | `bin/kingpin-lock:156` | A whole-number pid `lock acquire` records as the session pid instead of detecting one; the test suites use it. |
 | `KINGPIN_TASK_DIR` | `bin/kingpin-stop:39`, `worker/hooks.json:19` | Set by `kingpin spawn` to the task folder (`~/.kingpin/tasks/<id>`) so the Stop hook can write `status`. Not for hand-setting. |
 | `KINGPIN_ROOT` | `worker/hooks.json:9-19`, `bin/kingpin-spawn:463` | Set by `kingpin spawn` to the Kingpin checkout, so a hook finds `bin/kingpin-stop` even after the worker `cd`s elsewhere. Not for hand-setting. |

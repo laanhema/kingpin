@@ -10,7 +10,7 @@ each task back as a visual review dossier. This file describes the repository.
 |---|---|
 | `bin/` | One executable per command (`kingpin-spawn`, `kingpin-guard`, `kingpin-wait`, ...), plus `bin/kingpin`, the dispatcher that maps `kingpin <cmd>` to them |
 | `lib/` | Shared helpers: `status.sh` (the status-file protocol and the live-versus-archived task path readers, sourced by the scripts), `tmux.sh`, `browser.sh` (the browser-daemon table, its working-directory ownership rule, the process-tree stop and the size formatter `kingpin done`, `kingpin spawn` and `kingpin list` share), `landing.sh`, `mutex.sh` (the mutex sequence shared by the landing lane and `kingpin-lock`, plus the non-blocking `kp_mutex_try` the auto-curate gate uses), `curator.sh` (the automatic daily curator gate, applied-critique marker and trigger, sourced by `kingpin-curate`, `kingpin-watch` and `kingpin-done`), `supervisor.sh` (the fleet supervisor's pidfile, sourced by `kingpin-watch`, `kingpin-lock` and `kingpin list`), `afk.sh` (the session-scoped AFK state, sourced by `kingpin-afk`, `kingpin-watch`, `kingpin-lock` and `kingpin list`), `session.sh` (the session-pid detection `kingpin-lock` and `kingpin-afk` share), `exclude.sh` (the per-worktree exclude file a spawn points at, and the guard-owned block of the main checkout's exclude file, sourced by `kingpin-spawn`, `kingpin-done` and `kingpin-guard`), `portable.sh` (the GNU-then-BSD clock and file-mtime readers), `gitdir.sh` (the git-dir, common-dir and git-path readers the linked-worktree checks use, which read the plain `git rev-parse` form so they work on git 2.30, sourced by `kingpin-spawn`, `kingpin-sync`, `kingpin-guard` and the suites), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, `codex-trust`, ...) |
-| `lib/tmux.sh` | The fleet's tmux socket (`KINGPIN_TMUX_SOCKET`, default `kingpin`), the one `kp_tmux` helper every command reaches tmux through, and the one window resolver: finds a task's window by name first and by the recorded id second, decides whether the harness really runs in it (`harness.pid` against the pane pid), records a new id, and is the only place that creates or respawns a window |
+| `lib/tmux.sh` | The fleet's tmux socket (`KINGPIN_TMUX_SOCKET`, default `kingpin`), the one `kp_tmux` helper every command reaches tmux through, the two socket-health readers (`kp_tmux_socket_reachable`, whether a server answers, and `kp_tmux_socket_warn_line`, the one stderr line a dead server prints for the tasks on it), and the one window resolver: finds a task's window by name first and by the recorded id second, decides whether the harness really runs in it (`harness.pid` against the pane pid), records a new id, and is the only place that creates or respawns a window |
 | `lib/launch.sh` | The worker preamble and the per-harness `launch.sh` generator, shared by `kingpin-spawn` and `kingpin-restore`, so a restored worker gets the preamble and harness wiring a spawned one does |
 | `worker/` | `preamble.md`, the text a spawned worker receives, `curator-preamble.md`, the contract the curator worker receives, `hooks.json`, its Claude Code settings, and `pi/kingpin-harness.ts`, the Pi extension a spawn loads with `-e` |
 | `orchestrator/contract.md` | The orchestrator contract. `kingpin guard install` copies it into the main checkout's untracked instruction sources; no harness loads this tracked file directly |
@@ -120,11 +120,26 @@ running `lavish-axi` on the page again.
 
 A tmux server that dies leaves every worker window gone or back as a plain shell, and tmux
 window ids restart at `@0`, so a recorded id can name another task's window. `kingpin list`
-marks those tasks `DEAD` and prints the `kingpin restore` hint; `kingpin restore` recreates
-or reclaims each live task's window from its own worktree and branch, relaunches the
-recorded harness with a resume brief, and repairs the recorded id. Every reader resolves a
-window through `lib/tmux.sh`, so a stale id is never typed into. The supervisor's pidfile
-died with the server, so `kingpin watch` is started again after a restore.
+marks those tasks `DEAD` and prints the `kingpin restore` hint, and it names the socket that
+is gone on stderr, with the attach command; `kingpin wait` prints the same warning once per
+server per process, and `KINGPIN_SKIP_SOCKET_WARN=1` silences both. `kingpin restore`
+recreates or reclaims each live task's window from its own worktree and branch, relaunches
+the recorded harness with a resume brief, and repairs the recorded id. Every reader resolves
+a window through `lib/tmux.sh`, so a stale id is never typed into.
+
+The supervisor owns the tmux server's lifecycle, and no systemd unit or timer does: the
+socket is data, not configuration (each record names its own `TMUX_SOCKET`, a fleet can hold
+records on more than one server, and the same fleet runs on the operator's default server on
+one host), so a unit would name one socket and, on the operator-server configuration, would
+be a second owner for a server that is not the fleet's. On every sweep, before the wait pass,
+`kingpin-watch` checks each socket a live task record names; when one no longer answers it
+runs `kingpin restore` for the tasks on that socket, which recreates the session and with it
+the server, and re-arms the windows. The one case it cannot cover is a supervisor that was
+itself running inside the server that died, so `kingpin watch` is started outside the
+workers' server; on the operator-server configuration that server belongs to whatever
+started it (a systemd `tmux.service`, or the operator's own tmux), and the next sweep
+restores the windows once it is back. A `kingpin spawn` that had to start the server itself
+says so in its `OK:` line.
 
 `kingpin afk on [--ttl <duration>]` arms session-scoped auto-landing. The state is
 `$KINGPIN_HOME/afk` (holder pid, arm epoch, expiry epoch), the default TTL is 8 hours, and
