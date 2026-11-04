@@ -18,7 +18,7 @@ The voice stays in the room. Commits, PRs, issues, code, status fields, review r
 
 Ensure the following tools are installed on your host:
 
-- `git` (2.30+)
+- `git` (2.31+)
 - `tmux`
 - `treehouse` (git worktree pool manager)
 - `node` (18+; Pi needs Node 22.19+)
@@ -27,6 +27,8 @@ Ensure the following tools are installed on your host:
   - `agy` (Google Antigravity CLI)
   - `opencode` (OpenCode CLI)
   - `pi` (Pi coding agent: `npm i -g @earendil-works/pi-coding-agent`)
+
+The 2.31 floor comes from `kingpin-spawn`, `kingpin-sync` and `kingpin guard install`: each passes `git rev-parse` an absolute-path option that 2.31 added, and issue #86 tracks removing that requirement.
 
 A Pi worker needs a model login done by hand: run `pi`, then `/login`, then `/model`. Kingpin does not provision credentials; it passes `PI_PROVIDER` and `PI_MODEL` from the project env only when they are set.
 
@@ -39,8 +41,10 @@ Optional:
 Add Kingpin to your `PATH`:
 
 ```bash
-export PATH="/home/lauri/github/kingpin/bin:$PATH"
+export PATH="/path/to/kingpin/bin:$PATH"
 ```
+
+Replace `/path/to/kingpin` with the directory you cloned Kingpin into.
 
 ### 1. Initialize your project (run once inside any git repository)
 
@@ -49,9 +53,9 @@ cd /path/to/my-repo
 kingpin init
 ```
 
-Kingpin detects the git repository and writes `~/.kingpin/projects/my-repo.env` automatically. It also installs the orchestrator tool guard (`kingpin guard install`): a `PreToolUse` hook in the untracked `.claude/settings.local.json` of the Kingpin checkout denies `Edit`, `Write`, `NotebookEdit` and `Agent` when the session runs in the main checkout, so only the orchestrator session is restricted and leased workers keep full tooling (see [Worker permissions](#worker-permissions)).
+Kingpin detects the git repository and writes `~/.kingpin/projects/my-repo.env` automatically. It also installs the orchestrator tool guard (`kingpin guard install`): a `PreToolUse` hook in the untracked `.claude/settings.local.json` of the Kingpin checkout denies `Edit`, `Write`, `NotebookEdit` and `Agent` when the session's working directory is the main checkout of any git repository, not only the Kingpin checkout, so only the orchestrator session is restricted and a linked worktree keeps full tooling. The hook judges the session's working directory because Claude Code also loads that file for its linked worktrees (see [Worker permissions](#worker-permissions)).
 
-The same install writes the orchestrator contract, so an orchestrator session reads its job description without any worker seeing it. The text is tracked once, as `orchestrator/contract.md`, and generated into `~/.kingpin/orchestrator.md` plus three untracked copies in the Kingpin checkout: `.claude/rules/kingpin-orchestrator.md`, `.agents/rules/kingpin.md`, and the `instructions` entry of `.opencode/opencode.json`. Only `kingpin guard install` writes them: `kingpin spawn` and `kingpin sync` never refresh a copy, so a checkout that upgrades across a contract change needs one `kingpin init` or `kingpin guard install`. `kingpin guard check` names a stale copy, and `kingpin lock acquire`, `kingpin list` and `kingpin wait` print its warning.
+The same install writes the orchestrator contract, so an orchestrator session reads its job description without any worker seeing it. The text is tracked once, as `orchestrator/contract.md`, and generated into `~/.kingpin/orchestrator.md` plus three untracked copies in the Kingpin checkout: `.claude/rules/kingpin-orchestrator.md`, `.agents/rules/kingpin.md`, and the `instructions` entry of `.opencode/opencode.json`. Only `kingpin guard install` writes them: `kingpin spawn` and `kingpin sync` never refresh a copy, so a checkout that upgrades across a contract change needs one `kingpin init` or `kingpin guard install`. `kingpin guard check` names a stale copy; `kingpin list` and `kingpin wait` print its warning through `kingpin guard warn`, which `KINGPIN_SKIP_GUARD=1` silences; `kingpin lock acquire` runs `kingpin guard check` itself, so it warns even with that variable set.
 
 You can pin a harness for the project:
 
@@ -92,7 +96,7 @@ kingpin watch >> ~/.kingpin/supervisor.log 2>&1 &
 ```
 
 It loops, so it keeps handling events after it handles one; there is nothing to restart each turn. It:
-- Automatically triggers `kingpin land` for workers in `auto` mode when they report `ready:`, and continues a landing after `fixed:`.
+- Automatically triggers `kingpin land` for workers in `auto` mode when they report `ready:`, and continues a landing after `fixed:` only when that line reports `high=0`; a `fixed:` line with High findings still open is sent back for `/review` first.
 - Automatically triggers `kingpin done` when workers report `merged:`, releasing worktrees back to the treehouse pool.
 - Notifies when tasks in `review` mode are ready for inspection or need input.
 - Advances a project's landing queue whose holder released or is gone.
@@ -116,18 +120,18 @@ Only one supervisor runs at a time. A second `kingpin watch` refuses to start an
 | `kingpin wait` | Prints one `<task-id> <reason>` line (`status`, `quiet` or `exited`) per fleet event that needs action. [Details](docs/cli.md#kingpin-wait) |
 | `kingpin ack` | Marks a task's events as seen, so `kingpin wait` reports only newer ones; `--through <line>` sets the seen cursor to that line instead of the file's length, for a caller that dispatches a batch one line at a time (`kingpin-watch`). [Details](docs/cli.md#kingpin-ack) |
 | `kingpin land` | Serializes project landing and triggers merge. [Details](docs/cli.md#kingpin-land) |
-| `kingpin done` | Verifies merge, releases worktree lease, advances the queue, and archives the task record to `~/.kingpin/archive/<task-id>`, leaving a link at the old task path so an open dossier keeps resolving, and closing its Lavish session with one final reply. [Details](docs/cli.md#kingpin-done) |
+| `kingpin done` | Verifies merge, kills the task's tmux window, releases the worktree lease, deletes the worker's local branch with `git branch -D` and, once the merge check passes, that branch on `origin`, advances the queue, and archives the task record to `~/.kingpin/archive/<task-id>`, or the next free `<task-id>.<n>` when that name is taken, leaving a link at the old task path so an open dossier keeps resolving, and closing its Lavish session with one final reply. [Details](docs/cli.md#kingpin-done) |
 | `kingpin lock` | Enforces a single active orchestrator session and records its harness for `kingpin spawn`. [Details](docs/cli.md#kingpin-lock) |
 | `kingpin guard` | `kingpin guard [install\|check\|warn]` | Installs or verifies the orchestrator-only tool guard, a `PreToolUse` hook in `.claude/settings.local.json` (untracked), and the orchestrator contract described under [Initialize your project](#1-initialize-your-project-run-once-inside-any-git-repository); `install` also removes the deny rules that older versions wrote there, which leaked into workers, and keeps its three main-checkout contract excludes in a `# kingpin guard` … `# end kingpin guard` block of `.git/info/exclude`, which it rewrites on every run (adopting a loose line an older version appended), so that block is the only part of the file `install` rewrites; it may also append a plain `.claude/settings.local.json` line outside the block when the project does not already ignore that file; `--dir` points the command at another checkout instead of the one `bin/kingpin-guard` lives in; `check` names a stale contract copy; `warn` prints a stderr warning when the guard or the contract is missing or stale; `kingpin guard hook <orchestrator\|worker>` is the hook entry point; `list` and `wait` run it at startup, and `lock acquire` prints the same warning. |
 | `kingpin scope` | Names the instruction files a harness really loads for a worker: `files` prints `<kind>\t<path>` per source (`discovery`, a file the harness finds; `configured`, an `instructions` entry of the worktree's config, JSONC included; `ignored`, a rules file the harness skips; `global`, loaded from the user's config directory); `doctor --harness pi` reports the Pi binary, credentials, skills and extension in one command. [Details](docs/cli.md#kingpin-scope) |
 | `kingpin report` | Dossier helper for workers. [Details](docs/cli.md#kingpin-report) |
-| `kingpin curate` | Aggregates critique files from finished worker tasks and runs one curator in the skills directory. [Details](docs/cli.md#kingpin-curate) |
+| `kingpin curate` | Aggregates critique files from finished worker tasks and runs one curator in the skills directory: default `~/.claude/skills`, `KINGPIN_SKILLS_DIR` overrides it, and the curator command is `KINGPIN_CURATOR_CMD`, else `KINGPIN_CLAUDE`, else `claude`, so an agy- or OpenCode-only host must set both. [Details](docs/cli.md#kingpin-curate) |
 
 Every command in the table exits 0 and prints its usage on `--help` (or `-h`), and an unknown flag exits non-zero: `kingpin curate --help` prints usage without launching a curator, and `kingpin run --help` prints `spawn`'s usage without starting a worker. `kingpin <command> --help` is the fastest way to see one command's flags.
 
 ## Fleet Overview & Visual Review Dossiers
 
-Kingpin is CLI-first for fleet monitoring and visual-first for code review. When a task finishes in `review` mode, `kingpin list` displays its review dossier link directly below the task row. When a worker completes a task, it compiles a visual review dossier (`report.html`) containing problem context, verification tables, independent review verdicts, and syntax-highlighted split code diffs. The full overview, including terminal monitoring, review dossiers and the noir dossier template, is in [docs/fleet-overview.md](docs/fleet-overview.md).
+Kingpin is CLI-first for fleet monitoring and visual-first for code review. For any live task whose folder holds a `report.html`, whatever its mode or status, `kingpin list` prints the dossier command directly below the task row, with `(listening: pid <n>)` while that task's listener runs; finished and archived rows show no dossier line. When a worker completes a task, it compiles a visual review dossier (`report.html`) containing problem context, verification tables, independent review verdicts, and syntax-highlighted split code diffs. The full overview, including terminal monitoring, review dossiers and the noir dossier template, is in [docs/fleet-overview.md](docs/fleet-overview.md).
 
 The prose gate covers markdown as well as the dossier. `kingpin report check --prose-only <file>.md` applies the same `unslop` rule list to a review report under `.agents/reviews/` before it is handed back, and to an issue or pull-request body written to a `.md` file before `gh ... --body-file` files it. Fenced and indented code, inline code spans and HTML comments are ignored; `<!-- unslop:ignore -->` is the single escape.
 

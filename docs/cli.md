@@ -102,6 +102,8 @@ A `pi` spawn writes nothing into the worktree. The launch runs `pi --append-syst
 
 A finished task is shown from `archive/` (with `--all`), never from the dossier link `kingpin done` leaves at its old `tasks/` path: that path resolves a review page, it is not a live task.
 
+Every live task whose folder holds a `report.html` gets its dossier command printed below its row, whatever the task's mode or status, followed by `(listening: pid <n>)` while that task's listener runs; a finished or archived row gets no dossier line.
+
 ## kingpin send
 
 **Usage:** `kingpin send <task-id> "<text>"`
@@ -236,7 +238,7 @@ The review gate fails closed: it reads `review=` from the worker's last `ready:`
 
 ### Fix passes
 
-`APPROVE WITH NITS` and `NEEDS CHANGES` (any case; `NEEDS_CHANGES` and `NEEDS-CHANGES` too) run `/fix-findings` first and say so; landing continues after the worker reports `fixed:`.
+`APPROVE WITH NITS` and `NEEDS CHANGES` (any case; `NEEDS_CHANGES` and `NEEDS-CHANGES` too) run `/fix-findings` first and say so; landing continues after the worker reports `fixed:`. That `fixed:` line has to report `high=0`: a line with `high` above zero sends `/review` again and exits 0 without landing, and a later `ready:` starts the next landing.
 
 ### Unreadable verdicts
 
@@ -294,6 +296,10 @@ A refusal is recorded as a `cleanup-refused:` status line only for a finished ta
 
 After a successful archive, `done` leaves a symlink at `~/.kingpin/tasks/<task-id>` pointing at `~/.kingpin/archive/<task-id>`. A Lavish session, and a link handed to someone in chat, keep resolving `report.html` and the dossier's sibling assets through that path, where before the merge the page went blank. The link is not a live task: every fleet reader treats a symlinked `tasks/` entry as finished (it has no list row, raises no `wait` event, is never dispatched by `watch`, landed, listened to or cleaned again), and `kingpin done` answers a repeat run from it without touching treehouse. Before it ends the session, `done` posts one final reply saying the task landed and where the dossier is archived. The archive itself is never pruned: it is the record.
 
+### What cleanup deletes
+
+The tmux window, and the task's Lavish listener with its pid file. The worktree goes back to the treehouse pool as a clean slot, with the spawn's injected files and exclude file cleared. The worker's branches go: the branch it was on and the one recorded in `task.env`, never the default branch. The branch on `origin` is deleted only when the merge check passed, so a `--force` cleanup leaves it in place. The task record moves to `~/.kingpin/archive/<task-id>`, and a taken name gets the next free suffix (`<task-id>.2`, `<task-id>.3`, ...); nothing ever deletes the archive.
+
 ## kingpin lock
 
 **Usage:** `kingpin lock [status|check|acquire [--harness <name>]|release|harness] [pid]`
@@ -302,7 +308,7 @@ After a successful archive, `done` leaves a symlink at `~/.kingpin/tasks/<task-i
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_HARNESS`, `KINGPIN_LOCK_PID`
 
-`--harness` records `claude`, `agy`, `opencode` or `pi`; without it, `acquire` detects the harness from the session process (including the `@earendil-works/pi-coding-agent` npm path) or from the calling agent's environment marker. `acquire` also warns on stderr when no fleet supervisor is running. A numeric `[pid]` overrides the detected session pid, as does `KINGPIN_LOCK_PID`.
+`--harness` records `claude`, `agy`, `opencode` or `pi`; without it, `acquire` detects the harness from the session process (including the `@earendil-works/pi-coding-agent` npm path) or from the calling agent's environment marker. `acquire` also warns on stderr when no fleet supervisor is running, and when the guard or the contract is missing or stale, even with `KINGPIN_SKIP_GUARD=1`, because it calls `kingpin guard check` directly. A numeric `[pid]` overrides the detected session pid, as does `KINGPIN_LOCK_PID`.
 
 ## kingpin guard
 
@@ -313,6 +319,8 @@ After a successful archive, `done` leaves a symlink at `~/.kingpin/tasks/<task-i
 **Subcommand:** `kingpin guard hook <orchestrator|worker>` is the hook entry point.
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_SKIP_GUARD`; `KINGPIN_TASK_DIR` and `KINGPIN_WORKTREE` are read by the `guard hook worker` entry point (`lib/guard-hook.mjs`).
+
+`install` writes the hook into the checkout `--dir` names and refuses a linked worktree. The `orchestrator` hook denies `Edit`, `Write`, `NotebookEdit` and `Agent` in the main checkout of any repository, where the session's `git rev-parse --git-dir` equals `--git-common-dir`, and allows a linked worktree; a directory it cannot resolve to a git worktree is denied. `warn` is the quiet startup check `kingpin list` and `kingpin wait` run.
 
 ## kingpin scope
 
@@ -378,6 +386,8 @@ The worker preamble and `AGENTS.md` require both the pass and the check before `
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_CURATOR_CMD`, `KINGPIN_SKILLS_DIR`
 
+`curate` is not harness-neutral. It needs a skills directory, `KINGPIN_SKILLS_DIR` or the default `~/.claude/skills`, and a missing one dies with `kingpin-curate: skills directory <dir> not found`. The curator runs through `KINGPIN_CURATOR_CMD`, then `KINGPIN_CLAUDE`, then `claude`, so a host whose only harness is agy or OpenCode has to set both the directory and the command.
+
 ### Trust and `--help`
 
 It records trust for that directory with the same helper `kingpin spawn` uses, so the first run on an untrusted host shows no folder-trust dialog; `--help` prints usage without launching anything, and an unknown flag exits 2.
@@ -415,7 +425,7 @@ Concurrent runs are serialized, so one curator is published and launched at a ti
 | `KINGPIN_LAVISH` | `bin/kingpin-listen:58` | `lavish-axi` command the listener drives (default `lavish-axi`). |
 | `KINGPIN_STATUS_GRACE` | `bin/kingpin-launch-check:44` | Seconds a worker may stay silent before `wait`/`watch`/`run` record `failed: no status:` (default `30`). |
 | `KINGPIN_ALLOW_GLOBAL_CONTRACT` | `bin/kingpin-scope` | `1` downgrades a contract found in a global instruction file to a warning instead of a refusal. |
-| `KINGPIN_SKIP_GUARD` | `bin/kingpin-guard:54`, `bin/kingpin-init:82` | `1` skips the guard install and warning; set by the test suites and scripted setups. |
+| `KINGPIN_SKIP_GUARD` | `bin/kingpin-guard:54`, `bin/kingpin-init:82` | `1` silences `kingpin guard warn`, which `kingpin list` and `kingpin wait` call, and the install `kingpin init` runs; it does not silence `kingpin lock acquire`, which runs `kingpin guard check` directly, or a hand-run `kingpin guard install`/`check`. Set by the test suites and scripted setups. |
 | `KINGPIN_LOCK_PID` | `bin/kingpin-lock:169` | A whole-number pid `lock acquire` records as the session pid instead of detecting one; the test suites use it. |
 | `KINGPIN_TASK_DIR` | `bin/kingpin-stop:31`, `worker/hooks.json:19` | Set by `kingpin spawn` to the task folder (`~/.kingpin/tasks/<id>`) so the Stop hook can write `status`. Not for hand-setting. |
 | `KINGPIN_ROOT` | `worker/hooks.json:9-19`, `bin/kingpin-spawn:329` | Set by `kingpin spawn` to the Kingpin checkout, so a hook finds `bin/kingpin-stop` even after the worker `cd`s elsewhere. Not for hand-setting. |
