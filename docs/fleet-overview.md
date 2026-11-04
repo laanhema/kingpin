@@ -33,7 +33,7 @@ To pick up merged changes in the main checkout, fast-forward it without raw git:
 kingpin sync    # old..new short SHAs and the commits pulled, or "already up to date"
 ```
 
-Finished tasks are archived by `kingpin done` and hidden from `kingpin list`; run `kingpin list --all` to include them. The task path survives the merge as a symlink to the archive, so a dossier link still opens the reviewed page instead of a blank one, and `kingpin` never treats that link as a live task. `kingpin curate` still collects skill critiques from archived tasks.
+Finished tasks are archived by `kingpin done` and hidden from `kingpin list`; run `kingpin list --all` to include them. The task path survives the merge as a symlink to the archive, so a dossier link still opens the reviewed page instead of a blank one, and `kingpin` never treats that link as a live task. `kingpin curate` still collects skill critiques from archived tasks, and it also runs on its own from the supervisor's idle pass, at most once a calendar day, landing its skill edits through a review dossier.
 
 ### 2. Task Review Dossiers (`lavish-axi`)
 

@@ -1,47 +1,71 @@
 #!/usr/bin/env bash
-# Collect saved skill critique lines from task directories and run one curator worker in ~/.claude/skills.
+# Collect saved skill critique lines from task directories and run one curator
+# worker in the skills checkout, as a branch and a pull request (issue #88).
 #
-# Usage: kingpin-curate [--dry-run]
+# Usage: kingpin-curate [--dry-run] [--auto] [--mark-applied <pr-url>] [--land]
 #
 # One run at a time: collection through launch is serialized by the shared
 # `lib/mutex.sh` mutex at $KP_HOME/curator/curator.mutex, so two runs that start
-# together cannot both publish the shared curator state.
+# together cannot both publish the shared curator state. The automatic trigger
+# (`--auto`, called from kingpin-watch and kingpin-done) uses the non-blocking
+# `kp_mutex_try` and always exits 0: it must never wait on a landing.
 set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+KP_BIN="$KP_ROOT/bin"
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 SKILLS_DIR="${KINGPIN_SKILLS_DIR:-$HOME/.claude/skills}"
 CLAUDE_CMD="${KINGPIN_CURATOR_CMD:-${KINGPIN_CLAUDE:-claude}}"
+GH_CMD="${KINGPIN_GH:-gh}"
 
-# shellcheck source=../lib/mutex.sh
-. "$KP_ROOT/lib/mutex.sh"
+# shellcheck source=../lib/curator.sh
+. "$KP_ROOT/lib/curator.sh"
+# shellcheck source=../lib/gitdir.sh
+. "$KP_ROOT/lib/gitdir.sh"
+# shellcheck source=../lib/portable.sh
+. "$KP_ROOT/lib/portable.sh"
 
 die() { echo "kingpin-curate: $*" >&2; exit 1; }
+info() { echo "kingpin-curate: $*" >&2; }
 
 usage() {
   cat <<'HELP'
-Usage: kingpin curate [--dry-run]
+Usage: kingpin curate [--dry-run] [--auto] [--mark-applied <pr-url>] [--land]
 
 Collect saved skill critique lines from finished task directories and run one
-curator worker in the skills directory.
+curator worker in the skills checkout. The curator commits on its own branch and
+opens a pull request; `kingpin land curator` merges it.
 
 Options:
-  --dry-run   list the pending critiques and change nothing
-  -h, --help  show this help and exit
+  --dry-run               list the pending critiques and change nothing
+  --auto                  run only when the fleet is idle, at least three
+                          critiques are pending, and no run happened today;
+                          always exits 0, for kingpin watch and kingpin done
+  --mark-applied <pr-url> mark the published batch applied with the PR URL
+  --land                  merge the curator's PR and finish its task record
+  -h, --help              show this help and exit
 HELP
 }
 
 DRY_RUN=0
+AUTO=0
+LAND=0
+MARK_APPLIED=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --dry-run) DRY_RUN=1 ;;
+    --auto) AUTO=1 ;;
+    --mark-applied)
+      [ $# -ge 2 ] || { echo "kingpin-curate: --mark-applied needs a PR URL" >&2; exit 2; }
+      MARK_APPLIED=$2
+      shift
+      ;;
+    --land) LAND=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "kingpin-curate: unknown argument '$1'. Run 'kingpin curate --help' for usage." >&2; exit 2 ;;
   esac
   shift
 done
-
-[ -d "$SKILLS_DIR" ] || die "skills directory $SKILLS_DIR not found"
 
 curator_dir="$KP_HOME/curator"
 mutex_file="$curator_dir/curator.mutex"
@@ -50,8 +74,182 @@ input_file="$curator_dir/curator-input.txt"
 batch_file="$curator_dir/batch-critiques.txt"
 prompt_file="$curator_dir/prompt.txt"
 launch_file="$curator_dir/launch.sh"
-result_file="$KP_HOME/curator-result"
+pr_file="$curator_dir/pr"
 collected_dir="$curator_dir/collected"
+curator_task_dir="$KP_HOME/tasks/curator"
+
+# At most one launch per calendar day, and at least this many pending critiques
+# before an automatic run is worth it.
+MIN_PENDING=3
+
+# skills_origin_slug
+# The "owner/repo" the skills checkout's origin names, lowercased so it compares
+# with gh's baseRepository.nameWithOwner. The URL is read as configured
+# (`git config --get`), not through `git remote get-url`: an `insteadOf` rewrite
+# would otherwise report the local path the remote is fetched through. Prints
+# nothing when the origin names no owner/repo (a plain local path), which no
+# baseRepository can equal.
+skills_origin_slug() {
+  local url
+  url=$(git -C "$SKILLS_DIR" config --get remote.origin.url 2>/dev/null || true)
+  case "$url" in
+    *://*)
+      url=${url#*://}
+      case "$url" in
+        */*) url=${url#*/} ;;
+        *) return 0 ;;
+      esac
+      ;;
+    *@*:*)
+      # scp form, git@host:owner/repo
+      url=${url#*@}
+      url=${url#*:}
+      ;;
+    *) return 0 ;;
+  esac
+  url=${url%.git}
+  url=${url%/}
+  case "$url" in
+    */*/*) return 0 ;;
+    */*) ;;
+    *) return 0 ;;
+  esac
+  printf '%s\n' "$url" | tr '[:upper:]' '[:lower:]'
+}
+
+# verify_pr_target <pr-url> <branch> <what>
+# Refuse unless gh reports the PR's base repository as the skills checkout's
+# origin and, when <branch> is recorded, its head as that branch. A person
+# approves the dossier's skills diff, not the merge target, so the target is
+# checked here too. <what> finishes the refusal ("refusing to <what>").
+verify_pr_target() {
+  local url=${1:?} branch=${2:-} what=${3:-use} fields base head origin
+  origin=$(skills_origin_slug)
+  [ -n "$origin" ] \
+    || die "cannot read the origin remote of $SKILLS_DIR; refusing to $what"
+  fields=$( cd "$SKILLS_DIR" \
+    && "$GH_CMD" pr view "$url" --json baseRepository,headRefName \
+      --jq '.baseRepository.nameWithOwner + " " + .headRefName' 2>/dev/null ) \
+    || die "cannot read $url with $GH_CMD; refusing to $what"
+  case "$fields" in
+    *' '*) ;;
+    *) die "gh reported no base repository and head for $url; refusing to $what" ;;
+  esac
+  base=${fields%% *}
+  head=${fields#* }
+  [ "$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')" = "$origin" ] \
+    || die "$url targets $base, not the skills origin ($origin); refusing to $what"
+  if [ -n "$branch" ] && [ "$head" != "$branch" ]; then
+    die "$url comes from branch '${head:-unknown}', not the recorded '$branch'; refusing to $what"
+  fi
+}
+
+# --mark-applied <pr-url>
+# The curator calls this at PR-open time (the launch script calls it again after
+# the child returns only as a fallback). It takes no mutex: the batch is already
+# published and the curator owns the run.
+if [ -n "$MARK_APPLIED" ]; then
+  case "$MARK_APPLIED" in
+    https://*) ;;
+    *) die "--mark-applied needs an https:// PR URL, got '$MARK_APPLIED'" ;;
+  esac
+  case "$MARK_APPLIED" in
+    *[[:space:]]*) die "--mark-applied needs a URL without spaces, got '$MARK_APPLIED'" ;;
+  esac
+  [ -f "$batch_file" ] || die "no published curator batch in $batch_file (nothing to mark applied)"
+  [ -d "$collected_dir" ] || die "no collected curator snapshots in $collected_dir (nothing to mark applied)"
+  # The same target check `--land` runs: a marker must not name a PR in another
+  # repository or from a branch the record does not own.
+  verify_pr_target "$MARK_APPLIED" "$(kp_env_get "$curator_task_dir/task.env" BRANCH)" "mark applied"
+  mark_rc=0
+  kp_curate_mark_applied "$KP_HOME" "$MARK_APPLIED" || mark_rc=$?
+  exit "$mark_rc"
+fi
+
+# skills_default_branch
+# Prints the branch the skills checkout treats as its default: origin/HEAD when
+# it is recorded and still resolves, then origin/master, origin/main, then the
+# checked-out branch. Read-only and local, so the gate never reaches the network.
+skills_default_branch() {
+  local ref b head
+  if ref=$(git -C "$SKILLS_DIR" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null) \
+     && git -C "$SKILLS_DIR" show-ref --verify --quiet "$ref" 2>/dev/null; then
+    printf '%s\n' "${ref#refs/remotes/origin/}"
+    return 0
+  fi
+  for b in master main; do
+    if git -C "$SKILLS_DIR" show-ref --verify --quiet "refs/remotes/origin/$b" 2>/dev/null; then
+      printf '%s\n' "$b"
+      return 0
+    fi
+  done
+  head=$(git -C "$SKILLS_DIR" symbolic-ref --short -q HEAD 2>/dev/null || true)
+  printf '%s\n' "${head:-main}"
+}
+
+# --land
+# Merge the curator's PR and finish its task record. The approval that reached
+# `kingpin land curator` is the review gate, so there is no verdict to parse.
+if [ "$LAND" -eq 1 ]; then
+  if archived=$(kp_task_archive_dir "$KP_HOME" curator); then
+    echo "OK: task curator is already finished; nothing to land (dossier archived at $archived/report.html)"
+    exit 0
+  fi
+  [ -d "$curator_task_dir" ] || die "curator task record $curator_task_dir not found"
+  [ "$(kp_env_get "$curator_task_dir/task.env" CURATOR)" = "1" ] \
+    || die "task id curator belongs to a user's task in $curator_task_dir; refusing to land it"
+  [ -f "$pr_file" ] || die "no curator PR recorded in $pr_file"
+  [ -d "$SKILLS_DIR" ] || die "skills directory $SKILLS_DIR not found"
+  pr_url=$(sed -n 1p "$pr_file" 2>/dev/null || true)
+  case "$pr_url" in
+    https://*) ;;
+    *) die "no https:// PR URL recorded in $pr_file" ;;
+  esac
+  # What a person approved is the dossier's skills diff, not the merge target:
+  # refuse a PR in another repository or from a branch this record did not open,
+  # before anything is marked or merged.
+  verify_pr_target "$pr_url" "$(kp_env_get "$curator_task_dir/task.env" BRANCH)" "merge it"
+  default_branch=$(skills_default_branch)
+  current_branch=$(git -C "$SKILLS_DIR" symbolic-ref --short -q HEAD 2>/dev/null || true)
+  if [ -z "$current_branch" ] || [ "$current_branch" = "$default_branch" ]; then
+    die "refusing to land: $SKILLS_DIR is on its default branch '${current_branch:-detached HEAD}'; check out the curator's branch first"
+  fi
+  touch "$curator_task_dir/landing_sent"
+  merge_args=(pr merge "$pr_url" --merge)
+  # `--delete-branch` switches the checkout to the default branch, which git
+  # refuses in a linked worktree. The same rule /create-pr-merge follows.
+  merge_git_dir=$(kp_git_dir "$SKILLS_DIR" 2>/dev/null || true)
+  merge_common_dir=$(kp_git_common_dir "$SKILLS_DIR" 2>/dev/null || true)
+  if [ -n "$merge_git_dir" ] && [ "$merge_git_dir" = "$merge_common_dir" ]; then
+    merge_args+=(--delete-branch)
+  fi
+  merge_rc=0
+  ( cd "$SKILLS_DIR" && "$GH_CMD" "${merge_args[@]}" ) || merge_rc=$?
+  merge_state=""
+  if [ "$merge_rc" -eq 0 ]; then
+    merge_state=$( cd "$SKILLS_DIR" && "$GH_CMD" pr view "$pr_url" --json state --jq .state 2>/dev/null || true )
+  fi
+  if [ "$merge_state" != "MERGED" ]; then
+    rm -f "$curator_task_dir/landing_sent"
+    die "could not merge $pr_url (gh exit $merge_rc, state ${merge_state:-unknown}); the PR is left open"
+  fi
+  printf 'merged: pr=%s\n' "$pr_url" >> "$curator_task_dir/status"
+  exec "$KP_BIN/kingpin-done" curator
+fi
+
+# The skills checkout is required for a real run. --auto instead reports one
+# line and returns 0, because a missing checkout must never fail a fleet tick.
+if [ "$AUTO" -eq 1 ]; then
+  if [ "${KINGPIN_CURATOR_AUTO:-1}" = "0" ]; then
+    exit 0
+  fi
+  if ! { [ -d "$SKILLS_DIR" ] && git -C "$SKILLS_DIR" rev-parse --git-dir >/dev/null 2>&1; }; then
+    info "skills directory $SKILLS_DIR is not a git checkout; the automatic run skipped"
+    exit 0
+  fi
+else
+  [ -d "$SKILLS_DIR" ] || die "skills directory $SKILLS_DIR not found"
+fi
 
 # Collect into a temporary directory: --dry-run must not touch the curator state.
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/kingpin-curate.XXXXXX")
@@ -65,42 +263,42 @@ mkdir -p "$collected_tmp"
 # The mutex is a backstop for every exit path, including the refusals below.
 mutex_held=0
 cleanup() {
+  local rc=$?
   if [ "$mutex_held" -eq 1 ]; then
     kp_mutex_release "$mutex_file"
   fi
   rm -rf "$tmp_dir"
+  # The automatic trigger reports through the fleet log and must never fail its
+  # caller, whatever went wrong inside this run.
+  if [ "$AUTO" -eq 1 ]; then
+    exit 0
+  fi
+  exit "$rc"
 }
 trap cleanup EXIT
 
-# Serialize collection through launch: two runs that start together must not both
-# publish curator-input.txt, batch-critiques.txt and launch.sh, or share the same
-# curator-result. A dry run writes nothing and takes no mutex.
-if [ "$DRY_RUN" -eq 0 ]; then
-  kp_mutex_acquire "$mutex_file" \
-    || die "could not take the curator mutex (held by pid ${kp_mutex_owner:-unknown} for more than 8 s)"
-  mutex_held=1
-fi
-
+# collect_critiques
+# Fill the temporary batch, input and collected snapshots; sets `count`. Both the
+# manual run and the automatic trigger use the same reader (`kp_curate_pending_task`),
+# so a consumed or rewritten critique is treated the same way everywhere.
 count=0
-seen_tasks=""
-for search_dir in "$KP_HOME/tasks" "$KP_HOME/archive"; do
-  [ -d "$search_dir" ] || continue
-  for task_dir in "$search_dir"/*; do
-    [ -d "$task_dir" ] || continue
-    task_id=$(basename "$task_dir")
-    case " $seen_tasks " in
-      *" $task_id "*) continue ;;
-    esac
-    crit_file="$task_dir/critique"
-    if [ -f "$crit_file" ] && [ -s "$crit_file" ]; then
-      # A successful run copies the applied bytes beside the critique as
-      # critique.consumed. The stamp travels with the task when kingpin done
-      # archives it, and a rewritten critique no longer matches, so it is
-      # collected again.
-      stamp_file="$task_dir/critique.consumed"
-      if [ -f "$stamp_file" ] && cmp -s "$stamp_file" "$crit_file"; then
-        continue
-      fi
+collect_critiques() {
+  local search_dir task_dir task_id crit_file seen_tasks=""
+  count=0
+  : > "$input_tmp"
+  : > "$batch_tmp"
+  rm -rf "$collected_tmp"
+  mkdir -p "$collected_tmp"
+  for search_dir in "$KP_HOME/tasks" "$KP_HOME/archive"; do
+    [ -d "$search_dir" ] || continue
+    for task_dir in "$search_dir"/*; do
+      [ -d "$task_dir" ] || continue
+      task_id=$(basename "$task_dir")
+      case " $seen_tasks " in
+        *" $task_id "*) continue ;;
+      esac
+      kp_curate_pending_task "$task_dir" || continue
+      crit_file="$task_dir/critique"
       seen_tasks="$seen_tasks $task_id"
       # Keep the exact bytes the curator is given: the stamp is written from this
       # copy, so a critique rewritten while the run is in flight is not consumed.
@@ -112,143 +310,341 @@ for search_dir in "$KP_HOME/tasks" "$KP_HOME/archive"; do
       } >> "$input_tmp"
       echo "$crit_file" >> "$batch_tmp"
       count=$((count + 1))
-    fi
+    done
   done
-done
-
-if [ "$count" -eq 0 ]; then
-  echo "kingpin-curate: no pending skill critiques"
-  exit 0
-fi
-
-if [ "$DRY_RUN" -eq 1 ]; then
-  echo "kingpin-curate: dry-run, $count task(s) have pending critiques:"
-  cat "$input_tmp"
-  exit 0
-fi
-
-# Ensure no curator is already active. A window whose only panes have exited is
-# not a curator: on a host with tmux's remain-on-exit set, a failed launch leaves
-# that dead pane behind, and treating it as live would block every later run.
-curator_state() {
-  local panes
-  panes=$(tmux list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null) || { echo none; return; }
-  if printf '%s\n' "$panes" | grep -q '^0$'; then
-    echo alive
-  else
-    echo dead
-  fi
 }
 
-case "$(curator_state)" in
-  alive)
-    die "curator window kingpin:curator is already active"
-    ;;
-  dead)
-    tmux kill-window -t kingpin:curator 2>/dev/null || true
-    echo "kingpin-curate: reaped dead curator window kingpin:curator"
-    ;;
-  none) : ;;
-esac
+# reconcile_curator_task
+# A curator task whose last status is terminal still holds tasks/curator; hand it
+# to `kingpin done` before a new launch writes over it. The automatic path skips
+# the merge verification there: `kingpin land curator` already checked the PR
+# state, and the check would otherwise add a `git fetch` in the operator's live
+# skills checkout to a fleet tick.
+reconcile_curator_task() {
+  local dir="$curator_task_dir" skip_merge=0
+  kp_task_is_live "$dir" || return 0
+  [ -f "$dir/task.env" ] || return 0
+  [ "$(kp_env_get "$dir/task.env" CURATOR)" = "1" ] || return 0
+  case "$(kp_status_last "$dir/status")" in
+    merged:*|failed:*|cleanup-refused:*)
+      if [ "$AUTO" -eq 1 ]; then
+        skip_merge=1
+      fi
+      KINGPIN_SKIP_MERGE_CHECK=$skip_merge "$KP_BIN/kingpin-done" curator >/dev/null 2>&1 || true
+      ;;
+  esac
+}
 
-# claude stops at the folder-trust dialog in a directory it has not been trusted
-# in, and a curator parked there writes no result and holds the window open. Record
-# trust first, with the same helper and redirection kingpin-spawn uses.
-node "$KP_ROOT/lib/claude-trust.mjs" "$SKILLS_DIR" >/dev/null
+# curator_record_hold
+# Exit 0 when tasks/curator holds a live, non-terminal curator record, which is a
+# run nobody has landed or closed yet; prints its last status line and the PR it
+# recorded, as two lines. A terminal record was reconciled before this runs, and
+# a user's own task in that slot is refused before it, so a hit is the curator's.
+curator_record_hold() {
+  local dir="$curator_task_dir" last pr
+  kp_task_is_live "$dir" || return 1
+  [ -f "$dir/task.env" ] || return 1
+  [ "$(kp_env_get "$dir/task.env" CURATOR)" = "1" ] || return 1
+  last=$(kp_status_last "$dir/status")
+  kp_status_is_terminal "$last" && return 1
+  pr=$(kp_status_field "$last" pr)
+  [ -n "$pr" ] || pr=$(sed -n 1p "$pr_file" 2>/dev/null || true)
+  printf '%s\n%s\n' "${last:-none}" "${pr:-none}"
+  return 0
+}
 
-# Only a real run publishes the collected batch and touches the curator state.
-mkdir -p "$KP_HOME" "$curator_dir"
-mv "$input_tmp" "$input_file"
-mv "$batch_tmp" "$batch_file"
-rm -rf "$collected_dir"
-mv "$collected_tmp" "$collected_dir"
+# report_curator_hold
+# One stderr line when the idle gate failed because tasks/curator holds a live,
+# non-terminal curator record; nothing on any other path. Without it the
+# automatic run stops for a record a person has to land, and the fleet log says
+# nothing about why.
+report_curator_hold() {
+  local hold
+  if hold=$(curator_record_hold); then
+    info "task curator is still live (last status: ${hold%$'\n'*}; pr=${hold##*$'\n'}); the automatic run skipped"
+  fi
+  return 0
+}
 
-# Write prompt to file safely preserving single/double quotes and $() verbatim
-cat > "$prompt_file" << 'EOF_PROMPT'
-Apply the following skill critique(s) per the Skill Optimization Protocol in your rules:
+# The id is reserved for the curator. A user task that took it by hand must not
+# be overwritten, and the run stops with one line naming why. A dry run only
+# reads, so it never refuses.
+if [ "$DRY_RUN" -eq 0 ] && [ -f "$curator_task_dir/task.env" ] \
+   && [ "$(kp_env_get "$curator_task_dir/task.env" CURATOR)" != "1" ]; then
+  if [ "$AUTO" -eq 1 ]; then
+    kp_curate_stamp "$KP_HOME" || true
+    info "task id curator belongs to a user's task in $curator_task_dir; the automatic run skipped"
+    exit 0
+  fi
+  die "task id curator belongs to a user's task in $curator_task_dir; refusing to overwrite it"
+fi
 
-EOF_PROMPT
-cat "$input_file" >> "$prompt_file"
-cat >> "$prompt_file" << EOF_PROMPT
+if [ "$DRY_RUN" -eq 0 ]; then
+  if [ "$AUTO" -eq 1 ]; then
+    # One attempt, no waiting: a held mutex means a curator run is already
+    # publishing, so this tick simply skips.
+    if ! kp_curate_due "$KP_HOME"; then
+      exit 0
+    fi
+    reconcile_curator_task
+    case "$(kp_curate_window_state)" in
+      alive)
+        kp_curate_stamp "$KP_HOME" || true
+        echo "kingpin-curate: curator window kingpin:curator is already active; the automatic run skipped"
+        exit 0
+        ;;
+      dead)
+        tmux kill-window -t kingpin:curator 2>/dev/null || true
+        info "reaped dead curator window kingpin:curator"
+        ;;
+      none) : ;;
+    esac
+    if [ "$(kp_curate_pending_count "$KP_HOME")" -lt "$MIN_PENDING" ]; then
+      exit 0
+    fi
+    if ! kp_curate_idle "$KP_HOME"; then
+      report_curator_hold
+      exit 0
+    fi
+    collect_critiques
+    if [ "$count" -lt "$MIN_PENDING" ]; then
+      exit 0
+    fi
+    if ! kp_mutex_try "$mutex_file"; then
+      exit 0
+    fi
+    mutex_held=1
+    # Re-check every gate under the mutex: another run may have landed, stamped,
+    # or published while this one was collecting.
+    if ! kp_curate_due "$KP_HOME"; then
+      exit 0
+    fi
+    if ! kp_curate_idle "$KP_HOME"; then
+      report_curator_hold
+      exit 0
+    fi
+    if [ "$(kp_curate_window_state)" = "alive" ]; then
+      exit 0
+    fi
+    collect_critiques
+    if [ "$count" -lt "$MIN_PENDING" ]; then
+      exit 0
+    fi
+  else
+    kp_mutex_acquire "$mutex_file" \
+      || die "could not take the curator mutex (held by pid ${kp_mutex_owner:-unknown} for more than 8 s)"
+    mutex_held=1
+  fi
 
-When finished, record each applied edit in:
-$result_file
-EOF_PROMPT
+  if [ "$AUTO" -eq 0 ]; then
+    collect_critiques
+    if [ "$count" -eq 0 ]; then
+      echo "kingpin-curate: no pending skill critiques"
+      exit 0
+    fi
+  fi
 
-# Reset result file before launching
-rm -f "$result_file"
+  reconcile_curator_task
 
-# Generate launch script
-cat > "$launch_file" << EOF_LAUNCH
+  # A manual run would replace the record, the status and the PR URL of a curator
+  # nobody has landed yet: refuse instead of truncating them. A terminal record
+  # was reconciled just above, and a record with no status at all is a launch
+  # that died before its first line: its window is reaped below and the run goes
+  # ahead, so only a real waiting state refuses.
+  if [ "$AUTO" -eq 0 ] && hold=$(curator_record_hold); then
+    last_line=${hold%$'\n'*}
+    if [ "$last_line" != "none" ]; then
+      die "task curator is still live (last status: $last_line; pr=${hold##*$'\n'}); land or close its PR first"
+    fi
+  fi
+
+  # The automated run already reaped its window and checked for a live record.
+  # A manual run keeps its own refusal and reap rules.
+  if [ "$AUTO" -eq 0 ]; then
+    case "$(kp_curate_window_state)" in
+      alive)
+        die "curator window kingpin:curator is already active"
+        ;;
+      dead)
+        tmux kill-window -t kingpin:curator 2>/dev/null || true
+        echo "kingpin-curate: reaped dead curator window kingpin:curator"
+        ;;
+      none) : ;;
+    esac
+  fi
+
+  # claude stops at the folder-trust dialog in a directory it has not been trusted
+  # in, and a curator parked there writes no result and holds the window open. Record
+  # trust first, with the same helper and redirection kingpin-spawn uses.
+  node "$KP_ROOT/lib/claude-trust.mjs" "$SKILLS_DIR" >/dev/null
+
+  # Only a real run publishes the collected batch and touches the curator state.
+  mkdir -p "$KP_HOME" "$curator_dir"
+  mv "$input_tmp" "$input_file"
+  mv "$batch_tmp" "$batch_file"
+  rm -rf "$collected_dir"
+  mv "$collected_tmp" "$collected_dir"
+  # A stale PR URL from an earlier run must not look like this run's completion.
+  rm -f "$pr_file"
+
+  curator_branch="curator/$(date +%F)"
+  default_branch=$(skills_default_branch)
+  default_sha=$(git -C "$SKILLS_DIR" rev-parse --verify -q "$default_branch" 2>/dev/null || true)
+  curator_report="$curator_task_dir/report.html"
+
+  # The preamble is the curator's contract, substituted the way kingpin-spawn
+  # substitutes worker/preamble.md; the collected batch follows a separator.
+  sed -e "s|{{TASK_ID}}|curator|g" \
+      -e "s|{{TASK_DIR}}|$curator_task_dir|g" \
+      -e "s|{{SKILLS_DIR}}|$SKILLS_DIR|g" \
+      -e "s|{{BRANCH}}|$curator_branch|g" \
+      -e "s|{{DEFAULT_BRANCH}}|$default_branch|g" \
+      -e "s|{{KP_ROOT}}|$KP_ROOT|g" \
+      -e "s|{{GH}}|$GH_CMD|g" \
+      -e "s|{{PR_FILE}}|$pr_file|g" \
+      -e "s|{{REPORT_FILE}}|$curator_report|g" \
+      -e "s|{{STATUS_FILE}}|$curator_task_dir/status|g" \
+      "$KP_ROOT/worker/curator-preamble.md" > "$prompt_file"
+  printf '\n---\n\n' >> "$prompt_file"
+  cat "$input_file" >> "$prompt_file"
+
+  cat > "$launch_file" << EOF_LAUNCH
 #!/usr/bin/env bash
 set -uo pipefail
 
 export KINGPIN_HOME='$KP_HOME'
+export KINGPIN_TASK_DIR='$curator_task_dir'
+export KINGPIN_ROOT='$KP_ROOT'
+# The curator calls --mark-applied from this window, and that child reads the
+# skills checkout and the gh command from the environment. tmux hands a new
+# window the server's environment, which may predate the operator's overrides,
+# so record the ones this run resolved.
+export KINGPIN_SKILLS_DIR='$SKILLS_DIR'
+export KINGPIN_GH='$GH_CMD'
 PROMPT_FILE='$prompt_file'
-RESULT_FILE='$result_file'
-BATCH_FILE='$batch_file'
-COLLECTED_DIR='$collected_dir'
+PR_FILE='$pr_file'
+REPORT_FILE='$curator_report'
+STATUS_FILE='$curator_task_dir/status'
+SKILLS_DIR='$SKILLS_DIR'
+BRANCH='$curator_branch'
+GH_CMD='$GH_CMD'
+DEFAULT_BRANCH='$default_branch'
+DEFAULT_SHA='$default_sha'
+export PROMPT_FILE PR_FILE REPORT_FILE STATUS_FILE SKILLS_DIR BRANCH GH_CMD DEFAULT_BRANCH DEFAULT_SHA
 
-# Resolve the critique by task id: kingpin done may have moved the task into the
-# archive, or into archive/<id>.<n> on a name collision, while the curator ran.
-critique_for_task() {
-  local id=\$1 dir
-  for dir in "\$KINGPIN_HOME/tasks/\$id" "\$KINGPIN_HOME/archive/\$id"; do
-    if [ -f "\$dir/critique" ]; then
-      printf '%s\n' "\$dir/critique"
-      return 0
-    fi
-  done
-  for dir in "\$KINGPIN_HOME/archive/\$id".*; do
-    if [ -f "\$dir/critique" ]; then
-      printf '%s\n' "\$dir/critique"
-      return 0
-    fi
-  done
-  return 1
+# The worker's last event is the last line that is not an approved:/feedback: note.
+last_event() {
+  [ -f "\$STATUS_FILE" ] || return 0
+  grep -vE '^(approved|feedback):' "\$STATUS_FILE" 2>/dev/null | tail -n 1 || true
 }
 
 curator_rc=0
 $CLAUDE_CMD "\$(cat "\$PROMPT_FILE")" || curator_rc=\$?
 
-if [ "\$curator_rc" -eq 0 ] && [ -f "\$RESULT_FILE" ] && [ -s "\$RESULT_FILE" ]; then
-  applied_count=0
-  while IFS= read -r crit_file; do
-    [ -n "\$crit_file" ] || continue
-    task_id=\$(basename "\$(dirname "\$crit_file")")
-    target=\$(critique_for_task "\$task_id") || continue
-    # The stamp is a copy of the bytes the curator was given, not of the file at
-    # completion, so a critique rewritten during the run is not marked consumed.
-    snapshot="\$COLLECTED_DIR/\$task_id"
-    if [ ! -f "\$snapshot" ]; then
-      echo "kingpin-curate: no collected copy for \$task_id; leaving its critique pending" >&2
-      continue
+pr_url=''
+[ -f "\$PR_FILE" ] && pr_url=\$(sed -n 1p "\$PR_FILE" 2>/dev/null || true)
+
+# Fallback only: the curator runs --mark-applied itself at PR-open time, and a
+# harness that exits before that step leaves the batch pending. This copy catches
+# that case, and does nothing when an applied marker already names the PR.
+case "\$pr_url" in
+  https://*)
+    if ! grep -rlF -- "\$pr_url" "\$KINGPIN_HOME"/tasks/*/critique.applied.*.pr "\$KINGPIN_HOME"/archive/*/critique.applied.*.pr 2>/dev/null | grep -q .; then
+      "\$KINGPIN_ROOT/bin/kingpin-curate" --mark-applied "\$pr_url" >/dev/null 2>&1 || true
     fi
-    if ! cmp -s "\$snapshot" "\$target"; then
-      echo "kingpin-curate: critique for \$task_id changed while the curator ran; leaving it pending" >&2
-      continue
+    ;;
+esac
+
+# A curator that committed to the default branch violates its contract. Record
+# it rather than reporting a clean ready: line on top of it.
+if [ -n "\$DEFAULT_SHA" ] && [ -d "\$SKILLS_DIR" ]; then
+  current_sha=\$(git -C "\$SKILLS_DIR" rev-parse --verify -q "\$DEFAULT_BRANCH" 2>/dev/null || true)
+  if [ -n "\$current_sha" ] && [ "\$current_sha" != "\$DEFAULT_SHA" ]; then
+    if ! last_event | grep -qE '^(ready|failed):'; then
+      printf '%s\n' "failed: the curator committed to \$DEFAULT_BRANCH" >> "\$STATUS_FILE"
     fi
-    # The stamp is written first: a process killed between the stamp and the
-    # rename still leaves the critique consumed on the next run.
-    stamp="\$target.consumed"
-    if cp -f "\$snapshot" "\$stamp.tmp.\$\$" && mv -f "\$stamp.tmp.\$\$" "\$stamp"; then
-      mv -f "\$target" "\$target.applied.\$(date +%s)"
-      applied_count=\$((applied_count + 1))
-    fi
-  done < "\$BATCH_FILE"
-  echo "OK: curator completed successfully and archived \$applied_count critique(s)"
-else
-  echo "kingpin-curate: curator did not complete successfully or result file missing; critiques remain pending" >&2
+    exit 0
+  fi
 fi
+
+last=\$(last_event)
+case "\$last" in
+  ready:*|failed:*) ;;
+  *)
+    if [ -n "\$pr_url" ]; then
+      printf '%s\n' "ready: branch=\$BRANCH review=PENDING report=\$REPORT_FILE pr=\$pr_url" >> "\$STATUS_FILE"
+    elif [ "\$curator_rc" -ne 0 ]; then
+      printf '%s\n' "failed: the curator exited with status \$curator_rc and opened no PR" >> "\$STATUS_FILE"
+    else
+      printf '%s\n' "failed: the curator exited without opening a PR" >> "\$STATUS_FILE"
+    fi
+    ;;
+esac
 EOF_LAUNCH
-chmod +x "$launch_file"
+  chmod +x "$launch_file"
 
-tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
-tmux new-window -d -t kingpin: -n curator -c "$SKILLS_DIR" "$launch_file"
+  # A finished curator leaves a symlink at tasks/curator pointing into the archive;
+  # the new record must be a real directory, so drop the link (the archive stays).
+  if [ -L "$curator_task_dir" ]; then
+    rm -f "$curator_task_dir"
+  fi
+  mkdir -p "$curator_task_dir"
+  cat > "$curator_task_dir/task.env" <<EOF_ENV
+TASK_ID=curator
+PROJECT=curator
+PROJECT_PATH=$SKILLS_DIR
+HARNESS=claude
+MODE=review
+BRANCH=$curator_branch
+WORKTREE=$SKILLS_DIR
+TMUX_TARGET=kingpin:curator
+CREATED=$(kp_now_iso)
+NO_LEASE=1
+CURATOR=1
+EOF_ENV
+  : > "$curator_task_dir/status"
+  : > "$curator_task_dir/launching"
 
-# The window now exists and the state is published, so a second run sees a live
-# curator and refuses; the mutex only has to cover collection through launch.
-kp_mutex_release "$mutex_file"
-mutex_held=0
+  tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
+  window_id=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n curator -c "$SKILLS_DIR" "$launch_file") || {
+    # The record was written before the window existed, so without a window it is
+    # a half-made task that would hold the idle gate forever: remove it. The day
+    # is not claimed either, so the next tick tries the launch again.
+    rm -rf "$curator_task_dir"
+    if [ "$AUTO" -eq 1 ]; then
+      info "could not launch the curator in tmux kingpin:curator; the automatic run skipped"
+      exit 0
+    fi
+    die "could not launch the curator in tmux kingpin:curator"
+  }
+  printf 'TMUX_WINDOW_ID=%s\n' "$window_id" >> "$curator_task_dir/task.env"
+  rm -f "$curator_task_dir/launching"
 
-echo "OK: spawned curator in tmux kingpin:curator for $count task critique(s)"
+  # The window now exists and the state is published, so a second run sees a live
+  # curator and refuses; the mutex only has to cover collection through launch.
+  kp_mutex_release "$mutex_file"
+  mutex_held=0
+
+  # The day is claimed only once the window exists, so a launch that failed before
+  # the window is retried on the next tick; a failure after it consumes the day, per
+  # the plan's resolved question. A manual run claims the day too, so the automatic
+  # trigger does not start a second curator later the same day.
+  kp_curate_stamp "$KP_HOME" || true
+
+  if [ "$AUTO" -eq 1 ]; then
+    echo "OK: started the curator for $count pending critique(s) in tmux kingpin:curator"
+    exit 0
+  fi
+
+  echo "OK: spawned curator in tmux kingpin:curator for $count task critique(s)"
+  exit 0
+fi
+
+# --dry-run: read and report, take no mutex and write no curator state.
+collect_critiques
+if [ "$count" -eq 0 ]; then
+  echo "kingpin-curate: no pending skill critiques"
+  exit 0
+fi
+echo "kingpin-curate: dry-run, $count task(s) have pending critiques:"
+cat "$input_tmp"

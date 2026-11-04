@@ -1,8 +1,8 @@
 # shellcheck shell=bash
 # Shared mutex file for the kingpin state files. Sourced by lib/landing.sh (the
-# per-project landing lane) and bin/kingpin-lock (the orchestrator lock); it only
-# defines functions (no `set` options, no output, every function returns 0 unless
-# stated).
+# per-project landing lane), bin/kingpin-lock (the orchestrator lock) and
+# lib/curator.sh (the non-blocking auto-curate gate); it only defines functions
+# (no `set` options, no output, every function returns 0 unless stated).
 #
 #   # shellcheck source=../lib/mutex.sh
 #   . "$KP_BIN/../lib/mutex.sh"
@@ -79,6 +79,60 @@ kp_mutex_acquire() {
     rm -f "$stolen"
     n=$((n + 1))
   done
+  return 1
+}
+
+# kp_mutex_try <mutex>
+# One non-blocking claim attempt, for a caller that must never wait (the
+# auto-curate gate in lib/curator.sh). Exit 0 = taken (the caller must release
+# it), 1 = not taken; kp_mutex_owner then names the pid that was read. The stale
+# rules match kp_mutex_acquire: a dead owner, or a file older than a minute, is
+# reclaimed by renaming it away, checking that the file moved is the one
+# inspected, and retrying the link once. It never sleeps and never releases.
+kp_mutex_try() {
+  local mutex=${1:?} tmp stolen seen moved old
+  kp_mutex_owner=''
+  mkdir -p "$(dirname "$mutex")" 2>/dev/null || return 1
+  tmp=$(mktemp "${mutex}.tmp.XXXXXX" 2>/dev/null) || return 1
+  if printf '%s\n' "$$" > "$tmp" 2>/dev/null && ln "$tmp" "$mutex" 2>/dev/null; then
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  seen=""
+  [ -f "$mutex" ] && seen=$(head -n 1 "$mutex" 2>/dev/null || true)
+  # shellcheck disable=SC2034 # read by the caller after this returns 1
+  kp_mutex_owner=$seen
+  old=""
+  [ -n "$(find "$mutex" -maxdepth 0 -mmin +1 2>/dev/null)" ] && old=1
+  if [ -z "$old" ] && { [ -z "$seen" ] || kill -0 "$seen" 2>/dev/null; }; then
+    # A live owner, or a mutex created just now: do not wait for it.
+    return 1
+  fi
+  stolen="${mutex}.stale.$$"
+  rm -f "$stolen"
+  if ! mv "$mutex" "$stolen" 2>/dev/null; then
+    # Another contender reclaimed it first.
+    return 1
+  fi
+  moved=""
+  [ -f "$stolen" ] && moved=$(head -n 1 "$stolen" 2>/dev/null || true)
+  if [ -n "$seen" ] && [ "$moved" != "$seen" ]; then
+    # We moved a mutex that appeared after our read: hand it back untouched.
+    if [ -e "$mutex" ]; then
+      rm -f "$stolen"
+    else
+      mv "$stolen" "$mutex" 2>/dev/null || rm -f "$stolen"
+    fi
+    return 1
+  fi
+  rm -f "$stolen"
+  tmp=$(mktemp "${mutex}.tmp.XXXXXX" 2>/dev/null) || return 1
+  if printf '%s\n' "$$" > "$tmp" 2>/dev/null && ln "$tmp" "$mutex" 2>/dev/null; then
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
   return 1
 }
 

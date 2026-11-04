@@ -13,6 +13,44 @@ echo "=== Test 8: kingpin curate lifecycle ==="
 export KINGPIN_SKILLS_DIR=$T/skills
 mkdir -p "$T/skills" "$KINGPIN_HOME/tasks/test-curate-1" "$KINGPIN_HOME/archive/test-curate-2"
 
+# The applied marker's target check reads the skills origin and asks gh which
+# repository and branch the PR belongs to, so the fixture is a real checkout with
+# a GitHub origin and a gh stub. The origin names GitHub while an insteadOf
+# rewrite keeps every fetch on a local bare repo, so no test reaches the network.
+# The stub answers with the branch the curator record names.
+git init -q --bare "$T/skills-origin.git"
+git clone -q "$T/skills-origin.git" "$T/skills" 2>/dev/null
+(
+  cd "$T/skills" || exit 1
+  git checkout -q -b main
+  echo "# Skills" > SKILL.md
+  git add SKILL.md
+  git commit -qm "init"
+  git push -q -u origin main
+)
+git -C "$T/skills" remote set-url origin https://github.com/laanhema/skills.git
+git -C "$T/skills" config "url.$T/skills-origin.git.insteadOf" https://github.com/laanhema/skills.git
+cat > "$T/bin/gh" << 'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  "pr view "*"--json baseRepository,headRefName"*)
+    branch=$(sed -n 's/^BRANCH=//p' "${KINGPIN_HOME:?}/tasks/curator/task.env" 2>/dev/null | tail -n 1)
+    printf 'laanhema/skills %s\n' "${branch:-main}"
+    ;;
+  "pr view "*"--json state"*) echo MERGED ;;
+  *) exit 0 ;;
+esac
+GHEOF
+chmod +x "$T/bin/gh"
+export KINGPIN_GH=$T/bin/gh
+
+# A successful run leaves a live curator record awaiting review, and the next
+# manual run must not overwrite it, so each round clears it the way an operator
+# does once the PR is dealt with.
+finish_curator_record() {
+  "$KP_BIN/kingpin" "done" curator >/dev/null 2>&1 || true
+}
+
 tricky_critique="Special critique: 'single' and \"double\" and \$(echo subshell)"
 echo "$tricky_critique" > "$KINGPIN_HOME/tasks/test-curate-1/critique"
 echo "Simple archive critique" > "$KINGPIN_HOME/archive/test-curate-2/critique"
@@ -170,10 +208,12 @@ reaped_replay=$("$KP_BIN/kingpin" curate --dry-run)
 echo "$reaped_replay" | grep -q "dry-run, 3 task(s) have pending critiques:" && pass "a reaped run leaves its critique pending" || fail "reaped run consumed its critique: $reaped_replay"
 echo "$reaped_replay" | grep -q -- "--- Task test-curate-reaped ---" && pass "the reaped critique is replayed" || fail "reaped critique missing from the replay: $reaped_replay"
 
-# 8.3 Succeeding curator archives critiques upon writing curator-result
+# 8.3 Succeeding curator archives critiques upon opening the PR
 cat > "$T/fake-curator-success" << EOF_SUCC
 #!/usr/bin/env bash
-echo "applied: updated skill definition" > "$KINGPIN_HOME/curator-result"
+url="https://github.com/laanhema/skills/pull/7"
+printf '%s\n' "\$url" > "$KINGPIN_HOME/curator/pr"
+$KP_BIN/kingpin-curate --mark-applied "\$url"
 exit 0
 EOF_SUCC
 chmod +x "$T/fake-curator-success"
@@ -188,6 +228,11 @@ done
 
 [ ! -f "$KINGPIN_HOME/tasks/test-curate-1/critique" ] && [ ! -f "$KINGPIN_HOME/archive/test-curate-2/critique" ] && pass "succeeding curator archived pending critiques" || fail "critiques still pending after success"
 ls "$KINGPIN_HOME/tasks/test-curate-1"/critique.applied.* >/dev/null 2>&1 && ls "$KINGPIN_HOME/archive/test-curate-2"/critique.applied.* >/dev/null 2>&1 && pass "applied archive files created" || fail "missing critique.applied.* files"
+pr_marker=""
+for f in "$KINGPIN_HOME/tasks/test-curate-1"/critique.applied.*.pr; do
+  [ -f "$f" ] && pr_marker=$f && break
+done
+[ -n "$pr_marker" ] && grep -qxF "https://github.com/laanhema/skills/pull/7" "$pr_marker" && pass "the applied marker records the PR URL" || fail "critique.applied.*.pr missing or wrong: ${pr_marker:-none}"
 
 # 8.3a A successful run consumes its critiques, so the next run replays nothing
 success_replay=$("$KP_BIN/kingpin" curate --dry-run)
@@ -199,6 +244,7 @@ later_out=$("$KP_BIN/kingpin" curate --dry-run)
 echo "$later_out" | grep -q "dry-run, 1 task(s) have pending critiques:" && pass "a new critique beside a consumed stamp is collected" || fail "the consumed stamp hid a new critique: $later_out"
 echo "$later_out" | grep -q -- "--- Task test-curate-1 ---" && pass "the later critique is named in the replay" || fail "later critique missing from the replay: $later_out"
 rm -f "$KINGPIN_HOME/tasks/test-curate-1/critique"
+finish_curator_record
 
 # 8.3c A task archived mid-run (what kingpin done does) is still consumed
 mkdir -p "$KINGPIN_HOME/tasks/test-curate-3"
@@ -206,7 +252,9 @@ echo "Archived mid-run critique" > "$KINGPIN_HOME/tasks/test-curate-3/critique"
 cat > "$T/fake-curator-slow" << EOF_SLOW
 #!/usr/bin/env bash
 sleep 2
-echo "applied: archived mid-run" > "\$KINGPIN_HOME/curator-result"
+url="https://github.com/laanhema/skills/pull/3"
+printf '%s\n' "\$url" > "$KINGPIN_HOME/curator/pr"
+$KP_BIN/kingpin-curate --mark-applied "\$url"
 exit 0
 EOF_SLOW
 chmod +x "$T/fake-curator-slow"
@@ -227,14 +275,17 @@ done
 [ ! -f "$KINGPIN_HOME/archive/test-curate-3/critique" ] && pass "the archived critique was archived after the run" || fail "archived critique still pending after a successful run"
 archive_replay=$("$KP_BIN/kingpin" curate --dry-run)
 echo "$archive_replay" | grep -q "no pending skill critiques" && pass "an archived consumed critique is not replayed" || fail "archived critique replayed: $archive_replay"
+finish_curator_record
 
 # 8.3d A critique rewritten mid-run is not consumed and is collected next time
 mkdir -p "$KINGPIN_HOME/tasks/test-curate-4"
 printf 'critique A: first version\n' > "$KINGPIN_HOME/tasks/test-curate-4/critique"
-cat > "$T/fake-curator-midrun" << 'EOF_MIDRUN'
+cat > "$T/fake-curator-midrun" << EOF_MIDRUN
 #!/usr/bin/env bash
 sleep 2
-echo "applied: mid-run" > "$KINGPIN_HOME/curator-result"
+url="https://github.com/laanhema/skills/pull/4"
+printf '%s\n' "\$url" > "$KINGPIN_HOME/curator/pr"
+$KP_BIN/kingpin-curate --mark-applied "\$url"
 exit 0
 EOF_MIDRUN
 chmod +x "$T/fake-curator-midrun"
@@ -257,6 +308,7 @@ midrun_replay=$("$KP_BIN/kingpin" curate --dry-run)
 echo "$midrun_replay" | grep -q "dry-run, 1 task(s) have pending critiques:" && pass "the mid-run rewrite is collected by the next dry run" || fail "mid-run rewrite was not collected: $midrun_replay"
 echo "$midrun_replay" | grep -qF "critique B: rewritten while the curator ran" && pass "the replay carries the rewritten critique" || fail "replay did not carry the rewrite: $midrun_replay"
 rm -rf "$KINGPIN_HOME/tasks/test-curate-4"
+finish_curator_record
 
 # 8.4 Empty check
 empty_curate_out=$("$KP_BIN/kingpin" curate)
