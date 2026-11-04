@@ -77,6 +77,7 @@ host_tokens=(
   --body-file # gh's flag, in the prose-gate instructions for issue and PR bodies
   --cached    # git rm --cached, the .agents ignore remedy
   --ff-only   # git pull --ff-only, the sync fast-forward
+  --path-format # git rev-parse's option, named in the git 2.30 suite's description
 )
 
 readme_files=()

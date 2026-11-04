@@ -40,11 +40,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=../lib/gitdir.sh
+. "$KP_ROOT/lib/gitdir.sh"
+
 git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository: $PWD"
 
 # A leased worktree is a linked worktree: only the main checkout is synced.
-if [ "$(git rev-parse --path-format=absolute --git-dir)" != \
-     "$(git rev-parse --path-format=absolute --git-common-dir)" ]; then
+git_dir=$(kp_git_dir "$PWD") || die "cannot read the git directory of $PWD"
+common_dir=$(kp_git_common_dir "$PWD") || die "cannot read the common git directory of $PWD"
+if [ "$git_dir" != "$common_dir" ]; then
   die "$PWD is a linked worktree (a worker checkout); run this in the main Kingpin checkout"
 fi
 

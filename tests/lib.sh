@@ -25,6 +25,11 @@
 #   ... pass "..." / fail "..." ...
 #   kp_test_finish <LABEL>    # prints ALL <LABEL> TESTS PASSED, or exits 1
 
+# The suites read git dirs and exclude paths with the same helper the commands use, so a
+# check resolves them the same way the commands do, including on git 2.30 (issue #86).
+# shellcheck source=../lib/gitdir.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/gitdir.sh"
+
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAILED=1; }
 FAILED=0

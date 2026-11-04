@@ -17,7 +17,7 @@ export KINGPIN_OPENCODE=$T/fake-worker
 export XDG_CONFIG_HOME=$T/xdg
 mkdir -p "$XDG_CONFIG_HOME"
 
-proj_excl=$(git -C "$T/proj" rev-parse --path-format=absolute --git-path info/exclude)
+proj_excl=$(kp_git_path "$T/proj" info/exclude)
 printf '# a line the user wrote\nmy-notes.txt\n' >> "$proj_excl"
 cp -p "$proj_excl" "$T/exclude.user"
 
@@ -291,7 +291,7 @@ cp "$KP_ROOT/orchestrator/contract.md" "$T/guard/orchestrator/contract.md"
 git -C "$T/guard" add -A
 git -C "$T/guard" commit -qm "carry the orchestrator contract template"
 printf 'PROJECT_PATH=%q\nSETUP_CMD=%q\n' "$T/guard" "" > "$KINGPIN_HOME/projects/demo-guard.env"
-guard_excl=$(git -C "$T/guard" rev-parse --path-format=absolute --git-path info/exclude)
+guard_excl=$(kp_git_path "$T/guard" info/exclude)
 # The shape an older guard install left behind, plus a line the user owns.
 printf 'guard-user-note.txt\n.agents/rules/kingpin.md\n.opencode/opencode.json\n' >> "$guard_excl"
 "$KP_BIN/kingpin-guard" install --dir "$T/guard" >/dev/null
@@ -363,7 +363,7 @@ cp "$KP_ROOT/orchestrator/contract.md" "$T/guard-last/orchestrator/contract.md"
 printf '.claude/settings.local.json\n' > "$T/guard-last/.gitignore"
 git -C "$T/guard-last" add -A
 git -C "$T/guard-last" commit -qm "carry the orchestrator contract template"
-guard_last_excl=$(git -C "$T/guard-last" rev-parse --path-format=absolute --git-path info/exclude)
+guard_last_excl=$(kp_git_path "$T/guard-last" info/exclude)
 printf 'guard-last-note.txt\n.claude/rules/kingpin-orchestrator.md\n' >> "$guard_last_excl"
 rc=0
 install_err=$("$KP_BIN/kingpin-guard" install --dir "$T/guard-last" 2>&1 >/dev/null) || rc=$?
@@ -434,7 +434,7 @@ wt_reuse=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/excl-reuse-a/task.env" 
 [ -n "$wt_reuse" ] && [ -d "$wt_reuse" ] && pass "the first task left one returned slot to reuse" \
   || fail "the first task left no worktree to reuse"
 
-reuse_excl=$(git -C "$T/reuse-proj" rev-parse --path-format=absolute --git-path info/exclude)
+reuse_excl=$(kp_git_path "$T/reuse-proj" info/exclude)
 printf '.agents/hooks.json\n.opencode/config.json\n.opencode/plugins/package.json\n.opencode/plugins/kingpin-stop.js\n.agents/rules/kingpin.md\nworker-note.txt\n' >> "$reuse_excl"
 mkdir -p "${wt_reuse:-/nonexistent}/.agents/rules" "${wt_reuse:-/nonexistent}/.opencode/plugins"
 cat > "${wt_reuse:-/nonexistent}/.agents/hooks.json" << 'EOF'
