@@ -14,6 +14,8 @@ KP_BIN=$(cd "$(dirname "$0")" && pwd)
 . "$KP_BIN/../lib/landing.sh"
 # shellcheck source=../lib/exclude.sh
 . "$KP_BIN/../lib/exclude.sh"
+# shellcheck source=../lib/curator.sh
+. "$KP_BIN/../lib/curator.sh"
 FORCE=0
 
 usage() {
@@ -141,6 +143,19 @@ fi
 
 [ -n "${PROJECT_PATH:-}" ] || die "PROJECT_PATH missing in $env_file"
 [ -n "${WORKTREE:-}" ] || die "WORKTREE missing in $env_file"
+
+# A curator task (issue #88) has no leased worktree: its WORKTREE is the shared
+# skills checkout, so it must never be returned to the treehouse pool, and a spawn
+# never wrote excludes for it. NO_LEASE=1 skips exactly those two steps and keeps
+# the clean-worktree check, the merge verification, branch deletion, the archive
+# and the dossier link.
+NO_LEASE=${NO_LEASE:-0}
+
+# Set by the curator's automatic reconcile (bin/kingpin-curate): the PR state was
+# already verified by `kingpin land curator`, so the ancestor check and the
+# `git fetch` in the operator's live skills checkout are skipped. It changes
+# nothing else. Not for hand-setting.
+SKIP_MERGE_CHECK=${KINGPIN_SKIP_MERGE_CHECK:-0}
 
 release_landing_lock_and_advance_queue() {
   local project=${PROJECT:-default}
@@ -279,7 +294,7 @@ remote_default_branch() {
 default_branch=$(resolve_default_branch)
 
 # Confirm commit is on origin default branch
-if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ]; then
+if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ] && [ "$SKIP_MERGE_CHECK" != "1" ]; then
   head_sha=$(git -C "$WORKTREE" rev-parse HEAD 2>/dev/null || true)
   if [ -n "$head_sha" ]; then
     fetch_note=""
@@ -321,13 +336,15 @@ LAVISH_CMD=${KINGPIN_LAVISH:-lavish-axi}
 # 1b. Undo the spawn's per-worktree excludes (issue #77): the pointer, the harness files
 # it injected, and the task's exclude file. It runs before the return, so a slot that the
 # pool keeps on disk goes back clean and never carries Kingpin's files into the next task.
-kp_exclude_clear "$WORKTREE" "$task_dir" || true
+if [ "$NO_LEASE" != "1" ]; then
+  kp_exclude_clear "$WORKTREE" "$task_dir" || true
+fi
 
 # 2. Return treehouse slot. A nonzero return means the pool no longer holds this
 # worktree (it was already returned, destroyed, or a spawn leased the path again).
 # Archiving anyway would lose the slot with no record, and a later spawn would fail
 # with "treehouse could not lease a worktree"; name the lease and stop instead.
-if [ -d "$WORKTREE" ]; then
+if [ "$NO_LEASE" != "1" ] && [ -d "$WORKTREE" ]; then
   ret_args=()
   if [ "$FORCE" -eq 1 ]; then ret_args+=(--force); fi
   if ! return_out=$(cd "$PROJECT_PATH" && treehouse return "${ret_args[@]}" "$WORKTREE" 2>&1); then
@@ -406,5 +423,10 @@ if command -v "$LAVISH_CMD" >/dev/null 2>&1 && [ -f "$task_dir/report.html" ]; t
     >/dev/null 2>&1 || true
   "$LAVISH_CMD" end "$task_dir/report.html" >/dev/null 2>&1 || true
 fi
+
+# The last task leaving the fleet gives the auto-curate trigger the same chance an
+# idle supervisor sweep does (issue #88). It reads local files only and never fails
+# this cleanup; its lines go to stderr so the OK: line stays last on stdout.
+kp_curate_maybe "$KP_HOME" "$KP_BIN" >&2
 
 echo "OK: cleaned up task $id (archived to $archive_dir)"

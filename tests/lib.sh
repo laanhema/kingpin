@@ -44,6 +44,10 @@ kp_test_setup() {
   export KP_TEST_LAVISH_CALLS_LOG=$T/lavish-calls.log
   export KP_TEST_LAVISH_REAL_LOG=$T/real-lavish-calls.log
   export KINGPIN_SKIP_GUARD=1
+  # No suite may launch a real curator against ~/.claude/skills: the auto trigger
+  # rides every supervisor sweep and every kingpin done, so it is off by default
+  # here. tests/test-curate-auto.sh turns it back on with a temp skills checkout.
+  export KINGPIN_CURATOR_AUTO=0
   # CI runners have no global git identity
   export GIT_AUTHOR_NAME=kingpin-test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=kingpin-test GIT_COMMITTER_EMAIL=test@example.com
   export TREEHOUSE_ROOT=$T/pool

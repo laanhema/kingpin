@@ -51,6 +51,13 @@ harness=$(kp_env_get "$env_file" HARNESS)
 [ -n "$harness" ] || harness=claude
 [ -n "$project" ] || project="default"
 
+# A curator task's work is a PR in the skills repository, and the human approval
+# that reached `kingpin land curator` is its review gate, so it is dispatched
+# before the verdict gate (issue #88).
+if [ "$(kp_env_get "$env_file" CURATOR)" = "1" ]; then
+  exec "$KP_BIN/kingpin-curate" --land
+fi
+
 status_file="$task_dir/status"
 # The gate needs the worker's own last event (kp_status_last skips listener notes).
 last_status=$(kp_status_last "$status_file")

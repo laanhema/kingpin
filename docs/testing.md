@@ -28,6 +28,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-watch-supervisor.sh` | `watch`: single supervisor with a pidfile, stale reclaim, `list` line, `lock acquire` warning, events handled across turns |
 | `test-lock.sh` | `lock`: lifecycle, collisions, stale locks, recorded harness, parallel acquire race, atomic publish, release ownership |
 | `test-curate.sh` | `curate` |
+| `test-curate-auto.sh` | the automatic daily curator trigger: threshold, idle/live-fleet and landing gates, once-a-day stamp, existing-window no-op, concurrency, the applied marker, `kingpin land curator`, and no delay to a landing |
 | `test-land.sh` | `land`: review-gate verdicts, fix pass, re-review, output wording |
 | `test-landing-lane.sh` | land lane: dead worker window, dead queue entry, concurrent lands, append-after-release |
 | `test-done.sh` | `done`: refused cleanup, archive, slot guard, branch cleanup, single-flight, default-branch resolution |
