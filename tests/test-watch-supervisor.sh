@@ -52,6 +52,7 @@ seen_count() {
   tr -d ' \n' < "$file"
 }
 
+# shellcheck disable=SC2329 # invoked indirectly by wait_until
 # seen_is <task> <count>: the predicate wait_until needs, because `seen_count` itself
 # always succeeds. The supervisor logs a dispatch and then acks it, so a read taken the
 # instant the log line appears can still see the previous cursor.
