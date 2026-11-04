@@ -12,9 +12,29 @@
 # unset), and reads `<task-dir>/injected` after `kp_harness_launch_script` to learn the
 # worktree paths that launch injected. The prompt is read from its file by the launch
 # script itself, so a long request is never re-quoted onto a command line.
+#
+# It also reads the sessions a harness already has for a worktree
+# (`kp_harness_sessions`), says whether one is live and how old it is, and builds the
+# argv words that resume one, so `kingpin-restore` continues the conversation a task
+# already had instead of starting a second one (issue #168).
 
 # shellcheck source=status.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/status.sh"
+# shellcheck source=portable.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/portable.sh"
+
+# The window in which a reported session counts as live, in seconds. Chosen from the
+# issue #168 timeline (the orphan session was updated seconds before the restore ran)
+# and long enough to cover a worker that was idle awaiting input when its window died.
+# Internal on purpose: it is not a KINGPIN_* variable, so the CLI reference stays as it
+# is, and a suite steers it by writing fixture timestamps.
+_kp_session_live_seconds=900
+
+# The number of rows a harness's session listing is asked for. Far above a project's
+# session count, because a task's own session may be older than the newest handful and
+# a listing that stops early would read as "no session". A listing that reaches this
+# length is reported as truncated rather than trusted as complete.
+_kp_session_list_cap=1000
 
 # kp_worker_preamble <task-dir> <worktree> <mode>
 # Writes `<task-dir>/preamble.md` from worker/preamble.md with the task placeholders
@@ -54,16 +74,149 @@ kp_harness_command() {
   esac
 }
 
-# kp_harness_launch_script <task-dir> <worktree> <harness> <prompt-file>
+# kp_harness_session_live <updated-epoch>
+# Exit 0 when <updated-epoch> is a numeric timestamp inside the live window, 1 otherwise.
+# A future timestamp counts as live: the clock pair cannot prove it dead.
+kp_harness_session_live() {
+  local updated=${1:-} now
+  case "$updated" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(date +%s) || return 1
+  [ $((now - updated)) -le "$_kp_session_live_seconds" ]
+}
+
+# kp_harness_session_age <updated-epoch>
+# Prints the age as `12s`, `4m`, `3h` or `6d`. Exit 1 and no output for a non-numeric
+# value, so a caller reports the missing figure instead of printing a bogus age.
+kp_harness_session_age() {
+  local updated=${1:-} now age
+  case "$updated" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(date +%s) || return 1
+  age=$((now - updated))
+  [ "$age" -ge 0 ] || age=0
+  if [ "$age" -lt 60 ]; then
+    printf '%ss\n' "$age"
+  elif [ "$age" -lt 3600 ]; then
+    printf '%sm\n' "$((age / 60))"
+  elif [ "$age" -lt 86400 ]; then
+    printf '%sh\n' "$((age / 3600))"
+  else
+    printf '%sd\n' "$((age / 86400))"
+  fi
+}
+
+# kp_harness_sessions <harness> <worktree>
+# Prints one line per session the harness already has for <worktree>, newest first:
+# `<id><TAB><updated-epoch-seconds><TAB><label>`, where the label is the session title
+# capped at 60 characters with tabs and newlines collapsed (empty when the store has
+# none). Exit 0 with no output when the harness reports no session, 3 with the rows it
+# did report when the listing reached the cap (so older sessions may be missing), and
+# exit 1 with no output when the harness cannot report sessions or the read failed, so
+# a caller can tell "there is none" and "this list may be incomplete" from "I cannot
+# know". OpenCode's listing is filtered on the session's recorded directory resolved
+# through realpath, because one project id covers every worktree of a repository;
+# claude's store is per directory already. agy and pi have no documented listing call,
+# so they report nothing and say so by the exit status.
+kp_harness_sessions() {
+  local harness=${1:?kp_harness_sessions needs a harness}
+  local worktree=${2:?kp_harness_sessions needs a worktree}
+  local cmd raw base dir slug f updated seen rc=0
+  case "$harness" in
+    opencode)
+      cmd=$(kp_harness_command opencode) || return 1
+      raw=$(cd "$worktree" && "$cmd" session list --format json -n "$_kp_session_list_cap" 2>/dev/null) || return 1
+      # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
+      printf '%s\n' "$raw" | node -e '
+        const fs = require("fs");
+        const path = require("path");
+        const chunks = [];
+        process.stdin.on("data", (d) => chunks.push(d)).on("end", () => {
+          let rows = null;
+          try { rows = JSON.parse(chunks.join("")); } catch {}
+          if (!Array.isArray(rows)) process.exit(1);
+          const norm = (p) => {
+            try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+          };
+          const target = norm(process.argv[1]);
+          const cap = Number(process.argv[2]);
+          const out = [];
+          for (const r of rows) {
+            if (!r || typeof r.id !== "string" || typeof r.directory !== "string") continue;
+            if (norm(r.directory) !== target) continue;
+            const updated = Number(r.updated);
+            if (!Number.isFinite(updated)) continue;
+            const label = String(r.title === undefined || r.title === null ? "" : r.title)
+              .replace(/[\t\r\n]+/g, " ").slice(0, 60);
+            out.push([r.id, Math.floor(updated / 1000), label]);
+          }
+          out.sort((a, b) => b[1] - a[1]);
+          for (const row of out) process.stdout.write(`${row[0]}\t${row[1]}\t${row[2]}\n`);
+          if (Number.isFinite(cap) && rows.length >= cap) process.exitCode = 3;
+        });
+      ' "$worktree" "$_kp_session_list_cap" 2>/dev/null || rc=$?
+      case $rc in
+        0|3) return "$rc" ;;
+        *) return 1 ;;
+      esac
+      ;;
+    claude)
+      # The transcript store is per working directory: <config>/projects/<slug>, where the
+      # slug replaces every character outside [A-Za-z0-9-] with `-`. Try the worktree as
+      # recorded, then its physical path, and list each store once. A missing directory is
+      # "no sessions", not a failure.
+      base=${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects
+      seen=' '
+      for dir in "$worktree" "$(cd "$worktree" && pwd -P)"; do
+        slug=$(printf '%s' "$dir" | sed 's/[^A-Za-z0-9-]/-/g')
+        case "$seen" in *" $slug "*) continue ;; esac
+        seen="$seen$slug "
+        [ -d "$base/$slug" ] || continue
+        for f in "$base/$slug"/*.jsonl; do
+          [ -f "$f" ] || continue
+          updated=$(kp_mtime "$f") || continue
+          printf '%s\t%s\t\n' "$(basename "$f" .jsonl)" "$updated"
+        done
+      done | LC_ALL=C sort -t "$(printf '\t')" -k2,2nr
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# kp_harness_resume_args <harness> <session-id>
+# Prints the argv words that resume one session, one per line, so the caller reads them
+# into an array with the bash-3.2-safe `while IFS= read -r` shape. OpenCode resumes by
+# id; claude's `--continue` is scoped to the current directory, so its detected id is used
+# for the record only. Exit 1 for a harness with no resume support here (agy, pi).
+kp_harness_resume_args() {
+  local harness=${1:?kp_harness_resume_args needs a harness} session=${2:-}
+  case "$harness" in
+    opencode)
+      [ -n "$session" ] || return 1
+      printf '%s\n' --session "$session"
+      ;;
+    claude) printf '%s\n' --continue ;;
+    *) return 1 ;;
+  esac
+}
+
+# kp_harness_launch_script <task-dir> <worktree> <harness> <prompt-file> [resume-word ...]
 # Writes `<task-dir>/launch.sh` for one harness, makes it executable, and records the
 # worktree paths it injected in `<task-dir>/injected` (one per line, empty when none),
 # so the caller never captures stdout and a failure keeps its exit status. The prompt
-# is read at launch time from <prompt-file>. Returns 1 with a stderr reason for the
-# opencode tracked-config refusal, a node failure and a missing pi extension.
+# is read at launch time from <prompt-file>. Any extra arguments are argv words placed
+# before the harness's own flags (a resume's `--session <id>`, for example), so the
+# prompt stays the last argument and the harness reads it as the initial turn of the
+# session it resumed. With no extra word the generated file is byte-identical to a
+# fresh launch's, which is what keeps spawn and the suites reading one shape. Returns 1
+# with a stderr reason for the opencode tracked-config refusal, a node failure and a
+# missing pi extension.
 kp_harness_launch_script() {
   local task_dir=${1:?kp_harness_launch_script needs a task dir}
   local worktree=${2:?} harness=${3:?} prompt=${4:?}
   task_dir=${task_dir%/}
+  shift 4
+  local -a resume=("$@")
+  local resume_words=''
+  [ "${#resume[@]}" -eq 0 ] || resume_words=$(printf '%q ' "${resume[@]}")
   [ -f "$prompt" ] || { echo "prompt file is missing: $prompt" >&2; return 1; }
   local -a injected=() pi_args=()
 
@@ -76,7 +229,7 @@ kp_harness_launch_script() {
 export KINGPIN_TASK_DIR='$task_dir'
 export KINGPIN_WORKTREE='$worktree'
 export KINGPIN_ROOT='${KP_ROOT:?}'
-exec ${KINGPIN_CLAUDE:-claude} --append-system-prompt-file '$task_dir/preamble.md' --settings '${KP_ROOT:?}/worker/hooks.json' "\$(cat '$prompt')"
+exec ${KINGPIN_CLAUDE:-claude} ${resume_words}--append-system-prompt-file '$task_dir/preamble.md' --settings '${KP_ROOT:?}/worker/hooks.json' "\$(cat '$prompt')"
 EOF
       ;;
     agy)
@@ -109,7 +262,7 @@ EOF_HOOKS
 #!/usr/bin/env bash
 export KINGPIN_TASK_DIR='$task_dir'
 export KINGPIN_ROOT='${KP_ROOT:?}'
-exec ${KINGPIN_AGY:-agy} --prompt-interactive "\$(cat '$prompt')" --dangerously-skip-permissions
+exec ${KINGPIN_AGY:-agy} ${resume_words}--prompt-interactive "\$(cat '$prompt')" --dangerously-skip-permissions
 EOF
       ;;
     opencode)
@@ -218,7 +371,7 @@ EOF_OC_PLUG
 #!/usr/bin/env bash
 export KINGPIN_TASK_DIR='$task_dir'
 export KINGPIN_ROOT='${KP_ROOT:?}'
-exec ${KINGPIN_OPENCODE:-opencode} --standalone --auto --prompt "\$(cat '$prompt')"
+exec ${KINGPIN_OPENCODE:-opencode} ${resume_words}--standalone --auto --prompt "\$(cat '$prompt')"
 EOF
       ;;
     pi)
@@ -242,7 +395,7 @@ EOF
         printf 'export KINGPIN_WORKTREE=%q\n' "$worktree"
         printf 'export KINGPIN_ROOT=%q\n' "$KP_ROOT"
         printf 'exec %s' "${KINGPIN_PI:-pi}"
-        printf ' %q' "${pi_args[@]}"
+        printf ' %q' ${resume[@]+"${resume[@]}"} "${pi_args[@]}"
         # shellcheck disable=SC2016 # the program text belongs to the generated launch script
         printf ' "$(cat %q)"\n' "$prompt"
       } > "$task_dir/launch.sh" \

@@ -7,16 +7,23 @@
 # This command recreates or reclaims one window per live task, in the task's own
 # worktree and on its own branch, launches the recorded harness through the same
 # lib/launch.sh a spawn uses, and hands it a resume brief that says where the work
-# stands. It never deletes anything: a task it cannot bring back is refused by name
-# with the reason and the remedy, and its record, worktree and branch stay in place.
+# stands. A dead window is not a dead worker: the harness may still hold the task's
+# conversation in its own server, so the command resumes the session the task already
+# had rather than starting a second one beside it. It refuses when resuming would leave
+# a second live session, and says in its `OK:` line when it starts a fresh one because
+# the harness cannot report an existing session (issue #168). It never deletes anything:
+# a task it cannot bring back is refused by name with the reason and the remedy, and its
+# record, worktree and branch stay in place.
 #
 # Usage: kingpin-restore [<task-id> ...] [--harness <name>] [--dry-run] [--force]
 #   (no ids)    restore every live task under $KINGPIN_HOME/tasks
 #   --harness   launch this harness instead of the recorded one, and record it
 #   --dry-run   print the plan and touch nothing
 #   --force     restore a task whose harness still looks alive, or whose lease
-#               cannot be verified; it never overrides a missing worktree, an
-#               archived task or a terminal status line
+#               cannot be verified, and resume one session when several look
+#               live (the task's recorded session when it is among them, otherwise
+#               the newest); it never overrides a missing worktree, an archived
+#               task or a terminal status line
 #
 # KINGPIN_HOME defaults to ~/.kingpin. Harness command overrides: KINGPIN_CLAUDE,
 # KINGPIN_AGY, KINGPIN_OPENCODE, KINGPIN_PI.
@@ -49,8 +56,9 @@ usage: kingpin-restore [<task-id> ...] [--harness <name>] [--dry-run] [--force]
   --harness  harness to launch instead of the recorded one (recorded afterwards)
   --dry-run  print what would happen, and touch nothing
   --force    restore a task whose harness still looks alive, or whose lease cannot
-             be verified; a missing worktree, an archived task and a terminal
-             status stay refused
+             be verified, and resume one session when several look live (the task's
+             recorded session when it is among them, otherwise the newest); a
+             missing worktree, an archived task and a terminal status stay refused
 HELP
 }
 
@@ -172,23 +180,33 @@ next_step() {
   esac
 }
 
-# write_resume_prompt <task-dir> <id> <project> <worktree> <branch> <mode> <harness> <last> <next>
-# The harness restarts with no conversational memory, so the brief repeats the task's
-# identity, where the work stands, what to do next, and the house rules that still hold.
+# write_resume_prompt <task-dir> <id> <project> <worktree> <branch> <mode> <harness> <last> <next> <resumed-session>
+# The brief repeats the task's identity, where the work stands, what to do next, and the
+# house rules that still hold. A resumed session still has the earlier conversation, so
+# the opening says so and the facts name the session; a fresh launch keeps the "no
+# memory" wording, because there really is none.
 write_resume_prompt() {
-  local task_dir=$1 id=$2 project=$3 worktree=$4 branch=$5 mode=$6 harness=$7 last=$8 next=$9
+  local task_dir=$1 id=$2 project=$3 worktree=$4 branch=$5 mode=$6 harness=$7 last=$8 next=$9 resumed=${10:-}
   local status_file="$task_dir/status"
   {
     printf '# Kingpin resume brief\n\n'
-    printf 'The tmux server died and your window went with it. Kingpin restored the window\n'
-    printf 'in the same worktree, on the same branch, with the same job. You have no memory\n'
-    printf 'of the earlier session: this brief and the worker preamble are the context you get.\n\n'
+    if [ -n "$resumed" ]; then
+      printf 'The tmux server died and your window went with it. Kingpin restored the window\n'
+      printf 'in the same worktree, on the same branch, with the same job, and resumed the\n'
+      printf 'session this task already had: that conversation is in front of you. This brief\n'
+      printf 'repeats the facts below from the task record.\n\n'
+    else
+      printf 'The tmux server died and your window went with it. Kingpin restored the window\n'
+      printf 'in the same worktree, on the same branch, with the same job. You have no memory\n'
+      printf 'of the earlier session: this brief and the worker preamble are the context you get.\n\n'
+    fi
     printf -- '- Task id: %s\n' "$id"
     printf -- '- Project: %s\n' "$project"
     printf -- '- Worktree: %s\n' "$worktree"
     printf -- '- Branch: %s\n' "$branch"
     printf -- '- Mode: %s\n' "$mode"
     printf -- '- Harness: %s\n' "$harness"
+    [ -z "$resumed" ] || printf -- '- Session: %s (resumed)\n' "$resumed"
     printf -- '- Status file: %s\n' "$status_file"
     printf -- '- Last status line: %s\n' "${last:-none}"
     printf -- '- Next step: %s\n\n' "$next"
@@ -313,8 +331,9 @@ for id in ${ids[@]+"${ids[@]}"}; do
       "$id" "$lease_reason" >&2
   fi
 
-  harness=${harness_cli:-$(kp_env_get "$env_file" HARNESS)}
-  [ -n "$harness" ] || harness=claude
+  recorded_harness=$(kp_env_get "$env_file" HARNESS)
+  [ -n "$recorded_harness" ] || recorded_harness=claude
+  harness=${harness_cli:-$recorded_harness}
   case $harness in
     claude|agy|opencode|pi) ;;
     *) refuse "$id" "unsupported harness in $env_file: $harness (must be claude, agy, opencode, or pi)"; continue ;;
@@ -323,6 +342,166 @@ for id in ${ids[@]+"${ids[@]}"}; do
   if ! command -v "${harness_cmd%% *}" >/dev/null 2>&1; then
     refuse "$id" "missing command: ${harness_cmd%% *}"
     continue
+  fi
+
+  # A dead window is not a dead worker: the harness may still hold the task's
+  # conversation, so restore resumes the session this task owns instead of starting a
+  # second one beside it (issue #168). This block only reads, and every refusal here
+  # happens before the command writes anything.
+  recorded_session=$(kp_env_get "$env_file" HARNESS_SESSION)
+  use_recorded=0
+  if [ -z "$harness_cli" ] || [ "$harness_cli" = "$recorded_harness" ]; then
+    use_recorded=1
+  fi
+  rows=() live_rows=()
+  sessions_known=1
+  sessions_truncated=0
+  session_id=''
+  session_ok_note='started a new session'
+  session_dry_note='started a new session'
+  resume_args=()
+  session_rc=0
+  session_list=$(kp_harness_sessions "$harness" "$worktree") || session_rc=$?
+  case $session_rc in
+    0|3) ;;
+    *) sessions_known=0 ;;
+  esac
+  if [ "$sessions_known" -eq 1 ]; then
+    # Exit 3 means the listing filled the cap: use the rows it did report, but do not
+    # read an empty result as proof that the task never had a session.
+    if [ "$session_rc" -eq 3 ]; then
+      sessions_truncated=1
+    fi
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      rows+=("$row")
+      IFS=$'\t' read -r sid supdated slabel <<< "$row"
+      if kp_harness_session_live "$supdated"; then
+        live_rows+=("$row")
+      fi
+    done <<< "$session_list"
+  fi
+
+  # A --harness override must not quietly abandon a task whose recorded harness still
+  # has a live session: two live sessions on one worktree is the incident this command
+  # repairs. --force is the documented escape, and it names what it leaves running.
+  if [ -n "$harness_cli" ] && [ "$harness_cli" != "$recorded_harness" ]; then
+    recorded_rc=0
+    recorded_list=$(kp_harness_sessions "$recorded_harness" "$worktree") || recorded_rc=$?
+    if [ "$recorded_rc" -eq 0 ] || [ "$recorded_rc" -eq 3 ]; then
+      recorded_live=()
+      while IFS= read -r row; do
+        [ -n "$row" ] || continue
+        IFS=$'\t' read -r sid supdated slabel <<< "$row"
+        if kp_harness_session_live "$supdated"; then
+          recorded_live+=("$row")
+        fi
+      done <<< "$recorded_list"
+      if [ "${#recorded_live[@]}" -gt 0 ]; then
+        detail=''
+        for row in ${recorded_live[@]+"${recorded_live[@]}"}; do
+          IFS=$'\t' read -r sid supdated slabel <<< "$row"
+          detail="$detail $sid (${slabel:-untitled}, last active $(kp_harness_session_age "$supdated") ago)"
+        done
+        if [ "$force" -eq 0 ]; then
+          refuse "$id" "--harness $harness_cli would add a second live session beside the $recorded_harness session(s) in $worktree:$detail; close one, or pass --force"
+          continue
+        fi
+        printf 'kingpin-restore: %s launches %s and leaves the live %s session(s) running because of --force:%s\n' \
+          "$id" "$harness_cli" "$recorded_harness" "$detail" >&2
+      fi
+    fi
+  fi
+
+  # Two live sessions for one worktree means resuming either leaves a competitor
+  # driving the same branch and issue. Name every one of them and both remedies.
+  n_live=${#live_rows[@]}
+  if [ "$n_live" -ge 2 ] && [ "$force" -eq 0 ]; then
+    detail=''
+    for row in ${live_rows[@]+"${live_rows[@]}"}; do
+      IFS=$'\t' read -r sid supdated slabel <<< "$row"
+      detail="$detail $sid (${slabel:-untitled}, last active $(kp_harness_session_age "$supdated") ago)"
+    done
+    case $harness in
+      opencode) remedy='opencode session list' ;;
+      claude) remedy="the transcripts under ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects" ;;
+      *) remedy="$harness sessions" ;;
+    esac
+    refuse "$id" "$n_live live $harness sessions for $worktree:$detail; close the ones this task does not own ($remedy), then restore again, or pass --force to resume one of them (the task's recorded session when it is among them, otherwise the newest)"
+    continue
+  fi
+
+  # A live session is the one this task is still driving: prefer the recorded id when it
+  # is among them, otherwise the newest live one. With nothing live, a session that
+  # finished since the crash is still this task's conversation, so the recorded id wins
+  # when it is in the list and the newest is the fallback (a pooled slot's newest).
+  chosen=''
+  if [ "$n_live" -ge 1 ]; then
+    if [ -n "$recorded_session" ] && [ "$use_recorded" -eq 1 ]; then
+      for row in ${live_rows[@]+"${live_rows[@]}"}; do
+        IFS=$'\t' read -r sid supdated slabel <<< "$row"
+        if [ "$sid" = "$recorded_session" ]; then
+          chosen=$row
+          break
+        fi
+      done
+    fi
+    [ -n "$chosen" ] || chosen=${live_rows[0]}
+  elif [ "${#rows[@]}" -gt 0 ]; then
+    if [ -n "$recorded_session" ] && [ "$use_recorded" -eq 1 ]; then
+      for row in ${rows[@]+"${rows[@]}"}; do
+        IFS=$'\t' read -r sid supdated slabel <<< "$row"
+        if [ "$sid" = "$recorded_session" ]; then
+          chosen=$row
+          break
+        fi
+      done
+    fi
+    [ -n "$chosen" ] || chosen=${rows[0]}
+  fi
+
+  # With --force over several live sessions, one note names the ones left running.
+  if [ "$n_live" -ge 2 ] && [ "$force" -eq 1 ]; then
+    IFS=$'\t' read -r sid supdated slabel <<< "$chosen"
+    left=''
+    for row in ${live_rows[@]+"${live_rows[@]}"}; do
+      IFS=$'\t' read -r live_id live_updated live_label <<< "$row"
+      if [ "$live_id" != "$sid" ]; then
+        left="$left $live_id (${live_label:-untitled}, last active $(kp_harness_session_age "$live_updated") ago)"
+      fi
+    done
+    printf 'kingpin-restore: %s resumes %s session %s and leaves these running because of --force:%s\n' \
+      "$id" "$harness" "$sid" "$left" >&2
+  fi
+
+  if [ -n "$chosen" ]; then
+    IFS=$'\t' read -r session_id session_updated _ <<< "$chosen"
+    session_age=$(kp_harness_session_age "$session_updated" || true)
+    if resume_words=$(kp_harness_resume_args "$harness" "$session_id"); then
+      while IFS= read -r word; do
+        [ -n "$word" ] || continue
+        resume_args+=("$word")
+      done <<< "$resume_words"
+      session_ok_note="resumed session $session_id (last active ${session_age:-unknown} ago)"
+      session_dry_note="would resume session $session_id (last active ${session_age:-unknown} ago)"
+    else
+      # A harness that can list sessions but not resume one keeps the fresh path, and
+      # the note says so instead of pretending the conversation came back.
+      session_id=''
+      session_ok_note="started a new session ($harness cannot resume an existing session)"
+      session_dry_note=$session_ok_note
+    fi
+  elif [ "$sessions_truncated" -eq 1 ]; then
+    # The listing stopped at the cap without a row for this worktree. That is not proof
+    # the task never had a session, so the fresh note says which one it is.
+    session_ok_note="started a new session (the harness listed only its newest ${_kp_session_list_cap} sessions, so the list was truncated)"
+    session_dry_note=$session_ok_note
+  elif [ "$sessions_known" -eq 0 ]; then
+    case $harness in
+      agy|pi) session_ok_note="started a new session ($harness cannot report an existing session)" ;;
+      *) session_ok_note="started a new session ($harness did not report its sessions)" ;;
+    esac
+    session_dry_note=$session_ok_note
   fi
 
   IFS=$'\t' read -r session name < <(kp_window_parts "$env_file")
@@ -339,8 +518,8 @@ for id in ${ids[@]+"${ids[@]}"}; do
   next=$(next_step "$task_dir" "$id" "$project" "$last")
 
   if [ "$dry_run" -eq 1 ]; then
-    printf 'would restore %s (%s) in %s:%s on %s; last status: %s; next: %s\n' \
-      "$id" "$harness" "$session" "$name" "$branch" "${last:-none}" "$next"
+    printf 'would restore %s (%s) in %s:%s on %s; %s; last status: %s; next: %s\n' \
+      "$id" "$harness" "$session" "$name" "$branch" "$session_dry_note" "${last:-none}" "$next"
     would=$((would + 1))
     continue
   fi
@@ -355,7 +534,7 @@ for id in ${ids[@]+"${ids[@]}"}; do
     continue
   fi
   if ! write_resume_prompt "$task_dir" "$id" "$project" "$worktree" "$branch" \
-       "$(kp_env_get "$env_file" MODE)" "$harness" "$last" "$next"; then
+       "$(kp_env_get "$env_file" MODE)" "$harness" "$last" "$next" "$session_id"; then
     refuse "$id" "cannot write the resume brief"
     continue
   fi
@@ -369,8 +548,16 @@ for id in ${ids[@]+"${ids[@]}"}; do
   KP_PI_PROVIDER=$(kp_env_get "$env_file" PI_PROVIDER)
   KP_PI_MODEL=$(kp_env_get "$env_file" PI_MODEL)
   export KP_PI_PROVIDER KP_PI_MODEL
-  if ! kp_harness_launch_script "$task_dir" "$worktree" "$harness" "$task_dir/resume-prompt.txt"; then
+  if ! kp_harness_launch_script "$task_dir" "$worktree" "$harness" "$task_dir/resume-prompt.txt" \
+       ${resume_args[@]+"${resume_args[@]}"}; then
     refuse "$id" "cannot prepare the $harness launch (reason above)"
+    continue
+  fi
+  # The resumed session is recorded before the window starts, so the next restore
+  # resumes the same conversation rather than the newest one in a pooled slot. A stale
+  # value is harmless: selection only prefers it while the id is still in the list.
+  if [ -n "$session_id" ] && ! set_env_key "$env_file" HARNESS_SESSION "$session_id"; then
+    refuse "$id" "cannot record HARNESS_SESSION in $env_file"
     continue
   fi
   # A slot whose exclude pointer was lost would start the worker on a dirty tree: the
@@ -422,8 +609,8 @@ for id in ${ids[@]+"${ids[@]}"}; do
   fi
   rm -f "$task_dir/launching"
 
-  printf 'OK: restored %s (%s) in %s:%s (%s) on %s; last status: %s; next: %s\n' \
-    "$id" "$harness" "$session" "$name" "$new_id" "$branch" "${last:-none}" "$next"
+  printf 'OK: restored %s (%s) in %s:%s (%s) on %s; %s; last status: %s; next: %s\n' \
+    "$id" "$harness" "$session" "$name" "$new_id" "$branch" "$session_ok_note" "${last:-none}" "$next"
   restored=$((restored + 1))
 done
 
