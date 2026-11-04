@@ -78,6 +78,75 @@ parked_file() {
   done
 }
 
+# wait_for <tries> <command...>: poll <command> every 0.05 s until it succeeds, up to
+# <tries> times, and report whether it did. A bounded poll for an asynchronous outcome
+# keeps a check from depending on machine speed (issue #164).
+wait_for() {
+  local tries=$1 i
+  shift
+  for ((i = 0; i < tries; i++)); do
+    "$@" && return 0
+    sleep 0.05
+  done
+  return 1
+}
+
+# pane_has <tmux-target> <text>: the window's scrollback holds <text>. A terminal
+# paints a forwarded line a moment after the listener sends it, so a check polls this
+# instead of sleeping a fixed interval.
+pane_has() {
+  local out
+  out=$(tmux capture-pane -pJ -pt "$1" -S -100 2>/dev/null || true)
+  [[ $out == *"$2"* ]]
+}
+
+# wait_pane_count <tries> <count> <tmux-target> <text>: poll until the pane shows
+# <count> lines containing <text>, then print the count it saw last. A `cat` window
+# echoes a forwarded line twice (tty echo, then the read-back), and the read-back
+# follows the send's Enter, so a check waits for the count it asserts rather than a
+# fixed interval (issue #164).
+wait_pane_count() {
+  local tries=$1 want=$2 target=$3 text=$4 out n=0 i
+  for ((i = 0; i < tries; i++)); do
+    out=$(tmux capture-pane -pJ -pt "$target" -S -100 2>/dev/null || true)
+    n=$(printf '%s\n' "$out" | grep -cF -- "$text" || true)
+    [ "$n" = "$want" ] && break
+    sleep 0.05
+  done
+  printf '%s\n' "$n"
+}
+
+# settled_count <command...>: run <command>, which prints a count, until the count
+# stops changing across three polls, then print it. A forwarded line reaches a `cat`
+# pane twice (tty echo, then the read-back), so reading the count too early sees half
+# of it; waiting for it to settle is the outcome-based form of a fixed sleep.
+settled_count() {
+  local last=-1 now same=0 i
+  for ((i = 0; i < 100; i++)); do
+    now=$("$@" || true)
+    now=${now:-0}
+    if [ "$now" = "$last" ]; then
+      same=$((same + 1))
+      [ "$same" -ge 3 ] && break
+    else
+      same=0
+      last=$now
+    fi
+    sleep 0.05
+  done
+  printf '%s\n' "$last"
+}
+
+# now_us: a microsecond reading, for the "how long did that take" report a bounded wait
+# prints. EPOCHREALTIME needs bash 5; an older shell falls back to whole seconds.
+now_us() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    printf '%s\n' "${EPOCHREALTIME/[.,]/}"
+  else
+    printf '%s000000\n' "$(date +%s)"
+  fi
+}
+
 # Parser fixtures, and the decoded prompt text of one parse. The parser falls back to
 # its text scan whenever LAVISH_AXI_BIN names no decoder, which is what these use.
 FIX="$KP_ROOT/tests/fixtures/lavish"
@@ -107,9 +176,9 @@ echo "ready: branch=b review=APPROVE report=$t11_task/report.html" >> "$t11_task
 # 2. Run kingpin-watch --once to detect ready and auto-arm listener
 "$KP_BIN/kingpin" watch --once >/dev/null
 
-# Assert dossier was opened in lavish
-sleep 0.3
-grep -q "$t11_task/report.html" "$T/mock-lavish.log" 2>/dev/null && pass "mock-lavish opened review dossier" || fail "mock-lavish did not open review dossier"
+# Assert dossier was opened in lavish: `watch` arms the listener and returns before
+# that listener gets to the open, so wait for the log rather than a fixed interval.
+wait_for 100 grep -qF "$t11_task/report.html" "$T/mock-lavish.log" 2>/dev/null && pass "mock-lavish opened review dossier" || fail "mock-lavish did not open review dossier"
 
 # One open for one ready task, and the session URL it printed is recorded for the
 # handover, so the orchestrator has no reason to run the command on the page again.
@@ -161,7 +230,7 @@ done
 
 grep -q "approved: by user via lavish dossier" "$t11_task/status" && pass "approved status logged" || fail "approved status missing"
 [ -f "$t11_task/landing_sent" ] && pass "landing triggered by listener" || fail "landing not triggered"
-sleep 0.1
+wait_for 100 pane_has kingpin:task-lavish-1 "/issue-flow-done 401" || true
 pane_out=$(tmux capture-pane -pt kingpin:task-lavish-1 -S -5)
 echo "$pane_out" | grep -q "/issue-flow-done 401" && pass "/issue-flow-done dispatched on approval" || fail "wrong done command: $pane_out"
 grep -q "reply $t11_task/report.html --agent-reply Approval received" "$T/mock-lavish.log" && pass "approval confirmation reply sent to lavish" || fail "approval reply missing"
@@ -224,16 +293,19 @@ reopened_url=$(cat "$t11_task2/dossier.url" 2>/dev/null || true)
 [ "$reopened_url" = "$t11_url2" ] && pass "listener replaced a lost session URL" || fail "dossier.url still holds '$reopened_url' after a lost session"
 reopen_opens=$(grep -cxF "$t11_task2/report.html" "$T/mock-lavish.log" 2>/dev/null || true)
 [ "$reopen_opens" = "2" ] && pass "listener reopened a lost session exactly once" || fail "listener recorded $reopen_opens opens after a lost session"
-# Issue #145: the listener forwards a dossier message to the capo itself.
-sleep 0.3
+# Issue #145: the listener forwards a dossier message to the capo itself. A `cat`
+# window shows the line twice (tty echo, then the read-back), so wait for both before
+# counting; the read-back follows the send's Enter.
+n1=$(wait_pane_count 100 2 kingpin:task-lavish-2 "The boss wrote this in the review dossier")
 pane_out=$(tmux capture-pane -pJ -pt kingpin:task-lavish-2 -S -100)
 printf '%s\n' "$pane_out" | grep -Fq "The boss wrote this in the review dossier" && pass "feedback forwarded to the worker pane" || fail "feedback was not forwarded: $pane_out"
 printf '%s\n' "$pane_out" | grep -Fq "Request Changes: please fix line 42 in foo.sh" && pass "forward carries the reviewer's text" || fail "forward lost the feedback text"
 printf '%s\n' "$pane_out" | grep -Fq "do not land in review mode" && pass "forward repeats the review rule" || fail "forward omits the review rule"
-n1=$(printf '%s\n' "$pane_out" | grep -cF "The boss wrote this in the review dossier" || true)
 
 # A listener restart with no new prompt must not replay the last one. The pane
-# shows each sent line twice (tty echo plus `cat`), so compare the two counts.
+# shows each sent line twice (tty echo plus `cat`), so compare the two counts. This is
+# an absence check, so it keeps a settle window instead of a poll: a replay that never
+# comes has nothing to poll for.
 "$KP_BIN/kingpin" listen task-lavish-2 --once >/dev/null
 sleep 0.3
 pane_out=$(tmux capture-pane -pJ -pt kingpin:task-lavish-2 -S -100)
@@ -348,6 +420,7 @@ for _ in $(seq 1 40); do
 done
 dup_polls=$(grep -cF "poll $t11_dup/report.html" "$T/mock-lavish.log" || true)
 dup_replies=$(grep -cF "reply $t11_dup/report.html --agent-reply " "$T/mock-lavish.log" || true)
+# Absence check: give a stray poll time to show before the snapshot is trusted.
 sleep 0.2
 dup_rc=0
 # Bound the duplicate: a lost refusal polls into the held gate, and without a
@@ -393,13 +466,12 @@ done
 n=$(grep -cF "$dup_prompt" "$t11_dup/feedback.md" || true)
 [ "$n" = "1" ] && pass "queued prompt recorded once in feedback.md" || fail "queued prompt recorded $n times"
 [ ! -f "$(resp_file "$t11_dup")" ] && pass "queued prompt consumed once" || fail "queued prompt left behind"
-sleep 0.3
-pane_out=$(tmux capture-pane -pJ -pt kingpin:task-lavish-dup -S -100)
 # A `cat` window shows each sent line twice: once as the tty echo, once as cat output.
-n=$(printf '%s\n' "$pane_out" | grep -cF "The boss wrote this in the review dossier" || true)
+n=$(wait_pane_count 100 2 kingpin:task-lavish-dup "The boss wrote this in the review dossier")
 [ "$n" = "2" ] && pass "queued prompt forwarded to the pane once" || fail "queued prompt forwarded $((n / 2)) time(s)"
 n=$(grep -cF "reply $t11_dup/report.html --agent-reply " "$T/mock-lavish.log" || true)
 [ "$n" = "1" ] && pass "surviving listener replied to the dossier exactly once" || fail "dossier received $n replies"
+# Absence check: a settled window, not a poll, since a second reply has nothing to poll for.
 sleep 0.3
 n=$(grep -cF "reply $t11_dup/report.html --agent-reply " "$T/mock-lavish.log" || true)
 [ "$n" = "1" ] && pass "no second reply after the duplicate exited" || fail "a later reply left the dossier in Working ($n replies)"
@@ -520,6 +592,7 @@ for _ in $(seq 1 40); do
   [ -n "$ans_new" ] && [ "$ans_new" != "$ans_pid" ] && break
   sleep 0.05
 done
+# Absence check: a settle window, since a second pointer that never comes has nothing to poll for.
 sleep 0.5
 n=$(grep -cF "$ans_pointer" "$T/mock-lavish.log" || true)
 [ "$n" = "1" ] && pass "listener restart does not post a second pointer" || fail "pointer replies after restart: $n"
@@ -740,9 +813,7 @@ grep -Fq "orphan poll prompt" "$t11_orph/feedback.md" && pass "replacement liste
 [ ! -f "$(resp_file "$t11_orph")" ] && pass "queued prompt consumed by the replacement" || fail "queued prompt left behind"
 n=$(grep -cF "poll $t11_orph/report.html" "$T/mock-lavish.log" || true)
 [ "$n" -gt "$polls_before" ] && pass "replacement started its own poll" || fail "replacement poll not recorded"
-sleep 0.3
-pane_out=$(tmux capture-pane -pJ -pt kingpin:task-lavish-orphan -S -100)
-n=$(printf '%s\n' "$pane_out" | grep -cF "The boss wrote this in the review dossier" || true)
+n=$(wait_pane_count 100 2 kingpin:task-lavish-orphan "The boss wrote this in the review dossier")
 [ "$n" = "2" ] && pass "replacement forwarded the prompt once" || fail "replacement forwarded $((n / 2)) time(s)"
 kill -- "-$orph_new_pid" 2>/dev/null || kill "$orph_new_pid" 2>/dev/null || true
 for _ in $(seq 1 40); do
@@ -796,7 +867,7 @@ EOF4
 tmux new-window -d -t kingpin: -n task-lavish-gate cat
 printf '%s\n' "ready: branch=b review=NEEDS CHANGES report=.agents/reviews/r9.md" "feedback: Request Changes: please rename foo" "approved: by user via lavish dossier" > "$t11_gate/status"
 "$KP_BIN/kingpin" land task-lavish-gate >/dev/null
-sleep 0.1
+wait_for 100 pane_has kingpin:task-lavish-gate "/fix-findings $T/proj/.agents/reviews/r9.md" || true
 pane_out=$(tmux capture-pane -pt kingpin:task-lavish-gate -S -5)
 echo "$pane_out" | grep -q "/fix-findings $T/proj/.agents/reviews/r9.md" && pass "feedback/approved notes do not bypass the fix-findings gate" || fail "gate bypassed after listener notes: $pane_out"
 [ ! -f "$t11_gate/landing_sent" ] && pass "no landing dispatched for NEEDS CHANGES after listener notes" || fail "landing dispatched despite NEEDS CHANGES"
@@ -871,12 +942,24 @@ approve_resp() {
   printf '%s\n' "session:" "  status: feedback" "prompts[1]{prompt}:" "  kingpin land task-lavish-repeat" > "$(resp_file "$t11_rep")"
 }
 count_fix() { tmux capture-pane -pt kingpin:task-lavish-repeat -S -50 | grep -c "^/fix-findings "; }
+# A forwarded line reaches the `cat` pane twice (tty echo, then the read-back), so a
+# full dispatch is an even count. Wait for the read-back before sampling: on a slow
+# runner it can land after a settle window has already passed, which would read half
+# a dispatch (issue #164).
+fix_dispatch_painted() {
+  local n
+  n=$(count_fix || true)
+  n=${n:-0}
+  [ "$n" -gt 0 ] && [ $((n % 2)) -eq 0 ]
+}
 approve_resp; "$KP_BIN/kingpin" listen task-lavish-repeat --once >/dev/null
-sleep 0.1
-n1=$(count_fix)
+wait_for 100 fix_dispatch_painted || true
+n1=$(settled_count count_fix)
 approve_resp; "$KP_BIN/kingpin" listen task-lavish-repeat --once >/dev/null
-sleep 0.1
-n2=$(count_fix)
+# The repeated Approve either adds a dispatch or does not; reading the count once it
+# has settled says which, without a fixed interval deciding it.
+wait_for 100 fix_dispatch_painted || true
+n2=$(settled_count count_fix)
 [ "$n1" -ge 1 ] && [ "$n1" = "$n2" ] && pass "repeat Approve did not resend /fix-findings" || fail "/fix-findings lines: first=$n1 after repeat=$n2"
 grep -q "Approval already received" "$T/mock-lavish.log" && pass "repeat Approve answered with a waiting reply" || fail "waiting reply missing"
 echo "fixed: high=0 report=.agents/reviews/r5.md" >> "$t11_rep/status"
@@ -898,14 +981,95 @@ MODE=review
 WORKTREE=$T/proj
 EOF6
 echo "ready: branch=b review=APPROVE report=none" > "$t11_race/status"
-for _ in 1 2 3 4; do "$KP_BIN/kingpin" listen task-lavish-race --background & done
-wait
-sleep 0.3
-n=$(pgrep -f "^bash .*/kingpin-listen task-lavish-race$" | wc -l)
-[ "$n" = "1" ] && pass "concurrent launches started one listener" || fail "$n listeners running"
-rpid=$(cat "$t11_race/listener.pid" 2>/dev/null || true)
-[ -n "$rpid" ] && { kill -- "-$rpid" 2>/dev/null || kill "$rpid" 2>/dev/null || true; }
-sleep 0.2
+# Concurrent background launches start exactly one listener (issue #164). `wait`
+# returns when the four launchers exit, not when the listener each one started has
+# finished racing for the owner slot: a loser still has to notice the winner and exit.
+# Poll until exactly one remains, then assert what the lock promises, instead of
+# sleeping a fixed interval and counting whatever moment that lands on.
+# A listener starts with setsid, and a subshell it forks keeps the same command
+# line, so a bare pgrep would count the listener's children as listeners too. A
+# listener's parent is not another listener; a forked child's is.
+listener_pids() {
+  local pids p ppid
+  pids=$(pgrep -f "^bash $KP_BIN/kingpin-listen task-lavish-race$" 2>/dev/null || true)
+  [ -n "$pids" ] || return 0
+  for p in $pids; do
+    ppid=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ' || true)
+    case " $pids " in
+      *" $ppid "*) continue ;;
+    esac
+    printf '%s\n' "$p"
+  done
+}
+race_launchers=()
+for _ in 1 2 3 4; do "$KP_BIN/kingpin" listen task-lavish-race --background & race_launchers+=("$!"); done
+race_launch_rc=0
+for race_launch in "${race_launchers[@]}"; do wait "$race_launch" || race_launch_rc=$?; done
+[ "$race_launch_rc" = "0" ] && pass "all four background launches exited 0" || fail "a background launch exited $race_launch_rc"
+race_seen="$T/race-listeners"
+: > "$race_seen"
+race_start=$(now_us)
+# A launcher forks the listener and waits up to 2 s for listener.pid, so a child can
+# still be between fork and exec once `wait` has returned. Treat the race as over only
+# once one listener, the owner, has been the only one for a quiet window; a late loser
+# resets the window. The give-up bound is a deadline, so a loaded runner gets the same
+# allowance instead of a smaller one.
+race_settled=0
+race_n=0
+race_peak=0
+race_quiet_since=""
+race_seen_now=""
+race_deadline=$(( race_start + 15000000 ))
+while :; do
+  race_now=$(listener_pids)
+  race_n=0
+  [ -n "$race_now" ] && race_n=$(printf '%s\n' "$race_now" | wc -l)
+  [ "$race_n" -gt "$race_peak" ] && race_peak=$race_n
+  [ -n "$race_now" ] && printf '%s\n' "$race_now" >> "$race_seen"
+  if [ "$race_n" = "1" ] && [ "$race_now" = "$(head -n 1 "$t11_race/listener.owner" 2>/dev/null || true)" ]; then
+    [ -n "$race_quiet_since" ] || race_quiet_since=$(now_us)
+    race_seen_now=$race_now
+    [ $(( $(now_us) - race_quiet_since )) -ge 750000 ] && { race_settled=1; break; }
+  else
+    race_quiet_since=""
+    race_seen_now=""
+  fi
+  [ "$(now_us)" -ge "$race_deadline" ] && break
+  sleep 0.05
+done
+race_ms=$(( ($(now_us) - race_start) / 1000 ))
+race_owner=$(head -n 1 "$t11_race/listener.owner" 2>/dev/null || true)
+# Name the owner in the failure: one listener that never matched listener.owner looks
+# like the success condition until the owner value says otherwise (issue #164).
+[ "$race_settled" = "1" ] && pass "concurrent launches settled to one listener after ${race_ms} ms (peak ${race_peak})" || fail "${race_n} listener(s) running after ${race_ms} ms (peak ${race_peak}), owner='${race_owner:-none}'"
+rpid=$race_seen_now
+[ -n "$rpid" ] && kill -0 "$rpid" 2>/dev/null && pass "the winning listener is alive (pid $rpid)" || fail "no live listener after the launches"
+[ -n "$rpid" ] && [ "$(head -n 1 "$t11_race/listener.owner" 2>/dev/null || true)" = "$rpid" ] && pass "listener.owner holds the winner's own pid" || fail "listener.owner holds '$(head -n 1 "$t11_race/listener.owner" 2>/dev/null || true)', not the winner '$rpid'"
+[ -n "$rpid" ] && [ "$(cat "$t11_race/listener.pid" 2>/dev/null || true)" = "$rpid" ] && pass "listener.pid holds the winner" || fail "listener.pid holds '$(cat "$t11_race/listener.pid" 2>/dev/null || true)', not the winner '$rpid'"
+# A losing listener exits once it sees the owner taken. One still alive is a second
+# listener. The log check below is best effort: every launcher opens listener.log with
+# `>`, so a later listener's start truncates a claim-failure line an earlier one wrote,
+# and the `kill -0` sweep below is the evidence no loser survives (issue #164).
+race_final=$(listener_pids)
+losers_alive=0
+while IFS= read -r race_seen_pid; do
+  [ -n "$race_seen_pid" ] || continue
+  [ "$race_seen_pid" = "$rpid" ] && continue
+  kill -0 "$race_seen_pid" 2>/dev/null && losers_alive=$((losers_alive + 1))
+done < <({ printf '%s\n' "$race_final"; sort -u "$race_seen"; } | sort -u)
+[ "$losers_alive" = "0" ] && pass "every losing listener exited" || fail "$losers_alive losing listener(s) still alive"
+! grep -qF "could not claim the listener slot" "$t11_race/listener.log" 2>/dev/null && pass "no listener failed its turn in the race (log check, best effort)" || fail "a listener exited through the claim-failure path"
+# A failed settle leaves the winner unknown, so fall back to the recorded owner and
+# kill every pid the race saw: a failing run must not leave a listener polling the task
+# directory removed below.
+race_kill=$rpid
+[ -n "$race_kill" ] || race_kill=$(head -n 1 "$t11_race/listener.owner" 2>/dev/null || true)
+[ -n "$race_kill" ] || race_kill=$(cat "$t11_race/listener.pid" 2>/dev/null || true)
+while IFS= read -r race_kill_pid; do
+  [ -n "$race_kill_pid" ] || continue
+  kill -- "-$race_kill_pid" 2>/dev/null || kill "$race_kill_pid" 2>/dev/null || true
+done < <({ printf '%s\n' "$race_kill" "$race_final"; sort -u "$race_seen"; } | sort -u)
+wait_for 100 test ! -d "$t11_race/listener.lock" || true
 [ ! -d "$t11_race/listener.lock" ] && pass "launch lock released" || fail "launch lock left behind"
 rm -rf "$t11_race"
 
@@ -982,10 +1146,9 @@ echo "ready: branch=b review=APPROVE report=none" > "$t11_ml/status"
 printf '%s\n' "session:" "  status: feedback" "prompts[1]:" '  - prompt: "Request Changes: first line\nsecond line"' "    tag: action" > "$(resp_file "$t11_ml")"
 "$KP_BIN/kingpin" listen task-lavish-multiline --once >/dev/null
 grep -Fxq "Request Changes: first line" "$t11_ml/feedback.md" && grep -Fxq "second line" "$t11_ml/feedback.md" && pass "multi-line prompt kept verbatim in feedback.md" || fail "multi-line prompt lost its line break in feedback.md"
-sleep 0.3
-pane_out=$(tmux capture-pane -pJ -pt kingpin:task-lavish-multiline -S -100)
-n=$(printf '%s\n' "$pane_out" | grep -cF "The boss wrote this in the review dossier" || true)
+n=$(wait_pane_count 100 2 kingpin:task-lavish-multiline "The boss wrote this in the review dossier")
 [ "$n" = "2" ] && pass "multi-line prompt forwarded as one tty line" || fail "multi-line prompt forwarded in $((n / 2)) piece(s)"
+pane_out=$(tmux capture-pane -pJ -pt kingpin:task-lavish-multiline -S -100)
 printf '%s\n' "$pane_out" | grep -F "The boss wrote this in the review dossier" | grep -Fq "Request Changes: first line second line" && pass "multi-line prompt flattened onto one operational line" || fail "multi-line prompt was not flattened: $pane_out"
 rm -rf "$t11_ml"
 tmux kill-window -t kingpin:task-lavish-multiline 2>/dev/null || true
@@ -1018,7 +1181,7 @@ n=$(grep -c "reply $t11_rec/report.html " "$T/mock-lavish.log" || true)
 [ "$n" = "1" ] && pass "listener: recovered poll sends exactly one reply" || fail "listener: recovered poll sent $n replies"
 grep -Fq "reply $t11_rec/report.html --agent-reply Feedback received and forwarded. Kingpin could not fully parse the poll response" "$T/mock-lavish.log" && pass "listener: recovery receipt reports the forward (window present)" || fail "listener: recovery receipt missing or changed"
 grep -Fq "$rec_parked" "$T/mock-lavish.log" && pass "listener: recovery receipt names the parked file" || fail "listener: recovery receipt does not name the parked file"
-sleep 0.3
+wait_for 100 pane_has kingpin:task-lavish-recover "recovered text from a shape the parser does not claim" || true
 pane_out=$(tmux capture-pane -pJ -pt kingpin:task-lavish-recover -S -100)
 printf '%s\n' "$pane_out" | grep -Fq "recovered text from a shape the parser does not claim" && pass "listener: recovered text forwarded to the worker pane" || fail "listener: recovered text not forwarded: $pane_out"
 rm -rf "$t11_rec"
