@@ -712,4 +712,124 @@ grep -q "the last git fetch failed" "$KINGPIN_HOME/tasks/t23-stale/status" \
   && pass "t23: the refusal names the failed fetch" || fail "t23: the refusal hides the fetch failure: $(tail -n 1 "$KINGPIN_HOME/tasks/t23-stale/status")"
 [ ! -d "$KINGPIN_HOME/archive/t23-stale" ] && pass "t23: the unverifiable task stays in tasks/" || fail "t23: the unverifiable task was archived"
 
+# Test 24: kingpin done removes the Codex trusted-project entry the spawn seeded, and
+# leaves the rest of the user's config.toml alone (issue #106).
+echo "=== Test 24: the codex trust entry is removed at teardown ==="
+t24_cfg=$T/cfg-codex/config.toml
+printf '[tui]\nnotifications = true\n\n[projects."/somewhere/else"]\ntrust_level = "trusted"\n' > "$t24_cfg"
+cp "$t24_cfg" "$T/t24-before.toml"
+t24_make_task() { # <id> <harness>
+  local id=$1 h=$2 d wt
+  d="$KINGPIN_HOME/tasks/$id"; wt="$T/wt-$id"
+  mkdir -p "$d" "$wt"
+  git -C "$wt" init -q -b main
+  git -C "$wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  cat > "$d/task.env" << ENVEOF
+TASK_ID=$id
+PROJECT=demo-t24
+HARNESS=$h
+MODE=review
+PROJECT_PATH=$wt
+WORKTREE=$wt
+BRANCH=kingpin/$id
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
+TMUX_TARGET=kingpin:$id
+ENVEOF
+  echo "merged: pr=https://example.invalid/pull/1" > "$d/status"
+}
+t24_section() { # <worktree> -> 0 when its trusted section is in the config
+  awk -v hdr="[projects.\"$(realpath "$1")\"]" '
+    $0 == hdr { inside = 1; next }
+    /^\[/ { inside = 0 }
+    END { exit(inside ? 0 : 1) }
+  ' "$t24_cfg"
+}
+
+t24_make_task t24-codex codex
+CODEX_HOME=$T/cfg-codex node "$KP_ROOT/lib/codex-trust.mjs" --previous-out "$T/t24-prev" "$T/wt-t24-codex" >/dev/null \
+  || fail "t24: the fixture could not seed the trust entry"
+# The spawn records what it wrote; this fixture stands in for it (issue #106 review, M2).
+printf 'section\n' > "$KINGPIN_HOME/tasks/t24-codex/codex-trust"
+grep -qF "[projects.\"$(realpath "$T/wt-t24-codex")\"]" "$t24_cfg" \
+  && pass "t24: the fixture seeded a trusted-project entry" || fail "t24: no seeded entry to remove"
+"$KP_BIN/kingpin-done" t24-codex --force >/dev/null 2>&1 || fail "t24: cleanup of the codex task failed"
+[ -f "$KINGPIN_HOME/archive/t24-codex/done_cleaned" ] && pass "t24: the codex task was cleaned up" || fail "t24: the codex task was not archived"
+! t24_section "$T/wt-t24-codex" && pass "t24: the worktree's trusted-project entry is gone" || fail "t24: the trusted-project entry survived cleanup"
+grep -qxF '[tui]' "$t24_cfg" && grep -qxF 'notifications = true' "$t24_cfg" \
+  && pass "t24: the unrelated [tui] section survives" || fail "t24: the [tui] section was lost: $(cat "$t24_cfg")"
+grep -qxF '[projects."/somewhere/else"]' "$t24_cfg" && grep -qxF 'trust_level = "trusted"' "$t24_cfg" \
+  && pass "t24: the other project entry survives" || fail "t24: the other project entry was lost: $(cat "$t24_cfg")"
+
+# A task on another harness never touched the file, so the two lines above are the file.
+cmp -s "$T/t24-before.toml" "$t24_cfg" \
+  && pass "t24: cleanup leaves the config byte-identical to before the entry" || fail "t24: cleanup changed the rest of config.toml"
+cp "$t24_cfg" "$T/t24-other-before.toml"
+t24_make_task t24-claude claude
+"$KP_BIN/kingpin-done" t24-claude --force >/dev/null 2>&1 || fail "t24: cleanup of the claude task failed"
+cmp -s "$T/t24-other-before.toml" "$t24_cfg" \
+  && pass "t24: a non-codex cleanup leaves the Codex config untouched" || fail "t24: a non-codex cleanup rewrote config.toml"
+
+# Test 25: cleanup removes only what the spawn wrote (issue #106 review, M2). The user's
+# own section keeps every other key, a trust entry that predates the task survives, and a
+# trust_level value the spawn overwrote is put back.
+echo "=== Test 25: the codex trust removal is narrow ==="
+
+# (a) The section already existed with the user's own key: only the trust_level line is
+# removed, and the file goes back byte-identical.
+t25_wt=$T/wt-t25-key
+t25_make_section() { # <worktree> <extra line...>
+  local wt=$1 line
+  shift
+  printf '\n[projects."%s"]\n' "$(realpath "$wt")" >> "$t24_cfg"
+  for line in "$@"; do printf '%s\n' "$line" >> "$t24_cfg"; done
+}
+t25_trusted() { # <worktree> -> 0 when its section still carries the trusted line
+  awk -v hdr="[projects.\"$(realpath "$1")\"]" '
+    $0 == hdr { inside = 1; next }
+    /^\[/ { inside = 0 }
+    inside && $0 == "trust_level = \"trusted\"" { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' "$t24_cfg"
+}
+t24_make_task t25-key codex
+t25_make_section "$t25_wt" 'theme = "dark"'
+cp "$t24_cfg" "$T/t25-key-before.toml"
+CODEX_HOME=$T/cfg-codex node "$KP_ROOT/lib/codex-trust.mjs" --previous-out "$T/t25-key-prev" "$t25_wt" > "$T/t25-key.out" \
+  || fail "t25: the fixture could not seed into the existing section"
+grep -q "^trusted-key: " "$T/t25-key.out" && pass "t25: a seed into an existing section reports trusted-key" || fail "t25 seed output: $(cat "$T/t25-key.out")"
+[ ! -e "$T/t25-key-prev" ] && pass "t25: a seed with nothing to overwrite records no restore line" || fail "t25: a restore line was recorded for a key that was only added"
+printf 'key\n' > "$KINGPIN_HOME/tasks/t25-key/codex-trust"
+"$KP_BIN/kingpin-done" t25-key --force >/dev/null 2>&1 || fail "t25: cleanup of the key task failed"
+grep -qxF 'theme = "dark"' "$t24_cfg" && pass "t25: the user's own key in the section survives" || fail "t25: the user's key was lost: $(cat "$t24_cfg")"
+! t25_trusted "$t25_wt" && pass "t25: the trust_level line the spawn added is gone" || fail "t25: the trust_level line survived"
+cmp -s "$T/t25-key-before.toml" "$t24_cfg" \
+  && pass "t25: the section is byte-identical to before the seed" || fail "t25: the rest of the section changed: $(cat "$t24_cfg")"
+
+# (b) A trust entry that predates the task: the spawn records nothing, so cleanup leaves
+# the file alone.
+t25_pre=$T/wt-t25-pre
+t24_make_task t25-pre codex
+t25_make_section "$t25_pre" 'trust_level = "trusted"'
+cp "$t24_cfg" "$T/t25-pre-before.toml"
+CODEX_HOME=$T/cfg-codex node "$KP_ROOT/lib/codex-trust.mjs" --previous-out "$T/t25-pre-prev" "$t25_pre" > "$T/t25-pre.out" \
+  || fail "t25: the already-trusted fixture failed"
+grep -q "^already-trusted: " "$T/t25-pre.out" && pass "t25: a pre-existing trust entry reports already-trusted" || fail "t25 output: $(cat "$T/t25-pre.out")"
+"$KP_BIN/kingpin-done" t25-pre --force >/dev/null 2>&1 || fail "t25: cleanup of the pre-trusted task failed"
+cmp -s "$T/t25-pre-before.toml" "$t24_cfg" \
+  && pass "t25: a trust entry that predates the task survives cleanup" || fail "t25: cleanup removed a pre-existing trust entry"
+
+# (c) A trust_level value the spawn overwrote (the user had "untrusted"): cleanup puts the
+# user's own line back instead of deleting it.
+t25_rep=$T/wt-t25-rep
+t24_make_task t25-rep codex
+t25_make_section "$t25_rep" 'trust_level = "untrusted"'
+cp "$t24_cfg" "$T/t25-rep-before.toml"
+CODEX_HOME=$T/cfg-codex node "$KP_ROOT/lib/codex-trust.mjs" --previous-out "$KINGPIN_HOME/tasks/t25-rep/codex-trust-prev" "$t25_rep" > "$T/t25-rep.out" \
+  || fail "t25: the replaced-value fixture failed"
+grep -q "^trusted-key: " "$T/t25-rep.out" && pass "t25: overwriting a trust value reports trusted-key" || fail "t25 output: $(cat "$T/t25-rep.out")"
+printf 'replaced\n' > "$KINGPIN_HOME/tasks/t25-rep/codex-trust"
+"$KP_BIN/kingpin-done" t25-rep --force >/dev/null 2>&1 || fail "t25: cleanup of the replaced-value task failed"
+cmp -s "$T/t25-rep-before.toml" "$t24_cfg" \
+  && pass "t25: the overwritten trust_level value is restored byte-identically" || fail "t25: the overwritten value was not restored: $(cat "$t24_cfg")"
+
 kp_test_finish DONE

@@ -53,8 +53,12 @@ kp_test_setup() {
   export TREEHOUSE_ROOT=$T/pool
   export CLAUDE_CONFIG_DIR=$T/cfg
   export GEMINI_CONFIG_DIR=$T/cfg-gemini
+  # A codex spawn seeds a trusted-project entry in $CODEX_HOME/config.toml, so keep the
+  # store inside the scratch tree: no suite may read the developer's global Codex skills
+  # or write their config.
+  export CODEX_HOME=$T/cfg-codex
 
-  mkdir -p "$T/cfg" "$T/cfg-gemini" "$KINGPIN_HOME/projects" "$KINGPIN_HOME/tasks"
+  mkdir -p "$T/cfg" "$T/cfg-gemini" "$T/cfg-codex" "$KINGPIN_HOME/projects" "$KINGPIN_HOME/tasks"
   echo '{"projects":{}}' > "$T/cfg/.claude.json"
   echo '{"trustedWorkspaces":[]}' > "$T/cfg-gemini/settings.json"
 
