@@ -223,4 +223,123 @@ fi
 # Restore the setup command the rest of the suite expects.
 setup_project 'echo setup'
 
+# Test 20: the tmux session is resolved, never created behind the operator's back
+# (issue #152). A queue runner with no $TMUX used to get a second `kingpin` session
+# while the operator watched another one.
+echo "=== Test 20: spawn resolves its tmux session without a client ==="
+t20_target() { # <task-id>: the session the task recorded
+  sed -n 's/^TMUX_TARGET=//p' "$KINGPIN_HOME/tasks/$1/task.env" 2>/dev/null | cut -d: -f1 || true
+}
+t20_window_in() { # <session> <window name>
+  local names
+  names=$(tmux list-windows -t "$1" -F '#{window_name}' 2>/dev/null || true)
+  printf '%s\n' "$names" | grep -qx "$2"
+}
+
+# Branch 1: no session at all. The named fallback is created and the output says so.
+tmux kill-session -t kingpin 2>/dev/null || true
+[ -z "$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)" ] && pass "t20: the private server starts with no session" || fail "t20: a session was left on the server before the fallback case"
+t20_fallback=$(TMUX='' "$KP_BIN/kingpin" spawn demo-auto --issue 500 --id t20-fallback --mode review 2>&1 || true)
+tmux has-session -t kingpin 2>/dev/null && pass "t20: the named fallback session was created" || fail "t20: no fallback session after the spawn"
+[ "$(t20_target t20-fallback)" = "kingpin" ] && t20_window_in kingpin t20-fallback && pass "t20: the fallback spawn landed in kingpin" || fail "t20: fallback target is $(t20_target t20-fallback)"
+grep -qF 'session the named fallback' <<< "$t20_fallback" && pass "t20: the spawn output reports the named fallback" || fail "t20: spawn output does not report the fallback: $t20_fallback"
+"$KP_BIN/kingpin" "done" t20-fallback --force >/dev/null || true
+
+# Branch 2: one session on the server. It is the target, and no second one appears.
+t20_only=$(TMUX='' "$KP_BIN/kingpin" spawn demo-auto --issue 500 --id t20-only --mode review 2>&1 || true)
+[ "$(t20_target t20-only)" = "kingpin" ] && t20_window_in kingpin t20-only && pass "t20: the only session on the server is used" || fail "t20: single-session spawn target is $(t20_target t20-only)"
+[ "$(tmux list-sessions -F '#{session_name}' | wc -l | tr -d ' ')" = "1" ] && pass "t20: the single-session spawn created no second session" || fail "t20: sessions after the single-session spawn: $(tmux list-sessions -F '#{session_name}' | tr '\n' ' ')"
+grep -qF 'session the only session on the server' <<< "$t20_only" && pass "t20: the spawn output names the single session" || fail "t20: spawn output does not name the single session: $t20_only"
+"$KP_BIN/kingpin" "done" t20-only --force >/dev/null || true
+
+# Branch 3: an env target wins over the single session, and the spawn says which.
+tmux new-session -d -s S1 -n home
+t20_env=$(TMUX='' KINGPIN_TMUX_SESSION=S1 "$KP_BIN/kingpin" spawn demo-auto --issue 500 --id t20-env --mode review 2>&1 || true)
+[ "$(t20_target t20-env)" = "S1" ] && t20_window_in S1 t20-env && pass "t20: KINGPIN_TMUX_SESSION wins without a client" || fail "t20: env target is $(t20_target t20-env)"
+grep -qF 'session from KINGPIN_TMUX_SESSION' <<< "$t20_env" && pass "t20: the spawn output names the env target" || fail "t20: spawn output does not name the env target: $t20_env"
+# kingpin list names the session a live worker's window is in.
+t20_list=$("$KP_BIN/kingpin" list 2>/dev/null || true)
+grep -q 'SESSION' <<< "$t20_list" && pass "t20: kingpin list has a SESSION column" || fail "t20: kingpin list header has no SESSION column: $t20_list"
+[ "$(printf '%s\n' "$t20_list" | awk '$1=="t20-env"{print $5}')" = "S1" ] && pass "t20: kingpin list names the worker's session" || fail "t20: list row for t20-env: $(printf '%s\n' "$t20_list" | awk '$1=="t20-env"')"
+"$KP_BIN/kingpin" "done" t20-env --force >/dev/null || true
+
+# Branch 4: --tmux-session beats the env target.
+t20_flag=$(TMUX='' KINGPIN_TMUX_SESSION=kingpin "$KP_BIN/kingpin" spawn demo-auto --issue 500 --id t20-flag --mode review --tmux-session S1 2>&1 || true)
+[ "$(t20_target t20-flag)" = "S1" ] && t20_window_in S1 t20-flag && pass "t20: --tmux-session beats KINGPIN_TMUX_SESSION" || fail "t20: flag target is $(t20_target t20-flag)"
+grep -qF 'session from --tmux-session' <<< "$t20_flag" && pass "t20: the spawn output names the flag target" || fail "t20: spawn output does not name the flag target: $t20_flag"
+"$KP_BIN/kingpin" "done" t20-flag --force >/dev/null || true
+
+# Branch 4b: tmux accepts an unambiguous session-name prefix, so the recorded target has
+# to be the name tmux resolved it to, not the prefix that was typed.
+t20_prefix=$(TMUX='' "$KP_BIN/kingpin" spawn demo-auto --issue 500 --id t20-prefix --mode review --tmux-session S 2>&1 || true)
+[ "$(t20_target t20-prefix)" = "S1" ] && t20_window_in S1 t20-prefix && pass "t20: a session-name prefix records the real session name" || fail "t20: prefix target is $(t20_target t20-prefix)"
+grep -qF 'tmux S1:t20-prefix' <<< "$t20_prefix" && pass "t20: the OK line names the resolved session" || fail "t20: OK line does not name the resolved session: $t20_prefix"
+"$KP_BIN/kingpin" "done" t20-prefix --force >/dev/null || true
+
+# Branch 5: the one attached session wins, even with two other sessions on the server.
+tmux new-session -d -s S2 -n home
+( sleep 60 | tmux -C attach-session -t S2 >/dev/null 2>&1 ) &
+t20_attach_pid=$!
+for _ in $(seq 1 50); do
+  [ "$(tmux display-message -p -t S2 '#{session_attached}' 2>/dev/null || true)" = "1" ] && break
+  sleep 0.1
+done
+[ "$(tmux display-message -p -t S2 '#{session_attached}' 2>/dev/null || true)" = "1" ] && pass "t20: a client is attached to S2" || fail "t20: could not attach a client to S2"
+t20_attached=$(TMUX='' "$KP_BIN/kingpin" spawn demo-auto --issue 500 --id t20-attached --mode review 2>&1 || true)
+[ "$(t20_target t20-attached)" = "S2" ] && t20_window_in S2 t20-attached && pass "t20: the attached session wins over the other two" || fail "t20: attached-session target is $(t20_target t20-attached)"
+grep -qF 'session the only attached session' <<< "$t20_attached" && pass "t20: the spawn output names the attached session" || fail "t20: spawn output does not name the attached session: $t20_attached"
+tmux detach-client -s S2 2>/dev/null || true
+kill "$t20_attach_pid" 2>/dev/null || true
+wait "$t20_attach_pid" 2>/dev/null || true
+"$KP_BIN/kingpin" "done" t20-attached --force >/dev/null || true
+
+# Branch 6: several sessions and no attached client is a guess, so the spawn refuses
+# and names every candidate. Nothing is leased and no task record survives.
+t20_amb_rc=0
+t20_amb=$(TMUX='' "$KP_BIN/kingpin" spawn demo-auto --issue 500 --id t20-ambiguous --mode review 2>&1 >/dev/null) || t20_amb_rc=$?
+if [ "$t20_amb_rc" -ne 0 ] && grep -q 'S1' <<< "$t20_amb" && grep -q 'S2' <<< "$t20_amb" && grep -q 'kingpin' <<< "$t20_amb"; then
+  pass "t20: several unattached sessions refuse and name the candidates"
+else
+  fail "t20: ambiguous server did not refuse with candidates (rc=$t20_amb_rc): $t20_amb"
+fi
+[ ! -e "$KINGPIN_HOME/tasks/t20-ambiguous" ] && pass "t20: the refused spawn left no task folder" || fail "t20: the refused spawn left $KINGPIN_HOME/tasks/t20-ambiguous"
+grep -qF 'none has a client attached' <<< "$t20_amb" && pass "t20: the refusal reports that no client is attached" || fail "t20: the refusal does not report the measured state: $t20_amb"
+t20_windows=$(tmux list-windows -a -F '#{window_name}' 2>/dev/null || true)
+! grep -qx t20-ambiguous <<< "$t20_windows" && pass "t20: the refused spawn opened no window" || fail "t20: the refused spawn opened a window"
+
+# Branch 7: an explicit target that does not exist is refused, not created.
+t20_missing_rc=0
+t20_missing=$(TMUX='' KINGPIN_TMUX_SESSION=t20-nope "$KP_BIN/kingpin" spawn demo-auto --issue 500 --id t20-missing --mode review 2>&1 >/dev/null) || t20_missing_rc=$?
+[ "$t20_missing_rc" -ne 0 ] && grep -q 't20-nope' <<< "$t20_missing" && pass "t20: an unknown explicit target is refused by name" || fail "t20: unknown target was not refused (rc=$t20_missing_rc): $t20_missing"
+[ ! -e "$KINGPIN_HOME/tasks/t20-missing" ] && pass "t20: the refused explicit target left no task folder" || fail "t20: unknown target left a task folder"
+
+# Branch 8: more than one attached session is a guess too, and the refusal reports what
+# it measured instead of claiming that no client is attached.
+( sleep 60 | tmux -C attach-session -t S1 >/dev/null 2>&1 ) &
+t20_att1_pid=$!
+( sleep 60 | tmux -C attach-session -t S2 >/dev/null 2>&1 ) &
+t20_att2_pid=$!
+for _ in $(seq 1 50); do
+  [ "$(tmux display-message -p -t S1 '#{session_attached}' 2>/dev/null || true)" = "1" ] \
+    && [ "$(tmux display-message -p -t S2 '#{session_attached}' 2>/dev/null || true)" = "1" ] && break
+  sleep 0.1
+done
+t20_multi_rc=0
+t20_multi=$(TMUX='' "$KP_BIN/kingpin" spawn demo-auto --issue 500 --id t20-multi-attached --mode review 2>&1 >/dev/null) || t20_multi_rc=$?
+if [ "$t20_multi_rc" -ne 0 ] && grep -qF '2 of them have a client attached' <<< "$t20_multi" && grep -q 'S1' <<< "$t20_multi" && grep -q 'S2' <<< "$t20_multi"; then
+  pass "t20: two attached sessions refuse and report the measured attachment"
+else
+  fail "t20: two attached sessions did not refuse with the measured state (rc=$t20_multi_rc): $t20_multi"
+fi
+! grep -qF 'with no client attached' <<< "$t20_multi" && pass "t20: the refusal does not claim no client is attached" || fail "t20: the refusal claims no client is attached: $t20_multi"
+[ ! -e "$KINGPIN_HOME/tasks/t20-multi-attached" ] && pass "t20: the two-attached refusal left no task folder" || fail "t20: the two-attached refusal left a task folder"
+tmux detach-client -s S1 2>/dev/null || true
+tmux detach-client -s S2 2>/dev/null || true
+kill "$t20_att1_pid" "$t20_att2_pid" 2>/dev/null || true
+wait "$t20_att1_pid" "$t20_att2_pid" 2>/dev/null || true
+
+tmux kill-session -t S1 2>/dev/null || true
+tmux kill-session -t S2 2>/dev/null || true
+tmux has-session -t kingpin 2>/dev/null && pass "t20: the suite's kingpin session is left in place" || fail "t20: the suite lost its kingpin session"
+
 kp_test_finish SPAWN

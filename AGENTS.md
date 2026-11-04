@@ -118,6 +118,20 @@ unreadable verdict, `needs-input:`, `cleanup-refused:` and `failed:` wait for th
 and AFK never calls `kingpin done --force`. The arm reads as off once the TTL passes or the
 holder pid is gone, and `kingpin lock release` clears it.
 
+## Worker placement
+
+A spawn's tmux session is resolved, never guessed (issue #152): `--tmux-session <name>`, then
+`KINGPIN_TMUX_SESSION`, then the calling tmux client's own session. A named session must already
+exist, so a typo is refused rather than starting a second silent session. With no name and no
+client, the one attached session is used, then the only session the server holds; several
+unattached sessions, or more than one attached session, are refused with every candidate named
+and both ways to name a target. Only a server with no session at all gets the `kingpin` fallback,
+and the spawn says on stderr that it created one. The resolution runs before the worktree lease,
+so a refusal costs no worktree and leaves no task record, and the `OK:` line names the chosen
+session and where it came from.
+`kingpin list` prints it in a `SESSION` column read from the live window, so a window moved to
+another session is reported where it really is.
+
 ## Orchestrating from this repository
 
 The person running the fleet (the orchestrator) works in the main checkout with the

@@ -14,15 +14,16 @@
 
 ## kingpin run
 
-**Usage:** `kingpin run <proj> (--issue <n> | --text <req>) [--mode auto|review] [--id <task-id>] [--harness <name>]`
+**Usage:** `kingpin run <proj> (--issue <n> | --text <req>) [--mode auto|review] [--id <task-id>] [--harness <name>] [--tmux-session <name>]`
 
-**Flags:** `--issue <n>`, `--text <req>`, `--mode review|auto`, `--id <task-id>`, `--harness <name>`
+**Flags:** `--issue <n>`, `--text <req>`, `--mode review|auto`, `--id <task-id>`, `--harness <name>`, `--tmux-session <name>`
 
 - `--issue`: an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
 - `--text`: a free-text request: the worker runs /create-issue first, then the same
 - `--mode`: review (default) stops at a ready branch for the review; auto merges when green
 - `--id`: task id; defaults to kp-<n>-<slug> (issue title) or kp-<slug> (request)
 - `--harness`: worker harness: claude, agy, opencode, or pi (overrides the project and the lock)
+- `--tmux-session`: tmux session to place the worker window in when the caller has no tmux client context; `run` forwards it to the `kingpin spawn` it starts (see [Choosing the session](#choosing-the-session))
 
 **Environment:** `KINGPIN_HOME` (its own); the `kingpin spawn` it runs reads the rest, listed under [kingpin spawn](#kingpin-spawn).
 
@@ -60,21 +61,35 @@ It claims `~/.kingpin/supervisor.pid`, refuses a second copy with the running pi
 
 ## kingpin spawn
 
-**Usage:** `kingpin spawn <proj> (--issue <n> | --text <req>) [--mode review|auto] [--id <task-id>] [--harness <name>]`
+**Usage:** `kingpin spawn <proj> (--issue <n> | --text <req>) [--mode review|auto] [--id <task-id>] [--harness <name>] [--tmux-session <name>]`
 
-**Flags:** `--issue <n>`, `--text <req>`, `--mode review|auto`, `--id <task-id>`, `--harness <name>`
+**Flags:** `--issue <n>`, `--text <req>`, `--mode review|auto`, `--id <task-id>`, `--harness <name>`, `--tmux-session <name>`
 
 - `--issue`: an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
 - `--text`: a free-text request: the worker runs /create-issue first, then the same
 - `--mode`: review (default) stops at a ready branch for the review; auto merges when green
 - `--id`: task id; defaults to kp-<n>-<slug> (issue title) or kp-<slug> (request)
 - `--harness`: worker harness: claude, agy, opencode, or pi (overrides the project and the lock)
+- `--tmux-session`: tmux session to place the worker window in when the caller has no tmux client context; it must already exist (see [Choosing the session](#choosing-the-session))
 
-**Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_AGY`, `KINGPIN_OPENCODE`, `KINGPIN_PI`, `KINGPIN_GH`; the `kingpin scope check` it runs reads `KINGPIN_ALLOW_GLOBAL_CONTRACT`.
+**Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_AGY`, `KINGPIN_OPENCODE`, `KINGPIN_PI`, `KINGPIN_GH`, `KINGPIN_TMUX_SESSION`; the `kingpin scope check` it runs reads `KINGPIN_ALLOW_GLOBAL_CONTRACT`.
 
 ### Window names
 
 The window is pinned with `automatic-rename off` and `allow-rename off`, so ambient tmux settings and worker child commands cannot rename it; only `kingpin-wait` renames it.
+
+### Choosing the session
+
+The worker's session is resolved, never guessed: `--tmux-session <name>`, then
+`KINGPIN_TMUX_SESSION`, then the calling tmux client's own session. A named session must already
+exist, and an unknown name is refused instead of starting a session for it. With no name and no
+client context, the one session a client is attached to is used, then the only session the server
+holds. Several sessions with no client attached, or more than one attached session, are refused,
+with every candidate named and both ways to name a target. Only a server with no session at all
+gets a `kingpin` fallback, and one `kingpin-spawn:` note on stderr says the spawn created it. The
+resolution runs before the worktree is leased, so a refusal costs no worktree and leaves no task
+record. The `OK:` line names the chosen session and where it came from, for example `session from
+--tmux-session` or `session the only session on the server`.
 
 ### Task ID, branch and window
 
@@ -100,7 +115,9 @@ A `pi` spawn writes nothing into the worktree. The launch runs `pi --append-syst
 
 `kingpin status` is the same command under its older name.
 
-A finished task is shown from `archive/` (with `--all`), never from the dossier link `kingpin done` leaves at its old `tasks/` path: that path resolves a review page, it is not a live task.
+The `SESSION` column names the tmux session the worker's window lives in. It is read from the live window, so a window moved to another session is reported where it really is, not where it was spawned; a task with no recorded window and no recorded target shows `-`.
+
+A finished task is shown from `archive/` (with `--all`), never from the dossier link `kingpin done` leaves at its old `tasks/` path: that path resolves a review page, it is not a live task. An archived row has no live window left to read, so its `SESSION` shows the session recorded at spawn, or `-` when none was recorded.
 
 Every live task whose folder holds a `report.html` gets its dossier line printed below its row, whatever the task's mode or status: the Lavish session URL the listener recorded in the task's `dossier.url` when it opened the page, or the `lavish-axi <path>` command when no URL is recorded yet. Hand the URL over instead of running the command, which opens a second tab on the session the listener already opened (issue #146). The line is followed by `(listening: pid <n>)` while that task's listener runs; a finished or archived row gets no dossier line.
 
@@ -467,11 +484,12 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 |---|---|---|
 | `KINGPIN_HOME` | every fleet command | Fleet state directory (default `~/.kingpin`): `tasks/`, `archive/`, `projects/`, `locks/`, `supervisor.pid` and `config.env`. |
 | `KINGPIN_HARNESS` | `bin/kingpin-lock:112` | Harness recorded by `lock acquire` when `--harness` is omitted (before the command-name and agent-marker detection). |
-| `KINGPIN_CLAUDE` | `bin/kingpin-spawn:36` | Command `spawn` launches for the `claude` harness (default `claude`). |
-| `KINGPIN_AGY` | `bin/kingpin-spawn:37` | Command `spawn` launches for the `agy` harness (default `agy`). |
-| `KINGPIN_OPENCODE` | `bin/kingpin-spawn:38` | Command `spawn` launches for the `opencode` harness (default `opencode`). |
-| `KINGPIN_PI` | `bin/kingpin-spawn:39`, `bin/kingpin-scope` | Command `spawn` launches for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
-| `KINGPIN_GH` | `bin/kingpin-spawn:40`, `bin/kingpin-curate` | `gh` command `spawn` uses to read an issue title for the task slug, and `curate` uses to create, view and merge the curator's PR (default `gh`). |
+| `KINGPIN_CLAUDE` | `bin/kingpin-spawn:48` | Command `spawn` launches for the `claude` harness (default `claude`). |
+| `KINGPIN_AGY` | `bin/kingpin-spawn:49` | Command `spawn` launches for the `agy` harness (default `agy`). |
+| `KINGPIN_OPENCODE` | `bin/kingpin-spawn:50` | Command `spawn` launches for the `opencode` harness (default `opencode`). |
+| `KINGPIN_PI` | `bin/kingpin-spawn:51`, `bin/kingpin-scope` | Command `spawn` launches for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
+| `KINGPIN_GH` | `bin/kingpin-spawn:52`, `bin/kingpin-curate` | `gh` command `spawn` uses to read an issue title for the task slug, and `curate` uses to create, view and merge the curator's PR (default `gh`). |
+| `KINGPIN_TMUX_SESSION` | `bin/kingpin-spawn:227` | tmux session `spawn` places the worker window in when it has no tmux client context and `--tmux-session` is not given. The session must already exist; an unknown name is refused. Unset, the spawn uses the one attached session, then the only session on the server, and refuses when several are unattached or more than one is attached. |
 | `KINGPIN_SEND_DELAY` | `bin/kingpin-send:60` | Seconds between the literal text and the Enter key (default `0.2`). |
 | `KINGPIN_CURATOR_CMD` | `bin/kingpin-curate` | Command `curate` launches the curator with; falls back to `KINGPIN_CLAUDE`, then `claude`. |
 | `KINGPIN_CURATOR_AUTO` | `lib/curator.sh` | `0` disables the automatic curator trigger, so `kingpin watch` and `kingpin done` never launch one; unset or any other value leaves it on. The test suites set `0`. |
@@ -483,7 +501,7 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 | `KINGPIN_SKIP_GUARD` | `bin/kingpin-guard:54`, `bin/kingpin-init:82` | `1` silences `kingpin guard warn`, which `kingpin list` and `kingpin wait` call, and the install `kingpin init` runs; it does not silence `kingpin lock acquire`, which runs `kingpin guard check` directly, or a hand-run `kingpin guard install`/`check`. Set by the test suites and scripted setups. |
 | `KINGPIN_LOCK_PID` | `bin/kingpin-lock:169` | A whole-number pid `lock acquire` records as the session pid instead of detecting one; the test suites use it. |
 | `KINGPIN_TASK_DIR` | `bin/kingpin-stop:31`, `worker/hooks.json:19` | Set by `kingpin spawn` to the task folder (`~/.kingpin/tasks/<id>`) so the Stop hook can write `status`. Not for hand-setting. |
-| `KINGPIN_ROOT` | `worker/hooks.json:9-19`, `bin/kingpin-spawn:329` | Set by `kingpin spawn` to the Kingpin checkout, so a hook finds `bin/kingpin-stop` even after the worker `cd`s elsewhere. Not for hand-setting. |
+| `KINGPIN_ROOT` | `worker/hooks.json:9-19`, `bin/kingpin-spawn:403` | Set by `kingpin spawn` to the Kingpin checkout, so a hook finds `bin/kingpin-stop` even after the worker `cd`s elsewhere. Not for hand-setting. |
 | `KINGPIN_WORKTREE` | `lib/guard-hook.mjs:109,153`, `lib/pi-harness.mjs:54` | Set by `kingpin spawn` to the leased worktree; the worker's `PreToolUse` hook allows edits only inside it and the task folder, and the Pi extension's `project_trust` answer covers only it. Not for hand-setting. |
 
 ## Internal helpers
