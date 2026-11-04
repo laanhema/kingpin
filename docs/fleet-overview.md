@@ -64,5 +64,16 @@ Copy the folder into the artifact's directory (`.lavish/`), rename the html, swa
 lavish-axi .lavish/<artifact>.html
 ```
 
-Worker review dossiers are not made from this template: `worker/preamble.md` and `kingpin report diffs` own their layout. `tests/test-noir-template.sh` fails when the folder loses one of the three files, when `template.html` points at a file with an absolute path or through `..`, when a diff block loses its static fallback, or when the page stops passing the full `kingpin report check` (renderable diffs, contained layout and clean prose).
+Worker review dossiers are not made from this template: they start from the worker dossier template described below. `tests/test-noir-template.sh` fails when the folder loses one of the three files, when `template.html` points at a file with an absolute path or through `..`, when a diff block loses its static fallback, or when the page stops passing the full `kingpin report check` (renderable diffs, contained layout and clean prose).
 
+### 4. Worker Review Dossiers (worker dossier template)
+
+A worker's `report.html` starts from the worker dossier template, which is the default for every task:
+
+```
+assets/lavish/worker-dossier/
+  template.html   the page: action bar, stat cards, what changed, review findings, validation, diffs
+  DESIGN.md       the rules the look depends on, beside the file they describe
+```
+
+`worker/preamble.md` tells the worker to copy `template.html` to the task folder as `report.html`, swap the sample values and `REPLACE` comments for the task's own, and paste the output of `kingpin report diffs` over the sample diff section. The look came from the dossiers that read most clearly: a dark GitHub palette on Tailwind and DaisyUI, one numbered Problem and Solution block per change, every review finding as a table row with its pass, ID, severity and outcome, and a validation table. `DESIGN.md` records the rules, including what each colour means. `tests/test-worker-dossier-template.sh` fails when the folder loses a file, when a section the dossier is read for goes missing, when the page stops passing the full `kingpin report check`, or when the preamble stops pointing at it. The noir dossier template stays for pages handed to the boss.

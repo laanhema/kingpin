@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-lavish-annotate="off">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- REPLACE: the page title is "<task id>: <one-line outcome>". -->
+<title>kp-000-example-task: a worker that stops always leaves an outcome</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+<style>
+  :root {
+    color-scheme: dark;
+    --color-canvas-default: #0d1117;
+    --color-fg-default: #e6edf3;
+  }
+  * { box-sizing: border-box; min-width: 0; }
+  body {
+    margin: 0;
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+  }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto; }
+  code { font-size: .85em; font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace; overflow-wrap: anywhere; }
+  table { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; }
+  th, td { overflow-wrap: anywhere; vertical-align: top; }
+  img { max-width: 100%; height: auto; }
+  :where(p, li, td, th, .badge) { overflow-wrap: anywhere; }
+
+  /* Table rows: every cell's first line sits in a 1.25rem line box, and a pill is centred on that line,
+     so Pass, ID, the severity pill and the text beside it line up. */
+  td, th { line-height: 1.25rem; }
+  td code, td .font-mono { line-height: 1; }
+  td > .badge { vertical-align: top; margin-top: .15rem; }
+
+  /* Two components. Every panel and stat card is .card-custom. Each changed file's diff sits in a .diffbox. */
+  .card-custom { background-color: #161b22; border: 1px solid #30363d; border-radius: 0.5rem; padding: 1.25rem; }
+  .diffbox, .kp-diff { border-radius: .5rem; overflow: hidden; border: 1px solid #30363d; margin-top: 0.5rem; }
+
+  /* Style for the output of `kingpin-report diffs`: a file row (name left, change badge right) above its diff. */
+  .kp-diff-file { margin-bottom: 1.5rem; }
+  .kp-diff-title { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin: 0; font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size: .875rem; font-weight: 600; color: #e5e7eb; }
+  .kp-diff-title small { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: .75rem; font-weight: 400; color: #9ca3af; border: 1px solid currentColor; border-radius: 999px; padding: 0 .5rem; line-height: 1.25rem; white-space: nowrap; }
+  .kp-diff .kp-fallback { margin: 0; padding: .75rem; border: 0; border-radius: 0; background: #0d1117; font-size: .75rem; line-height: 1.5; color: #c9d1d9; }
+</style>
+</head>
+<body class="p-6">
+<main class="max-w-5xl mx-auto space-y-8">
+
+<!--
+  HOW TO USE THIS TEMPLATE
+  1. Copy this file to {{TASK_DIR}}/report.html and replace every REPLACE comment and sample value.
+  2. Keep the <style> block, the section order, the component class names and the colour meanings.
+  3. Delete a section only when the task has nothing for it.
+  4. Replace the sample diff section with the output of `kingpin-report diffs`.
+  5. Run the unslop skill, then `kingpin-report check report.html`.
+-->
+
+<header class="space-y-4">
+  <!-- Action bar. Where the work stands on the left, the two actions on the right. -->
+  <div class="card-custom bg-gradient-to-r from-gray-900 to-gray-800 border-gray-700 p-4 flex flex-wrap items-center justify-between gap-4 shadow-lg">
+    <div class="flex items-center gap-3">
+      <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-700/50 font-bold">&#10003;</span>
+      <div>
+        <!-- REPLACE: one short line on where the work stands, e.g. "Deliverable Ready for Landing". -->
+        <div class="text-sm font-semibold text-white">Deliverable Ready for Landing</div>
+        <div class="text-xs text-gray-400 font-mono">kingpin land kp-000-example-task</div>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <button type="button" class="btn btn-sm btn-success text-white font-medium shadow" onclick="kpAction('kingpin land kp-000-example-task', 'Land kp-000-example-task')">Approve &amp; Land</button>
+      <button type="button" class="btn btn-sm btn-outline border-gray-600 text-gray-300 hover:bg-gray-800" onclick="kpRequestChanges('kp-000-example-task')">Request Changes</button>
+    </div>
+  </div>
+
+  <!-- Badge row: task id, status, branch. Add a PR badge once there is one. -->
+  <div class="flex gap-2 items-center flex-wrap">
+    <span class="badge badge-primary font-mono text-xs">kp-000-example-task</span>
+    <span class="badge badge-success font-semibold text-xs">READY FOR REVIEW</span>
+    <span class="badge badge-outline text-xs">Branch: kingpin/kp-000-example-task</span>
+  </div>
+
+  <!-- REPLACE: an h1 that states the outcome in plain words, then the issue link and a one or two sentence summary. -->
+  <h1 class="text-3xl font-bold text-white">A worker that stops always leaves an outcome</h1>
+  <p class="text-base text-gray-300">
+    <a href="https://github.com/OWNER/REPO/issues/0" target="_blank" rel="noopener" class="text-blue-400 hover:underline">Issue #0</a>:
+    Give every harness one stop hook, so a worker that ends without a status line still leaves one.
+  </p>
+
+  <!-- Four stat cards, always these four. Colour the value: emerald good, amber needs a look, white neutral. -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="card-custom">
+      <div class="text-xs text-gray-400 uppercase">Review Verdict</div>
+      <div class="text-xl font-bold text-emerald-400">APPROVE</div>
+      <div class="text-xs text-emerald-400 font-semibold">No findings</div>
+    </div>
+    <div class="card-custom">
+      <div class="text-xs text-gray-400 uppercase">Validation</div>
+      <div class="text-xl font-bold text-emerald-400">PASS</div>
+      <div class="text-xs text-gray-400">Lint and all suites passed</div>
+    </div>
+    <div class="card-custom">
+      <div class="text-xs text-gray-400 uppercase">Files Modified</div>
+      <div class="text-xl font-bold text-white">15 files</div>
+      <div class="text-xs text-gray-400">+552 / -66 lines</div>
+    </div>
+    <div class="card-custom">
+      <div class="text-xs text-gray-400 uppercase">Git State</div>
+      <div class="text-xl font-bold text-amber-400">Uncommitted</div>
+      <div class="text-xs text-gray-400">Ready for landing</div>
+    </div>
+  </div>
+</header>
+
+<!-- Section 1: one numbered block per area of change, each with Problem and Solution, then the acceptance criteria. -->
+<section class="card-custom space-y-3">
+  <h2 class="text-xl font-semibold text-white">What Changed and Why</h2>
+  <div class="text-sm space-y-3 text-gray-300">
+    <!-- REPLACE: one block per area of change. Plain sentences, no chatter. -->
+    <div>
+      <h3 class="text-base font-semibold text-white">1. A stop hook in <code>bin/example-stop</code></h3>
+      <p>
+        <strong>Problem:</strong> A worker that finished or died without writing a status line left a window that looked busy. The supervisor only noticed later, as a quiet pane.
+      </p>
+      <p class="mt-1">
+        <strong>Solution:</strong> One helper now runs on every stop. It decides whether the turn ended with a report and, if not, appends exactly one status line. A status written during the current turn is never touched.
+      </p>
+    </div>
+    <div>
+      <h3 class="text-base font-semibold text-white">2. Tests for the three stop cases</h3>
+      <p>
+        <strong>Problem:</strong> Nothing exercised a silent stop, a waiting stop or an already-reported stop.
+      </p>
+      <p class="mt-1">
+        <strong>Solution:</strong> A new suite drives each case with a fake worker and asserts the one status line that results.
+      </p>
+    </div>
+  </div>
+
+  <h3 class="text-base font-semibold text-white mt-4">Acceptance Criteria Verification</h3>
+  <div class="overflow-x-auto">
+    <table class="table table-sm text-sm border border-gray-700">
+      <colgroup><col style="width:42%"><col style="width:10%"><col style="width:48%"></colgroup>
+      <thead>
+        <tr class="bg-gray-800 text-gray-200">
+          <th>Criterion</th>
+          <th>Status</th>
+          <th>Verification Method</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="border-t border-gray-700">
+          <td>A worker that exits without a status line has one on disk within a second</td>
+          <td><span class="badge badge-success badge-xs">PASS</span></td>
+          <td>Verified by <code>tests/test-example.sh:79-118</code> with a fake worker and a silent stop</td>
+        </tr>
+        <tr class="border-t border-gray-700">
+          <td>A failing hook prints a warning and never blocks the stop</td>
+          <td><span class="badge badge-warning badge-xs">PARTIAL</span></td>
+          <td><code>bin/example-stop:101-114</code>; the unwritable-folder case is untested</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Section 2: every review finding in one table, with the pass that found it. -->
+<section class="card-custom space-y-3">
+  <h2 class="text-xl font-semibold text-white">Review Verdict and Every Finding</h2>
+  <!-- REPLACE: how many passes ran and where the last one landed. -->
+  <p class="text-sm text-gray-300">
+    Two review passes ran in fresh contexts. The final one reports <strong>APPROVE</strong> with no findings. Every earlier finding is fixed; the ID stays with a finding across re-reviews.
+  </p>
+  <div class="overflow-x-auto">
+    <table class="table table-sm text-sm border border-gray-700">
+      <colgroup><col style="width:6%"><col style="width:7%"><col style="width:11%"><col style="width:46%"><col style="width:30%"></colgroup>
+      <thead>
+        <tr class="bg-gray-800 text-gray-200">
+          <th>Pass</th>
+          <th>ID</th>
+          <th>Severity</th>
+          <th>Finding</th>
+          <th>Outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Severity badge: badge-error for Critical and High, badge-warning for Medium, badge-success for Low, badge-ghost (no colour) for none. -->
+        <tr class="border-t border-gray-700">
+          <td>r1</td><td><span class="font-mono">H1</span></td><td><span class="badge badge-error badge-xs">High</span></td>
+          <td>A note appended after the last stop made the status file look newer than the stop marker, so a silent stop got no outcome line.</td>
+          <td>fixed: the boundary moves only when the worker has not answered that stop</td>
+        </tr>
+        <tr class="border-t border-gray-700">
+          <td>r1</td><td><span class="font-mono">M1</span></td><td><span class="badge badge-warning badge-xs">Medium</span></td>
+          <td>A turn that ended while background agents still ran was marked failed.</td>
+          <td>fixed: the helper checks the pane for a working marker first</td>
+        </tr>
+        <tr class="border-t border-gray-700">
+          <td>r1</td><td><span class="font-mono">L1</span></td><td><span class="badge badge-success badge-xs">Low</span></td>
+          <td>The README promises more than the hook does.</td>
+          <td>deferred: its own issue, needs a wording decision</td>
+        </tr>
+        <tr class="border-t border-gray-700">
+          <td>r2</td><td><span class="font-mono">none</span></td><td><span class="badge badge-ghost badge-xs">none</span></td>
+          <td>No findings.</td>
+          <td>APPROVE</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Section 3: validation, one row per check. -->
+<section class="card-custom space-y-3">
+  <h2 class="text-xl font-semibold text-white">Validation</h2>
+  <div class="overflow-x-auto">
+    <table class="table table-sm text-sm border border-gray-700">
+      <colgroup><col style="width:20%"><col style="width:10%"><col style="width:70%"></colgroup>
+      <thead>
+        <tr class="bg-gray-800 text-gray-200"><th>Check</th><th>Result</th><th>Detail</th></tr>
+      </thead>
+      <tbody>
+        <tr class="border-t border-gray-700">
+          <td>Lint</td><td><span class="badge badge-success badge-xs">PASS</span></td>
+          <td><code>./tests/lint.sh</code>: shellcheck and node --check clean</td>
+        </tr>
+        <tr class="border-t border-gray-700">
+          <td>Tests</td><td><span class="badge badge-success badge-xs">PASS</span></td>
+          <td><code>./tests/run-all.sh</code>: 23 of 23 suites</td>
+        </tr>
+        <tr class="border-t border-gray-700">
+          <td>Type check</td><td><span class="badge badge-ghost badge-xs">N/A</span></td>
+          <td>No separate type check in this repository</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <!-- REPLACE or delete: one line on anything the table does not say, such as a known gap. -->
+  <p class="text-xs text-gray-400">
+    The unwritable-folder case for the failing hook is covered by reading the code, not by a test.
+  </p>
+</section>
+
+<!--
+  OPTIONAL: Before and After, for a visual change. Put the screenshots beside this file, use a relative src,
+  and uncomment. Show the same view at 1280 and 1024 wide.
+
+<section class="card-custom space-y-3">
+  <h2 class="text-xl font-semibold text-white">Before and After</h2>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <figure><figcaption class="text-xs text-gray-400 uppercase mb-1">Before, 1280 wide</figcaption><img src="before-1280.png" alt="The view before the change"></figure>
+    <figure><figcaption class="text-xs text-gray-400 uppercase mb-1">After, 1280 wide</figcaption><img src="after-1280.png" alt="The view after the change"></figure>
+  </div>
+</section>
+-->
+
+<!-- Section 4: diffs. REPLACE the <section id="kp-diffs"> below with the output of `kingpin-report diffs`. -->
+<section class="space-y-6">
+  <h2 class="text-2xl font-bold text-white">Code Changes</h2>
+  <section id="kp-diffs">
+    <div class="kp-diff-file">
+      <h3 class="kp-diff-title"><code>bin/example-stop</code> <small>modified</small></h3>
+      <div class="kp-diff" data-index="0"><pre class="kp-fallback">diff --git a/bin/example-stop b/bin/example-stop
+--- a/bin/example-stop
++++ b/bin/example-stop
+@@ -1,3 +1,4 @@
+ #!/usr/bin/env bash
++set -u
+ touch "$TASK_DIR/stopped"
+ exit 0</pre></div>
+    </div>
+    <script type="application/json" id="kp-diff-data">[{"name":"bin/example-stop","oldName":"bin/example-stop","oldContents":"#!/usr/bin/env bash\ntouch \"$TASK_DIR/stopped\"\nexit 0\n","newContents":"#!/usr/bin/env bash\nset -u\ntouch \"$TASK_DIR/stopped\"\nexit 0\n","binary":false}]</script>
+    <script type="module">
+      import { FileDiff } from "https://esm.sh/@pierre/diffs@1.2.10?bundle";
+      const files = JSON.parse(document.getElementById("kp-diff-data").textContent);
+      const options = { theme: { light: "github-light", dark: "github-dark" }, themeType: "dark", overflow: "wrap", diffStyle: "split" };
+      files.forEach((f, i) => {
+        const box = document.querySelector('.kp-diff[data-index="' + i + '"]');
+        const fallback = box.querySelector(".kp-fallback");
+        if (f.binary) return;
+        const host = document.createElement("div");
+        box.appendChild(host);
+        const settle = () => { if (host.childElementCount > 0) fallback.hidden = true; return host.childElementCount > 0; };
+        try {
+          new FileDiff(options).render({
+            containerWrapper: host,
+            oldFile: { name: f.oldName, contents: f.oldContents },
+            newFile: { name: f.name, contents: f.newContents },
+          });
+          if (!settle()) setTimeout(settle, 1500);
+        } catch (err) {
+          console.error("kp-diff: render failed for " + f.name, err);
+        }
+      });
+    </script>
+  </section>
+</section>
+
+</main>
+
+<script>
+  // Without the Lavish bridge (a copy opened as a plain file) the buttons copy the text instead.
+  function kpAction(text, label) {
+    if (window.lavish && window.lavish.queuePrompt) {
+      window.lavish.queuePrompt(text, { tag: 'action', text: label });
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      alert('Copied to clipboard: ' + text);
+    }
+  }
+  function kpRequestChanges(taskId) {
+    var note = prompt('Notes for changes:');
+    if (!note) return;
+    var text = 'Request Changes: ' + note;
+    if (window.lavish && window.lavish.queuePrompt) {
+      window.lavish.queuePrompt(text, { tag: 'action', text: 'Request changes: ' + taskId });
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      alert('Copied: ' + text);
+    }
+  }
+</script>
+</body>
+</html>
