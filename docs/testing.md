@@ -38,6 +38,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-worker-stop.sh` | `bin/kingpin-stop`: the outcome a Stop leaves (`failed:`/`waiting:`), fail-soft, `WAITING`/`SILENT`/`Unseen` in `list`, all four harnesses |
 | `test-status.sh` | `lib/status.sh`, the shared status protocol |
 | `test-report.sh` | `report`: generated diffs are renderable, blank-diff reports are rejected |
+| `test-markdown.sh` | `report check`: markdown prose masking, CRLF line numbers, the full rule list |
 | `test-ranks.sh` | rank voice: the contract's Ranks section, the capo preamble, and the neutral status lines |
 | `test-noir-template.sh` | noir dossier template: the three files ship together, every ref stays inside the folder, the diffs keep static fallbacks, the prose stays clean |
 | `test-harnesses.sh` | Multi-harness contract and isolation |

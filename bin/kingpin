@@ -18,7 +18,7 @@
 #   kingpin lock [status|check|acquire [--harness <name>]|release|harness] [pid]
 #   kingpin guard [install|check|warn] [--dir <kingpin-checkout>]
 #   kingpin scope files|check|doctor --harness <name> --worktree <dir> [--preamble <file>]
-#   kingpin report diffs [--repo <dir>] [--base <ref>] | check [--prose-only] <report.html>
+#   kingpin report diffs [--repo <dir>] [--base <ref>] | check [--prose-only] <file>
 #   kingpin curate [--dry-run]
 set -euo pipefail
 

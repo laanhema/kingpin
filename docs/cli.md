@@ -342,7 +342,7 @@ Exit codes: 0 when the binary, credentials and extension are usable, or the cred
 
 ## kingpin report
 
-**Usage:** `kingpin report diffs [--repo <dir>] [--base <ref>]` / `kingpin report check [--prose-only] <report.html>`
+**Usage:** `kingpin report diffs [--repo <dir>] [--base <ref>]` / `kingpin report check [--prose-only] <file>`
 
 **Flags:** `--repo <dir>`, `--base <ref>`, `--prose-only`
 
@@ -360,15 +360,15 @@ Before the layout pass, `check` walks every `<style>` block by brace depth. A de
 
 ### The prose pass
 
-It also runs a prose pass over the page: it fails with `file:line` and the offending line on the mechanical slice of the `unslop` skill (em dash, "testament to", "it's not just", "delve", "seamless", "in order to", "let me know", "I hope this helps"), ignoring code, diff output, script/style bodies and attributes. `<!-- unslop:ignore -->` on a line is the single escape.
+It also runs a prose pass over the file: it fails with `file:line` and the offending line on the mechanical slice of the `unslop` skill (em dash, "testament to", "it's not just", "delve", "seamless", "in order to", "let me know", "I hope this helps"). In an HTML page it ignores code, diff output, script/style bodies and attributes. A `.md` or `.markdown` file is read as markdown: fenced blocks (backtick and tilde, nested fences included), indented code blocks, inline code spans and HTML comments are ignored, and the diff-section checks are skipped because a markdown file carries no diff section. `<!-- unslop:ignore -->` on a line is the single escape for both formats.
 
 ### `--prose-only`
 
-`--prose-only` runs everything but the diff section (the layout and prose passes), for an artifact with no diff section.
+`--prose-only` runs everything but the diff section (the layout and prose passes), for an artifact with no diff section. A markdown file is treated the same way whether or not the flag is passed.
 
 ### Required before `ready:`
 
-The worker preamble and `AGENTS.md` require both the pass and the check before `ready:` and before an orchestrator artifact is served.
+The worker preamble and `AGENTS.md` require both the pass and the check before `ready:` and before an orchestrator artifact is served. Markdown answers to the same gate: run `kingpin report check --prose-only <file>.md` on a review report before it is handed back, and on an issue or pull-request body before `gh ... --body-file` files it.
 
 ## kingpin curate
 
