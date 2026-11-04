@@ -62,6 +62,51 @@ fi
 [ -d "$task_dir" ] || { echo "kingpin-listen: task $id not found: $task_dir" >&2; exit 1; }
 [ -f "$task_dir/report.html" ] || { echo "kingpin-listen: report.html not found in $task_dir" >&2; exit 1; }
 
+# How long the answer watcher waits for the capo's next worker event before it
+# posts the one "still working" pointer (issue #147). Seconds; tests use 1 or 2.
+ANSWER_TIMEOUT=${KINGPIN_LISTEN_ANSWER_TIMEOUT:-600}
+case $ANSWER_TIMEOUT in ''|*[!0-9]*) ANSWER_TIMEOUT=600 ;; esac
+
+# Per-task listener state. `listener.poll` names the poll child (pid and whether it
+# owns a process group), `answer.*` is the answer-pointer state (issue #147).
+poll_file="$task_dir/listener.poll"
+watch_pid_file="$task_dir/answer.watch.pid"
+pending_file="$task_dir/answer.pending"
+done_file="$task_dir/answer.done"
+
+# Stop the poll child, by its own process group when it was started with setsid
+# (requirement B). An orphaned poll owns the Lavish session and swallows prompts,
+# so a replacement listener runs this before it starts polling. Always 0.
+stop_poll_group() {
+  local p grouped
+  [ -f "$poll_file" ] || return 0
+  IFS=' ' read -r p grouped < "$poll_file" 2>/dev/null || true
+  if [ -n "${p:-}" ]; then
+    if [ "${grouped:-0}" = "1" ]; then
+      kill -- "-$p" 2>/dev/null || kill "$p" 2>/dev/null || true
+    else
+      kill "$p" 2>/dev/null || true
+    fi
+  fi
+  rm -f "$poll_file"
+  return 0
+}
+
+# Stop the answer watcher. It shares the listener's process group, so the group
+# stop kingpin-done sends reaches it too; this pid kill covers a foreground
+# listener, which has no group of its own.
+stop_answer_watch() {
+  local wp
+  [ -f "$watch_pid_file" ] || return 0
+  wp=$(cat "$watch_pid_file" 2>/dev/null || true)
+  if [ -n "$wp" ]; then
+    kill "$wp" 2>/dev/null || true
+  fi
+  rm -f "$watch_pid_file"
+  return 0
+}
+
+
 LAVISH_CMD=${KINGPIN_LAVISH:-lavish-axi}
 if ! command -v "$LAVISH_CMD" >/dev/null 2>&1; then
   echo "kingpin-listen: $LAVISH_CMD not installed; skipping lavish review dossier listener" >&2
@@ -87,6 +132,7 @@ if [ "$BACKGROUND" -eq 1 ]; then
   if [ -f "$task_dir/listener.pid" ]; then
     existing_pid=$(cat "$task_dir/listener.pid" 2>/dev/null || true)
     if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+      echo "OK: task $id already has a live listener (pid $existing_pid); not starting another"
       exit 0
     fi
   fi
@@ -103,8 +149,64 @@ if [ "$BACKGROUND" -eq 1 ]; then
 fi
 
 # Foreground listener process
+
+# One listener per task (issue #145). `listener.owner` holds the foreground
+# listener's pid and is put in place by hard-linking a prepared file: link(2) is
+# atomic and fails when the target exists, so two listeners cannot both win. A
+# file whose pid is dead is stale (a listener killed before its EXIT trap ran) and
+# is reclaimed. `--takeover` is not a second listener's route in: it belongs to the
+# Lavish poll below, where it resumes an orphaned session.
+owner_file="$task_dir/listener.owner"
+# A listener started before this change records only `listener.pid` (issue #145).
+# Before claiming a free slot, adopt a live pid found there: write it to the owner
+# file so this run and later ones refuse it, and leave it and its poll alone.
+if [ ! -f "$owner_file" ] && [ -f "$task_dir/listener.pid" ]; then
+  legacy_pid=$(cat "$task_dir/listener.pid" 2>/dev/null || true)
+  if [ -n "$legacy_pid" ] && [ "$legacy_pid" != "$$" ] && kill -0 "$legacy_pid" 2>/dev/null; then
+    legacy_tmp=$(mktemp "$task_dir/.listener-owner.XXXXXX" 2>/dev/null || true)
+    if [ -n "$legacy_tmp" ]; then
+      printf '%s\n' "$legacy_pid" > "$legacy_tmp"
+      ln "$legacy_tmp" "$owner_file" 2>/dev/null || true
+      rm -f "$legacy_tmp"
+    fi
+    echo "OK: task $id already has a live listener (pid $legacy_pid); not starting another"
+    exit 0
+  fi
+fi
+owner_pid=""
+acquired=0
+for _ in 1 2 3 4 5; do
+  owner_tmp=$(mktemp "$task_dir/.listener-owner.XXXXXX" 2>/dev/null) || break
+  printf '%s\n' "$$" > "$owner_tmp"
+  if ln "$owner_tmp" "$owner_file" 2>/dev/null; then
+    acquired=1
+    rm -f "$owner_tmp"
+    break
+  fi
+  rm -f "$owner_tmp"
+  owner_pid=$(head -n 1 "$owner_file" 2>/dev/null || true)
+  if [ -n "$owner_pid" ] && kill -0 "$owner_pid" 2>/dev/null; then
+    echo "OK: task $id already has a live listener (pid $owner_pid); not starting another"
+    exit 0
+  fi
+  # No live listener owns it: a listener killed before its trap ran, so take it over.
+  rm -f "$owner_file"
+done
+[ "$acquired" -eq 1 ] || { echo "kingpin-listen: task $id: could not claim the listener slot in $task_dir" >&2; exit 1; }
+# A slot taken over from a killed listener may still have its poll child running.
+# Stop that group before this listener starts a poll of its own (requirement B).
+stop_poll_group
+
 echo "$$" > "$task_dir/listener.pid"
 cleanup() {
+  stop_answer_watch
+  stop_poll_group
+  if [ -f "$owner_file" ]; then
+    owner_now=$(head -n 1 "$owner_file" 2>/dev/null || true)
+    if [ "$owner_now" = "$$" ]; then
+      rm -f "$owner_file"
+    fi
+  fi
   if [ -f "$task_dir/listener.pid" ]; then
     current_pid=$(cat "$task_dir/listener.pid" 2>/dev/null || true)
     if [ "$current_pid" = "$$" ]; then
@@ -115,10 +217,38 @@ cleanup() {
 trap cleanup EXIT
 trap 'cleanup; exit 0' INT TERM
 
+# open_dossier [reopen]: open the review page and record the Lavish session URL the
+# operator is handed (issue #146). One open is enough: running the command again puts a
+# second browser tab on the same session, so a recorded URL means the page is open. A
+# `reopen` argument is for a session the server lost: it drops the stale URL first.
+open_dossier() {
+  local force=${1:-} out url
+  if [ "$force" != "reopen" ] && [ -s "$task_dir/dossier.url" ]; then
+    return 0
+  fi
+  if [ "$force" = "reopen" ]; then
+    # The recorded URL names the session that is gone, not a fresh one beside it.
+    rm -f "$task_dir/dossier.url"
+  fi
+  out=$("$LAVISH_CMD" "$task_dir/report.html" 2>/dev/null || true)
+  url=$(printf '%s\n' "$out" \
+    | grep -oE 'https?://[^[:space:]"]+/session/[A-Za-z0-9._-]+' | head -n 1 || true)
+  [ -n "$url" ] || return 0
+  printf '%s\n' "$url" > "$task_dir/dossier.url"
+}
+
 # Open review dossier in browser if not already opened
 if [ ! -f "$task_dir/lavish_opened" ]; then
-  "$LAVISH_CMD" "$task_dir/report.html" >/dev/null 2>&1 || true
+  open_dossier
   touch "$task_dir/lavish_opened"
+fi
+
+# One line for a foreground start, so `kingpin listen <task-id>` hands over the same URL
+# `kingpin list` prints. In background mode this line lands in listener.log.
+if [ -s "$task_dir/dossier.url" ]; then
+  echo "OK: listening on $id; dossier $(head -n 1 "$task_dir/dossier.url")"
+else
+  echo "OK: listening on $id; dossier lavish-axi $task_dir/report.html"
 fi
 
 LAVISH_PATH=$(command -v "$LAVISH_CMD")
@@ -131,7 +261,132 @@ PROMPTS_MJS="$KP_BIN/../lib/lavish-prompts.mjs"
 note() {
   kp_status_note "$task_dir/status" "$task_dir/stopped" "$1"
 }
-reply() { "$LAVISH_CMD" reply "$task_dir/report.html" --agent-reply "$1" >/dev/null 2>&1 || true; }
+# reply_ok <text>: post one agent reply and return the command's status, so the
+# answer watcher marks a reply delivered only when Lavish accepted it. reply is the
+# fire-and-forget form every other caller uses.
+reply_ok() { "$LAVISH_CMD" reply "$task_dir/report.html" --agent-reply "$1" >/dev/null 2>&1; }
+reply() { reply_ok "$1" || true; }
+
+# --- Answer pointer watcher (issue #147) -------------------------------------
+# A forwarded dossier message leaves the Lavish conversation on "Working". The
+# watcher runs beside the poll loop, sees the capo's next worker event, and posts
+# one pointer reply, so the conversation clears with no orchestrator action. One
+# "still working" pointer follows a timeout with no event. Both are recorded in
+# `answer.done` so a restart cannot repeat them, and `answer.pending` lets a
+# restart resume a watch whose listener went away.
+
+# answer_done <id>: exit 0 when this prompt already has an answer marker. A
+# `still-working` marker does not count: it retires the timeout line, not the
+# prompt, so a capo that answers later still gets its pointer (issue #147).
+answer_done() {
+  [ -f "$done_file" ] || return 1
+  awk -F'\t' -v id="$1" '$1 == "answered" && $2 == id { found = 1 } END { exit(found ? 0 : 1) }' "$done_file"
+}
+
+# answer_still_working_done <id>: exit 0 when the timeout reply is already posted
+# for this prompt, so it is not repeated while the prompt stays pending.
+answer_still_working_done() {
+  [ -f "$done_file" ] || return 1
+  awk -F'\t' -v id="$1" '$1 == "still-working" && $2 == id { found = 1 } END { exit(found ? 0 : 1) }' "$done_file"
+}
+
+# answer_line_done <status-line> <count>: exit 0 when this line was already
+# marked answered at this worker-event count, so two prompts answered by one
+# event post one pointer. The count is part of the key because the Stop hook
+# writes the same `waiting:` line at the end of many turns: without it a later
+# prompt answered by an identical line would be retired with no pointer (#147).
+answer_line_done() {
+  [ -f "$done_file" ] || return 1
+  awk -F'\t' -v line="$1" -v count="$2" \
+    '$1 == "answered" && $3 == line && $4 == count { found = 1 } END { exit(found ? 0 : 1) }' "$done_file"
+}
+
+# answer_watch <timeout>: one background watcher for every pending prompt. The
+# pending file is append-only: a marker, not a rewrite, retires an entry, so the
+# poll loop can append a second prompt while the watcher reads.
+answer_watch() {
+  local timeout=$1 id base started now count last busy line_done slow
+  while :; do
+    busy=0
+    slow=0
+    if [ -f "$pending_file" ]; then
+      while IFS=$'\t' read -r id base started; do
+        [[ ${id:-} =~ ^[0-9]+$ ]] || continue
+        if answer_done "$id"; then
+          continue
+        fi
+        busy=1
+        count=$(kp_status_worker_events "$task_dir/status")
+        if [ "$count" -gt "${base:-0}" ]; then
+          last=$(kp_status_last "$task_dir/status")
+          line_done=0
+          answer_line_done "$last" "$count" && line_done=1
+          # Mark the prompt answered only once its pointer is delivered: a failed
+          # reply leaves it pending, and the next tick retries (issue #147).
+          if [ "$line_done" -eq 1 ]; then
+            printf 'answered\t%s\t%s\t%s\n' "$id" "$last" "$count" >> "$done_file"
+          elif reply_ok "The capo updated the page; open it to read the answer"; then
+            printf 'answered\t%s\t%s\t%s\n' "$id" "$last" "$count" >> "$done_file"
+          else
+            slow=1
+          fi
+          continue
+        fi
+        now=$(date +%s)
+        if [ $((now - ${started:-$now})) -ge "$timeout" ]; then
+          # Past the timeout the capo is simply slow: watch at a lower rate, and
+          # retry a refused timeout reply on the same slow tick (review L4).
+          slow=1
+          if ! answer_still_working_done "$id"; then
+            # Same rule for the timeout line: no marker until Lavish takes it.
+            if reply_ok "The capo is still working; the answer will appear on the page."; then
+              printf 'still-working\t%s\n' "$id" >> "$done_file"
+            fi
+          fi
+          continue
+        fi
+      done < "$pending_file"
+    fi
+    [ "$busy" -eq 1 ] || break
+    # The fast tick only covers the bounded wait before the timeout line; a prompt
+    # that is past it, or a reply Lavish refused, does not need 5 Hz (review L4).
+    if [ "$slow" -eq 1 ]; then sleep 2; else sleep 0.2; fi
+  done
+  return 0
+}
+
+# start_answer_watch: spawn the watcher unless one is already live.
+start_answer_watch() {
+  local wp
+  [ -s "$pending_file" ] || return 0
+  if [ -f "$watch_pid_file" ]; then
+    wp=$(cat "$watch_pid_file" 2>/dev/null || true)
+    if [ -n "$wp" ] && kill -0 "$wp" 2>/dev/null; then
+      return 0
+    fi
+    rm -f "$watch_pid_file"
+  fi
+  answer_watch "$ANSWER_TIMEOUT" &
+  printf '%s\n' "$!" > "$watch_pid_file"
+  return 0
+}
+
+# note_answer_pending [id] [baseline]: record one forwarded prompt and make sure
+# it is watched. The caller passes the id and the worker-event count it read
+# before the send, so an answer that lands while kingpin-send is typing is still
+# newer than the baseline.
+note_answer_pending() {
+  local id=${1:-} base=${2:-}
+  if [ -z "$id" ]; then
+    id=$(grep -c '^## ' "$task_dir/feedback.md" 2>/dev/null || true)
+    [ -n "$id" ] || id=0
+  fi
+  if [ -z "$base" ]; then
+    base=$(kp_status_worker_events "$task_dir/status")
+  fi
+  printf '%s\t%s\t%s\n' "$id" "$base" "$(date +%s)" >> "$pending_file"
+  start_answer_watch
+}
 
 
 handle_approve() {
@@ -176,16 +431,92 @@ handle_approve() {
 }
 
 handle_feedback() {
-  local text=$1 quiet=${2:-} summary
+  local text=$1 quiet=${2:-} summary answer_id answer_base
   {
     printf '## %s\n\n%s\n\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$text"
   } >> "$task_dir/feedback.md"
   summary=$(printf '%s\n' "$text" | head -n 1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | cut -c 1-100)
+  # Read the watch baseline before the send: a fast capo can answer while
+  # kingpin-send is still typing, and that answer must count as newer.
+  answer_id=$(grep -c '^## ' "$task_dir/feedback.md" 2>/dev/null || true)
+  [ -n "$answer_id" ] || answer_id=0
+  answer_base=$(kp_status_worker_events "$task_dir/status")
   note "feedback: $summary"
+  forward_feedback "$text"
+  if [ "$forward_state" = "forwarded" ]; then
+    note_answer_pending "$answer_id" "$answer_base"
+  fi
   # The recovery path forwards several prompts and replies once for all of them,
   # so it passes `quiet` and owns the single receipt itself.
-  [ -n "$quiet" ] || reply "Feedback received. Forwarded to the orchestrator."
+  [ -n "$quiet" ] || deliver_receipt
 }
+
+# The forward outcome of the last handle_feedback call: `forwarded`, or
+# `not forwarded: <reason>`. The receipt and the recovery reply read it, so a
+# skipped send is never answered with "forwarded".
+forward_state="forwarded"
+
+# Forward one dossier message to the capo (issue #145). The status note and
+# feedback.md are already written, so the orchestrator still sees the message and
+# reviews what the capo did with it. A task that is no longer live, or whose
+# window is gone, gets one `feedback: not forwarded: <reason>` note instead of a
+# failed poll loop.
+forward_feedback() {
+  local text=$1 flat msg send_out reason
+  forward_state="forwarded"
+  if ! kp_task_is_live "$task_dir"; then
+    forward_state="not forwarded: task is no longer live"
+    note "feedback: $forward_state"
+    return 0
+  fi
+  # One operational line: tmux types it literally and presses Enter. Newlines are
+  # flattened so a multi-line message does not submit in pieces; feedback.md keeps
+  # the text verbatim for the orchestrator.
+  flat=$(printf '%s' "$text" | tr '\n\r\t' '   ' | tr -s ' ' | sed -e 's/^ //' -e 's/ $//')
+  msg="The boss wrote this in the review dossier (recorded in $task_dir/feedback.md): $flat. Answer in the dossier; do not land in review mode."
+  if send_out=$("$KP_BIN/kingpin-send" "$id" "$msg" 2>&1); then
+    return 0
+  fi
+  reason=$(printf '%s\n' "$send_out" | grep -v '^[[:space:]]*$' | head -n 1 || true)
+  [ -n "$reason" ] || reason="kingpin-send failed"
+  forward_state="not forwarded: $reason"
+  note "feedback: $forward_state"
+}
+
+# The reviewer's receipt: say what actually happened to the message.
+deliver_receipt() {
+  if [ "$forward_state" = "forwarded" ]; then
+    reply "Feedback received. Forwarded to the worker; answer in the dossier."
+  else
+    reply "Feedback received. Recorded, not forwarded to the worker: ${forward_state#not forwarded: }."
+  fi
+}
+
+# Poll one response in its own process group (requirement B) and record the
+# child, so a replacement listener can stop a poll that outlived its listener.
+# Without the record an orphaned poll owns the Lavish session and swallows the
+# reviewer's next annotation, which Lavish will not redeliver.
+poll_out=""
+run_poll() {
+  local out_file pid rc=0 starter=() grouped=0
+  out_file=$(mktemp "$task_dir/poll-out-XXXXXX") || return 1
+  if command -v setsid >/dev/null 2>&1; then
+    starter=(setsid)
+    grouped=1
+  fi
+  ${starter[@]+"${starter[@]}"} "$LAVISH_CMD" poll "$task_dir/report.html" --owner "kingpin:$id" --takeover > "$out_file" 2>&1 &
+  pid=$!
+  printf '%s %s\n' "$pid" "$grouped" > "$poll_file"
+  wait "$pid" || rc=$?
+  rm -f "$poll_file"
+  poll_out=$(cat "$out_file" 2>/dev/null || true)
+  rm -f "$out_file"
+  return "$rc"
+}
+
+# A restart resumes a watch whose prompt was already forwarded: the pending entry
+# survived, so the pointer still fires when the capo reports.
+start_answer_watch
 
 # Poll loop: re-poll after every response; only an ended session stops it.
 fails=0
@@ -202,7 +533,7 @@ while true; do
   [ -d "$task_dir" ] || break
   [ -f "$task_dir/report.html" ] || break
 
-  if poll_out=$("$LAVISH_CMD" poll "$task_dir/report.html" --owner "kingpin:$id" --takeover 2>&1); then
+  if run_poll; then
     fails=0
   else
     fails=$((fails + 1))
@@ -210,9 +541,10 @@ while true; do
       echo "kingpin-listen: poll failed $fails times in a row; giving up" >&2
       break
     fi
-    # Session lost (e.g. server restart): open it again, unless the user ended it.
+    # Session lost (e.g. server restart): open it again, unless the user ended it. The
+    # recorded URL died with the session, so a reopen replaces it.
     if printf '%s' "$poll_out" | grep -q 'NOT_FOUND' && [ ! -f "$task_dir/lavish_ended" ]; then
-      "$LAVISH_CMD" "$task_dir/report.html" >/dev/null 2>&1 || true
+      open_dossier reopen
     fi
     [ "$ONCE" -eq 1 ] && break
     sleep 2
@@ -259,10 +591,21 @@ while true; do
       }
     ')
     if [ -n "$recovered" ]; then
+      recovery_skip=""
       while IFS= read -r text; do
-        if [ -n "$text" ]; then handle_feedback "$text" quiet; fi
+        if [ -n "$text" ]; then
+          handle_feedback "$text" quiet
+          case "$forward_state" in
+            forwarded) ;;
+            *) recovery_skip=$forward_state ;;
+          esac
+        fi
       done <<< "$recovered"
-      reply "Feedback received and forwarded. Kingpin could not fully parse the poll response, so it recovered your message and kept the raw response at $parked."
+      if [ -n "$recovery_skip" ]; then
+        reply "Feedback received and recorded. Not forwarded to the worker: ${recovery_skip#not forwarded: }. Kingpin could not fully parse the poll response, so it kept the raw response at $parked."
+      else
+        reply "Feedback received and forwarded. Kingpin could not fully parse the poll response, so it recovered your message and kept the raw response at $parked."
+      fi
     else
       note "feedback: could not read the poll response; raw response parked at $parked"
       reply "I could not read your last message. Please resend it as plain text."

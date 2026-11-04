@@ -103,6 +103,9 @@ An instruction file a harness silently ignores is a bug, not a preference:
 
 `bin/kingpin-watch` is the fleet's one supervisor. It dispatches each unprocessed status
 line once, runs the cleanup on `merged:`, and re-arms a dossier listener that died.
+The listener opens a review dossier once and records its Lavish session URL in the task's
+`dossier.url`; `kingpin list` prints that URL, and the orchestrator hands it over instead of
+running `lavish-axi` on the page again.
 
 `kingpin afk on [--ttl <duration>]` arms session-scoped auto-landing. The state is
 `$KINGPIN_HOME/afk` (holder pid, arm epoch, expiry epoch), the default TTL is 8 hours, and
@@ -129,6 +132,22 @@ shows the archived rows. An archived task is not live: `kingpin peek` and `kingp
 `kingpin wait` raises no event, and `kingpin listen` says it is finished. `lib/status.sh` holds
 the reader the fleet commands use to tell a live `tasks/<id>` from that link; `peek` and `send`
 resolve the tmux window instead.
+
+A dossier message reaches the capo from `kingpin listen` itself: after `handle_feedback` writes
+`feedback.md` and the `feedback:` note, the listener sends the text to the worker as one line that
+names the dossier and repeats the review rule (answer there, do not land). The note and the file
+stay for the orchestrator, which reviews what the capo did instead of relaying the message. A
+`feedback: not forwarded: <reason>` note means the text is recorded but the capo never received it,
+because the task was no longer live or its window was gone. One listener owns a task at a time:
+`listener.owner` holds its pid, so a second `kingpin listen` prints one line and exits 0.
+
+After the forward, a watcher beside the poll posts one `The capo updated the page; open it to read
+the answer` reply when the worker's next status event lands, so the Lavish conversation stops
+showing Working; `answer.done` records the answered line so a restart does not repeat it. With no
+event within `KINGPIN_LISTEN_ANSWER_TIMEOUT` seconds (default 600) it posts one `still working`
+pointer and no more for that prompt. The poll itself runs in its own process group, recorded in
+`listener.poll`, and a listener stop or a replacement stops that group, so an orphaned poll cannot
+swallow the reviewer's next annotation.
 
 A fresh clone has neither the guard nor the contract: run `kingpin init` (or
 `kingpin guard install`) in the main checkout once.
