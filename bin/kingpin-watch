@@ -31,6 +31,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_ROOT/lib/landing.sh"
 # shellcheck source=../lib/supervisor.sh
 . "$KP_ROOT/lib/supervisor.sh"
+# shellcheck source=../lib/afk.sh
+. "$KP_ROOT/lib/afk.sh"
 # shellcheck source=../lib/curator.sh
 . "$KP_ROOT/lib/curator.sh"
 KP_BIN="$KP_ROOT/bin"
@@ -149,6 +151,142 @@ claim_supervisor() {
   exit 1
 }
 
+# ---- AFK auto-landing (issue #94) -------------------------------------------
+# Everything AFK does to a ready: or fixed: line lives in this block, so a parallel
+# change to those branches below stays a trivial rebase. It only decides whether to
+# call kingpin-land: the verdict gate and the per-project landing lane stay exactly
+# where they are. kingpin-land runs no report check; the check is the warning this
+# supervisor runs in its review branch and in the AFK clean branch below. Each
+# function returns 1 when the line is not AFK's, which is how the caller gets
+# today's behaviour unchanged.
+
+# Warn when a task's dossier fails kingpin report check. The review branch runs it
+# before it opens the page, and the AFK clean branch runs it before landing, so an
+# AFK landing gets the same warning an operator's review does. kingpin-land itself
+# runs no check.
+warn_report_check() {
+  local id=$1 task_dir=$2
+  [ -f "$task_dir/report.html" ] || return 0
+  "$KP_BIN/kingpin-report" check "$task_dir/report.html" >/dev/null 2>&1 \
+    || echo "[kingpin-watch] WARNING $id report.html fails kingpin report check (blank diffs, an overflowing layout or sloppy prose); run kingpin report check $task_dir/report.html to see the reason" >&2
+}
+
+# The audit note for a landing AFK decided. It is written at most once per task, so
+# a replayed line or a leftover marker cannot append it twice. The note matches
+# approved:*, which kp_status_last skips, so the verdict gate still reads the
+# ready:/fixed: line and the note cannot trigger another landing. It goes through
+# kp_status_note like the listener's notes, so it never moves the Stop hook's turn
+# boundary (a worker that ends its next turn silently still gets its failed: line).
+afk_note_landing() {
+  local task_dir=$1
+  grep -qxF 'approved: auto (afk)' "$task_dir/status" 2>/dev/null && return 0
+  kp_status_note "$task_dir/status" "$task_dir/stopped" 'approved: auto (afk)'
+}
+
+afk_dispatch_ready() {
+  local id=$1
+  local task_dir=$2
+  local line=$3
+  local kind
+
+  kp_afk_armed "$KP_HOME" || return 1
+
+  # The dossier listener records landing_sent once it has started a landing and
+  # approve_pending while an approval's fix pass or re-review runs. Either marker
+  # means the decision was already taken, so AFK must not take it again.
+  if [ -f "$task_dir/landing_sent" ] || [ -f "$task_dir/approve_pending" ]; then
+    echo "[kingpin-watch] $id is ready (afk on); a landing or fix pass is already under way"
+    return 0
+  fi
+
+  kind=$(kp_verdict_kind "$(kp_status_verdict "$line")")
+  case "$kind" in
+    clean)
+      echo "[kingpin-watch] $id is ready with a clean verdict (afk on); auto-landing..."
+      warn_report_check "$id" "$task_dir"
+      if "$KP_BIN/kingpin-land" "$id"; then
+        # Note only a landing that actually started (landing_sent), the same rule
+        # the fixed: branch uses. A line that only queued behind a live holder
+        # carries no note: it is not a decision AFK has completed yet.
+        if [ -f "$task_dir/landing_sent" ]; then
+          afk_note_landing "$task_dir"
+        fi
+        # A re-review ready: line takes over from an earlier AFK-started fix pass,
+        # so that pass's marker must not make a later fixed: line note again.
+        rm -f "$task_dir/afk_fix_pass"
+      fi
+      ;;
+    findings)
+      # A findings verdict never merges here: kingpin-land starts the fix pass,
+      # and the fixed: branch continues the landing once the worker reports.
+      echo "[kingpin-watch] $id review has findings (afk on); starting the fix pass..."
+      if "$KP_BIN/kingpin-land" "$id"; then
+        # The pass was AFK-started whatever the task's mode, so its clean fixed:
+        # line gains the note that records who decided.
+        if [ -f "$task_dir/landing_in_progress" ]; then
+          touch "$task_dir/afk_fix_pass"
+        fi
+      fi
+      ;;
+    *)
+      echo "[kingpin-watch] $id is ready but its review verdict cannot be read (afk on); holding for the operator" >&2
+      ;;
+  esac
+  return 0
+}
+
+# A fixed: line for an AFK-started fix pass. Only the afk_fix_pass marker claims
+# the line; the approved: auto (afk) note does not, because afk_note_landing already
+# refuses to write it twice. The marker survives the /review round of a pass that
+# left High findings, so the clean landing that follows gains the note; AFK only
+# owns the line while the arm is still live: once it is off or expired, the marker
+# is dropped and today's branch lands the line without an AFK note (review M1).
+afk_dispatch_fixed() {
+  local id=$1
+  local task_dir=$2
+  local line=$3
+  local high
+
+  if ! kp_afk_armed "$KP_HOME"; then
+    rm -f "$task_dir/afk_fix_pass"
+    return 1
+  fi
+  # A landing already sent must not dispatch a second one. This is a no-op guard,
+  # not a claim: it also covers a replayed fixed: line after AFK cleared its marker.
+  if [ -f "$task_dir/landing_sent" ]; then
+    echo "[kingpin-watch] $id reported fix pass (afk on); the landing is already under way"
+    rm -f "$task_dir/afk_fix_pass"
+    return 0
+  fi
+  # Only an AFK-started pass is AFK's. A task AFK already landed is not claimed
+  # again from its audit note alone; afk_note_landing keeps that note single.
+  if [ ! -f "$task_dir/afk_fix_pass" ]; then
+    return 1
+  fi
+  # A dossier approval owns this pass; its listener records that approval itself.
+  if [ -f "$task_dir/approve_pending" ]; then
+    rm -f "$task_dir/afk_fix_pass"
+    return 1
+  fi
+  echo "[kingpin-watch] $id reported fixed: from an AFK-started fix pass; continuing landing..."
+  if "$KP_BIN/kingpin-land" "$id"; then
+    if [ -f "$task_dir/landing_sent" ]; then
+      afk_note_landing "$task_dir"
+      rm -f "$task_dir/afk_fix_pass"
+    else
+      # A clean fixed: line that only queued behind a live holder starts no
+      # landing yet, so it carries no note; drop the marker so it cannot claim a
+      # later fixed: line. A line that still leaves High findings only requests
+      # /review, so its marker stays for the clean ready: that follows.
+      high=$(kp_status_field "$line" high)
+      if [ "$high" = "0" ]; then
+        rm -f "$task_dir/afk_fix_pass"
+      fi
+    fi
+  fi
+  return 0
+}
+
 # Apply one status line. The case is the dispatch table; process_task_event calls
 # it once per unprocessed line, so a worker event batched with a listener note
 # cannot be acknowledged away.
@@ -160,7 +298,10 @@ dispatch_status_line() {
 
   case "$line" in
     ready:*)
-      if [ "$mode" = "auto" ] && [ ! -f "$task_dir/landing_sent" ]; then
+      if afk_dispatch_ready "$id" "$task_dir" "$line"; then
+        # AFK owned this line: it landed, started a fix pass, or held it.
+        :
+      elif [ "$mode" = "auto" ] && [ ! -f "$task_dir/landing_sent" ]; then
         echo "[kingpin-watch] $id is ready (auto mode); initiating landing..."
         "$KP_BIN/kingpin-land" "$id" || true
       elif [ "$mode" = "review" ]; then
@@ -170,21 +311,32 @@ dispatch_status_line() {
         else
           echo "[kingpin-watch] $id is ready for review (lavish-axi $task_dir/report.html)"
           if [ -f "$task_dir/report.html" ]; then
-            "$KP_BIN/kingpin-report" check "$task_dir/report.html" >/dev/null 2>&1 || echo "[kingpin-watch] WARNING $id report.html fails kingpin report check (blank diffs, an overflowing layout or sloppy prose); run kingpin report check $task_dir/report.html to see the reason" >&2
+            warn_report_check "$id" "$task_dir"
             "$KP_BIN/kingpin-listen" "$id" --background || true
           fi
         fi
       fi
       ;;
     approved:*)
-      # kingpin-listen already ran kingpin-land for this approval.
-      echo "[kingpin-watch] $id was approved via the review dossier; landing started by its listener"
+      # kingpin-listen already ran kingpin-land for a dossier approval; AFK wrote
+      # its own note after landing, and neither note may start another landing.
+      case "$line" in
+        "approved: auto (afk)")
+          echo "[kingpin-watch] $id was auto-landed by AFK (approved: auto (afk))"
+          ;;
+        *)
+          echo "[kingpin-watch] $id was approved via the review dossier; landing started by its listener"
+          ;;
+      esac
       ;;
     feedback:*)
       echo "[kingpin-watch] $id received review feedback: $line"
       ;;
     fixed:*)
-      if [ "$mode" = "auto" ] || [ -f "$task_dir/landing_in_progress" ]; then
+      if afk_dispatch_fixed "$id" "$task_dir" "$line"; then
+        # AFK owned this fixed: line: it landed, or left the re-review running.
+        :
+      elif [ "$mode" = "auto" ] || [ -f "$task_dir/landing_in_progress" ]; then
         echo "[kingpin-watch] $id reported fix pass; continuing landing..."
         "$KP_BIN/kingpin-land" "$id" || true
       fi

@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [acceptance, agents-paths, archive-link, cli-help, curate, curate-auto, done, excludes, git-compat, harnesses, land, landing-lane, launch-check, lifecycle, lint, listen, lock, markdown, noir-template, pi-harness, ranks, report, send-peek, spawn, status, sync, wait, watch-supervisor, worker-scope, worker-settings, worker-stop]
+        suite: [acceptance, afk, agents-paths, archive-link, cli-help, curate, curate-auto, done, excludes, git-compat, harnesses, land, landing-lane, launch-check, lifecycle, lint, listen, lock, markdown, noir-template, pi-harness, ranks, report, send-peek, spawn, status, sync, wait, watch-supervisor, worker-scope, worker-settings, worker-stop]
     steps:
       - uses: actions/checkout@v4
       - name: Install tmux
