@@ -47,24 +47,26 @@ Review the changes and click **Approve & Land** on the dossier or run:
 kingpin land <task-id>
 ```
 
-### 3. Handover Artifacts (noir dossier template)
+### 3. Handover Artifacts (handover template)
 
-Pages handed to the boss for a decision (proposals, plans, comparisons, review summaries) start from the noir dossier template that ships with the repo:
+Pages handed to the boss for a decision (proposals, plans, comparisons, review summaries) start from the handover template that ships with the repo, in the same folder as the worker dossier template:
 
 ```
-assets/lavish/noir-dossier/
-  template.html   the page: exhibits A-F, inline-SVG diagrams, @pierre/diffs, two working decision forms
-  kingpin.jpg     the banner, the same image as assets/kingpin.jpg, referenced relatively
-  DESIGN.md       the rules the look depends on, beside the file they describe
+assets/lavish/worker-dossier/
+  handover.html   the page: decision header, stat cards, problem, inline-SVG diagram, options, risks, diff, decision forms
+  template.html   a worker's report.html, section 4 below
+  DESIGN.md       the rules the look depends on, beside the files they describe
 ```
 
-Copy the folder into the artifact's directory (`.lavish/`), rename the html, swap the content, and keep the chrome. `DESIGN.md` lists the rules (paper on ink, one accent, one display face, exhibit labels, forms for decisions) and the two widths to check, 1180 px and 480 px, with nothing scrolling sideways. Then open it:
+Copy `handover.html` into the artifact's directory (`.lavish/`), rename it, change the title first, then swap the sample content and `REPLACE` comments. `DESIGN.md` lists the rules (dark palette, what each colour means, option cards and one comparison table, one form per question) and how to trim the page into a review summary. Check it at 1280 and 1024 wide with nothing scrolling sideways, then open it:
 
 ```bash
 lavish-axi .lavish/<artifact>.html
 ```
 
-Worker review dossiers are not made from this template: they start from the worker dossier template described below. `tests/test-noir-template.sh` fails when the folder loses one of the three files, when `template.html` points at a file with an absolute path or through `..`, when a diff block loses its static fallback, or when the page stops passing the full `kingpin report check` (renderable diffs, contained layout and clean prose).
+`tests/test-worker-dossier-template.sh` fails when the folder loses a file, when a section a page is read for goes missing, when a decision form loses its handler or its no-Lavish message, or when the page stops passing the full `kingpin report check`.
+
+The noir dossier template (`assets/lavish/noir-dossier/`, tested by `tests/test-noir-template.sh`) stays in the repo for a future parchment look. Nothing uses it by default.
 
 ### 4. Worker Review Dossiers (worker dossier template)
 
@@ -76,4 +78,4 @@ assets/lavish/worker-dossier/
   DESIGN.md       the rules the look depends on, beside the file they describe
 ```
 
-`worker/preamble.md` tells the worker to copy `template.html` to the task folder as `report.html`, swap the sample values and `REPLACE` comments for the task's own, and paste the output of `kingpin report diffs` over the sample diff section. The look came from the dossiers that read most clearly: a dark GitHub palette on Tailwind and DaisyUI, one numbered Problem and Solution block per change, every review finding as a table row with its pass, ID, severity and outcome, and a validation table. `DESIGN.md` records the rules, including what each colour means. `tests/test-worker-dossier-template.sh` fails when the folder loses a file, when a section the dossier is read for goes missing, when the page stops passing the full `kingpin report check`, or when the preamble stops pointing at it. The noir dossier template stays for pages handed to the boss.
+`worker/preamble.md` tells the worker to copy `template.html` to the task folder as `report.html`, swap the sample values and `REPLACE` comments for the task's own, and paste the output of `kingpin report diffs` over the sample diff section. The look came from the dossiers that read most clearly: a dark GitHub palette on Tailwind and DaisyUI, one numbered Problem and Solution block per change, every review finding as a table row with its pass, ID, severity and outcome, and a validation table. `DESIGN.md` records the rules, including what each colour means. `tests/test-worker-dossier-template.sh` fails when the folder loses a file, when a section the dossier is read for goes missing, when the page stops passing the full `kingpin report check`, or when the preamble stops pointing at it. The handover template shares its look, so a report and a proposal read the same way.
