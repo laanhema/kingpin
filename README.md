@@ -19,7 +19,7 @@ The voice stays in the room. Commits, PRs, issues, code, status fields, review r
 Ensure the following tools are installed on your host:
 
 - `git` (2.30+)
-- `tmux`
+- `tmux` (required today: `kingpin spawn` still creates tmux workers) or `herdr` (adapter in place; worker creation lands with issue #144 phase E)
 - `treehouse` (git worktree pool manager)
 - `node` (18+; Pi needs Node 22.19+)
 - At least one worker harness:

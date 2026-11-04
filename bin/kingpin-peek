@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# Show the tail of a kingpin task's tmux pane, read-only.
+# Show the tail of a kingpin task's terminal pane, read-only.
 #
 # Usage: kingpin-peek <task-id> [--lines N]
 #
 # Prints the last N (default 20) non-empty lines of the worker's pane, scrollback
-# included, with wrapped lines joined. The window is resolved like kingpin-send does
-# (lib/tmux.sh): the task's own window name first, which is the one key that survives a
-# tmux server restart, then the recorded window ID for a hand-renamed window. Only
-# `tmux list-panes` and `tmux capture-pane` run: no keys are sent and nothing is written.
+# included, with wrapped lines joined. The terminal is resolved through
+# lib/mux.sh from the mux the record names: a tmux window by its own name first,
+# which is the one key that survives a tmux server restart, then the recorded
+# window id for a hand-renamed window; a Herdr pane by its label first, then the
+# recorded pane id. It sends no keys and writes nothing in either mode: in tmux
+# only `list-panes` and `capture-pane` run, and a Herdr pane found under a stale
+# recorded id is left unrecorded.
 set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
-# shellcheck source=../lib/tmux.sh
-. "$(dirname "$0")/../lib/tmux.sh"
+# shellcheck source=../lib/mux.sh
+. "$(dirname "$0")/../lib/mux.sh"
 
 usage() { echo "usage: kingpin-peek <task-id> [--lines N]" >&2; }
 
@@ -59,16 +62,19 @@ done
 task_dir="$KP_HOME/tasks/$id"
 [ -d "$task_dir" ] || { echo "kingpin-peek: task $id not found: $task_dir" >&2; exit 1; }
 
-# The window is resolved by lib/tmux.sh: its own name first, then the recorded id,
-# on the socket the task record names (issue #142). Only `list-panes` and
-# `capture-pane` run: no keys are sent and nothing is written.
-if ! kp_window_find "$task_dir"; then
-  echo "kingpin-peek: tmux window $KP_WINDOW_LABEL is not alive" >&2
+# The task's terminal is resolved through lib/mux.sh: a tmux window by its own
+# name first, then the recorded id, on the socket the record names (issue #142); a
+# Herdr pane by its label first, then the recorded pane id. In tmux mode only
+# `list-panes` and `capture-pane` run: no keys are sent and nothing is written.
+# `--no-record` keeps that promise for a Herdr task too: a pane found under a
+# stale recorded id is not written back, because a reader must not race a writer.
+if ! kp_mux_find "$task_dir" --no-record; then
+  echo "kingpin-peek: $KP_MUX window $KP_WINDOW_LABEL is not alive" >&2
   exit 1
 fi
 
-pane=$(kp_tmux "$KP_WINDOW_SOCKET" capture-pane -p -J -t "$KP_WINDOW_ID" -S -2000 2>/dev/null) || {
-  echo "kingpin-peek: could not read tmux window $KP_WINDOW_LABEL" >&2
+pane=$(kp_mux_capture "$KP_WINDOW_ID" --scrollback 2000 2>/dev/null) || {
+  echo "kingpin-peek: could not read $KP_MUX window $KP_WINDOW_LABEL" >&2
   exit 1
 }
 

@@ -1,21 +1,23 @@
 #!/usr/bin/env bash
-# Send text into a kingpin task's tmux window.
+# Send text into a kingpin task's terminal, through lib/mux.sh.
 #
 # Usage: kingpin-send <task-id> "<text>"
 #
 # The text is typed literally (send-keys -l), so words like Escape or C-c reach
-# the pane as characters, not as keypresses. The window is resolved by lib/tmux.sh:
-# its own name first, so a send after a tmux server restart reaches the task's own
-# window rather than whichever window inherited the stale recorded id. Enter follows in a separate call
-# after a short pause (KINGPIN_SEND_DELAY seconds, default 0.2), so a long
-# message that a TUI treats as a paste is submitted instead of swallowed.
+# the pane as characters, not as keypresses. The task's terminal is resolved by
+# lib/mux.sh from the mux its record names: tmux finds its own window by name
+# first, so a send after a tmux server restart reaches the task's own window
+# rather than whichever window inherited the stale recorded id, and Herdr finds
+# its pane by label first. Enter follows in a separate call after a short pause
+# (KINGPIN_SEND_DELAY seconds, default 0.2), so a long message that a TUI treats
+# as a paste is submitted instead of swallowed.
 set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
-# shellcheck source=../lib/tmux.sh
-. "$(dirname "$0")/../lib/tmux.sh"
+# shellcheck source=../lib/mux.sh
+. "$(dirname "$0")/../lib/mux.sh"
 
 usage() {
   cat <<'HELP'
@@ -37,16 +39,17 @@ keys="$*"
 task_dir="$KP_HOME/tasks/$id"
 [ -d "$task_dir" ] || { echo "kingpin-send: task $id not found: $task_dir" >&2; exit 1; }
 
-# The window is resolved by lib/tmux.sh: its own name first, then the recorded id,
-# on the socket the task record names (issue #142), so a send after a tmux server
-# restart reaches the task's own window rather than whichever window inherited the
-# stale recorded id.
-if ! kp_window_find "$task_dir"; then
-  echo "kingpin-send: tmux window $KP_WINDOW_LABEL is not alive" >&2
+# The task's terminal is resolved from its record: the tmux window by its own name
+# first, then the recorded id, on the socket the record names (issue #142); a
+# Herdr pane by its label first, then the recorded pane id (issue #144). Either
+# way a send after a mux restart reaches the task's own terminal rather than a
+# stranger's.
+if ! kp_mux_find "$task_dir"; then
+  echo "kingpin-send: $KP_MUX window $KP_WINDOW_LABEL is not alive" >&2
   exit 1
 fi
 
-kp_tmux "$KP_WINDOW_SOCKET" send-keys -t "$KP_WINDOW_ID" -l -- "$keys"
+kp_mux_send_text "$KP_WINDOW_ID" "$keys"
 sleep "${KINGPIN_SEND_DELAY:-0.2}"
-kp_tmux "$KP_WINDOW_SOCKET" send-keys -t "$KP_WINDOW_ID" Enter
+kp_mux_send_enter "$KP_WINDOW_ID"
 echo "OK: sent to $KP_WINDOW_LABEL"

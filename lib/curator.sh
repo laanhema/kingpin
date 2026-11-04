@@ -30,6 +30,8 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mutex.sh"
 # shellcheck source=tmux.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tmux.sh"
+# shellcheck source=mux.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mux.sh"
 
 # kp_curate_pending_task <task-dir>
 # Exit 0 when the task still has an unapplied critique: the file is non-empty and
@@ -119,27 +121,58 @@ kp_curate_stamp() {
 }
 
 # kp_curate_window_state <kp-home>
-# Prints alive, dead or none for the kingpin:curator window. The socket comes from
-# the curator record (`tasks/curator/task.env`), like every other window reader, so
-# a record written under another KINGPIN_TMUX_SOCKET, or before the fleet had its
-# own server (no TMUX_SOCKET, so the default server), is probed where its window
-# actually lives. With no record yet, the current environment's socket is the one
-# the launch will use. A window whose only panes have exited is dead, not a
-# curator: on a host with tmux's remain-on-exit set, a failed launch leaves that
-# pane behind and treating it as live would block every later run.
+# Prints alive, dead, none or unknown for the curator terminal. The mux and the
+# target come from the curator record (`tasks/curator/task.env`), like every other
+# terminal reader, so a record written under another KINGPIN_TMUX_SOCKET, or before
+# the fleet had its own server (no TMUX_SOCKET, so the default server), is probed
+# where its terminal actually lives; a Herdr record is probed by the pane id it
+# names. A record that names a mux this reader cannot read prints `unknown`: the
+# selection rule refuses an unknown mux by name, so guessing tmux here would probe
+# the wrong backend. With no record yet, the current environment's mux and socket
+# are the ones the launch will use. A tmux window whose only panes have exited is
+# dead, not a curator: on a host with tmux's remain-on-exit set, a failed launch
+# leaves that pane behind and treating it as live would block every later run. A
+# Herdr pane is alive or gone, never dead.
 kp_curate_window_state() {
-  local home=${1:?} sock panes
-  if [ -f "$home/tasks/curator/task.env" ]; then
-    sock=$(kp_tmux_socket_from_env "$home/tasks/curator/task.env")
+  local home=${1:?} env_file mux sock target session state
+  env_file="$home/tasks/curator/task.env"
+  target='kingpin:curator'
+  sock=''
+  session=''
+  if [ -f "$env_file" ]; then
+    mux=$(kp_mux_record "$home/tasks/curator" 2>/dev/null) || mux=unknown
+    sock=$(kp_tmux_socket_from_env "$env_file")
+    target=$(kp_env_get "$env_file" MUX_TARGET)
+    [ -n "$target" ] || target=kingpin:curator
+    session=$(kp_env_get "$env_file" MUX_SESSION)
   else
+    mux=$(kp_mux_name 2>/dev/null) || mux=unknown
     sock=$(kp_tmux_socket_name)
   fi
-  panes=$(kp_tmux "$sock" list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null) || { echo none; return 0; }
-  if printf '%s\n' "$panes" | grep -q '^0$'; then
-    echo alive
-  else
-    echo dead
-  fi
+  # The mux is published before the session fallback reads it, so a Herdr record
+  # without MUX_SESSION resolves the Herdr session, not the tmux socket. An
+  # unreadable mux publishes nothing, so no later verb inherits a bad backend.
+  case $mux in
+    herdr)
+      KP_MUX=$mux
+      [ -n "$session" ] || session=$(kp_mux_session_name)
+      ;;
+    tmux)
+      KP_MUX=$mux
+      [ -n "$session" ] || session=$sock
+      ;;
+    *)
+      printf 'unknown\n'
+      return 0
+      ;;
+  esac
+  KP_WINDOW_SOCKET=$sock
+  KP_MUX_SESSION=$session
+  state=$(kp_mux_target_state "$target")
+  case $state in
+    alive|dead|none) printf '%s\n' "$state" ;;
+    *) printf 'none\n' ;;
+  esac
 }
 
 # kp_curate_critique_for_task <kp-home> <task-id>

@@ -24,11 +24,24 @@ GH_CMD="${KINGPIN_GH:-gh}"
 . "$KP_ROOT/lib/gitdir.sh"
 # shellcheck source=../lib/portable.sh
 . "$KP_ROOT/lib/portable.sh"
-# shellcheck source=../lib/tmux.sh
-. "$KP_ROOT/lib/tmux.sh"
+# shellcheck source=../lib/mux.sh
+. "$KP_ROOT/lib/mux.sh"
 
-# The curator is a worker: it runs on the fleet's own tmux server (issue #142).
+# The curator is a worker: it runs on the fleet's mux, the tmux server (issue
+# #142) or a Herdr session (issue #144), and the task record names which.
 fleet_socket=$(kp_tmux_socket_name)
+if ! mux=$(kp_mux_name); then
+  exit 1
+fi
+herdr_session=''
+if [ "$mux" = herdr ]; then
+  herdr_session=$(kp_mux_session_name)
+  # Before a pane exists the only handle is the label the launch will use.
+  mux_label="herdr --session $herdr_session curator"
+else
+  mux_label="tmux -L $fleet_socket kingpin:curator"
+fi
+KP_MUX=$mux
 
 die() { echo "kingpin-curate: $*" >&2; exit 1; }
 info() { echo "kingpin-curate: $*" >&2; }
@@ -404,6 +417,10 @@ if [ "$DRY_RUN" -eq 0 ]; then
         kp_tmux "$fleet_socket" kill-window -t kingpin:curator 2>/dev/null || true
         info "reaped dead curator window kingpin:curator"
         ;;
+      unknown)
+        echo "kingpin-curate: the curator record names a mux this run cannot read; the automatic run skipped"
+        exit 0
+        ;;
       none) : ;;
     esac
     reconcile_curator_task
@@ -465,6 +482,9 @@ if [ "$DRY_RUN" -eq 0 ]; then
       dead)
         kp_tmux "$fleet_socket" kill-window -t kingpin:curator 2>/dev/null || true
         echo "kingpin-curate: reaped dead curator window kingpin:curator"
+        ;;
+      unknown)
+        die "the curator record names a mux this command cannot read"
         ;;
       none) : ;;
     esac
@@ -600,7 +620,8 @@ EOF_LAUNCH
     rm -f "$curator_task_dir"
   fi
   mkdir -p "$curator_task_dir"
-  cat > "$curator_task_dir/task.env" <<EOF_ENV
+  {
+    cat <<EOF_ENV
 TASK_ID=curator
 PROJECT=curator
 PROJECT_PATH=$SKILLS_DIR
@@ -608,28 +629,46 @@ HARNESS=claude
 MODE=review
 BRANCH=$curator_branch
 WORKTREE=$SKILLS_DIR
-TMUX_SOCKET=$fleet_socket
-TMUX_TARGET=kingpin:curator
+MUX=$mux
 CREATED=$(kp_now_iso)
 NO_LEASE=1
 CURATOR=1
 EOF_ENV
+    if [ "$mux" = herdr ]; then
+      printf 'MUX_SESSION=%s\nMUX_LABEL=curator\n' "$herdr_session"
+    else
+      printf 'TMUX_SOCKET=%s\nTMUX_TARGET=kingpin:curator\nMUX_TARGET=kingpin:curator\n' "$fleet_socket"
+    fi
+  } > "$curator_task_dir/task.env"
   : > "$curator_task_dir/status"
   : > "$curator_task_dir/launching"
 
-  kp_tmux_ensure_session "$fleet_socket" kingpin
-  window_id=$(kp_tmux "$fleet_socket" new-window -d -P -F '#{window_id}' -t kingpin: -n curator -c "$SKILLS_DIR" "$launch_file") || {
+  # A tmux fleet gets its session created if it is missing. A Herdr fleet does
+  # not: `herdr server` is a foreground process the operator owns (issue #165),
+  # and kp_mux_create refuses the Herdr backend in this change anyway, with the
+  # one line that names the mux and the way back (issue #144 phase E).
+  if [ "$mux" != herdr ]; then
+    kp_mux_ensure_session kingpin || {
+      rm -rf "$curator_task_dir"
+      if [ "$AUTO" -eq 1 ]; then
+        info "could not reach the fleet mux for $mux_label; the automatic run skipped"
+        exit 0
+      fi
+      die "could not reach the fleet mux for $mux_label"
+    }
+  fi
+  window_id=$(kp_mux_create "$curator_task_dir" kingpin curator "$SKILLS_DIR" "$launch_file") || {
     # The record was written before the window existed, so without a window it is
     # a half-made task that would hold the idle gate forever: remove it. The day
     # is not claimed either, so the next tick tries the launch again.
     rm -rf "$curator_task_dir"
     if [ "$AUTO" -eq 1 ]; then
-      info "could not launch the curator in tmux -L $fleet_socket kingpin:curator; the automatic run skipped"
+      info "could not launch the curator in $mux_label; the automatic run skipped"
       exit 0
     fi
-    die "could not launch the curator in tmux -L $fleet_socket kingpin:curator"
+    die "could not launch the curator in $mux_label"
   }
-  printf 'TMUX_WINDOW_ID=%s\n' "$window_id" >> "$curator_task_dir/task.env"
+  kp_mux_record_id "$curator_task_dir" "$window_id"
   rm -f "$curator_task_dir/launching"
 
   # The window now exists and the state is published, so a second run sees a live
@@ -644,11 +683,11 @@ EOF_ENV
   kp_curate_stamp "$KP_HOME" || true
 
   if [ "$AUTO" -eq 1 ]; then
-    echo "OK: started the curator for $count pending critique(s) in tmux -L $fleet_socket kingpin:curator"
+    echo "OK: started the curator for $count pending critique(s) in $mux_label"
     exit 0
   fi
 
-  echo "OK: spawned curator in tmux -L $fleet_socket kingpin:curator for $count task critique(s)"
+  echo "OK: spawned curator in $mux_label for $count task critique(s)"
   exit 0
 fi
 

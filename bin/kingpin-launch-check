@@ -10,24 +10,23 @@
 #           period, it is still running, or tmux cannot be asked).
 #   exit 2  bad arguments.
 #
-# A worker has stopped when its tmux window is gone or its panes are dead, or when
-# its Stop hook has fired (the `stopped` file) and its window has been silent for
-# the grace period without showing a working marker. The Stop hook also fires while
-# background agents run, so a pane that shows a working marker is still working;
-# that marker list is shared with the Stop hook and kingpin-wait in lib/status.sh
-# (kp_pane_shows_working). The grace period counts from the last Stop, or from
-# CREATED when the worker never stopped.
+# A worker has stopped when its terminal is gone or its panes are dead, or when
+# its Stop hook has fired (the `stopped` file) and its terminal has been silent for
+# the grace period without showing a working marker. The terminal is whichever one
+# the task record names (a tmux window or a Herdr pane). The Stop hook also fires
+# while background agents run, so a pane that shows a working marker is still
+# working; that marker list is shared with the Stop hook and kingpin-wait in
+# lib/status.sh (kp_pane_shows_working). The grace period counts from the last
+# Stop, or from CREATED when the worker never stopped.
 # KINGPIN_STATUS_GRACE sets it in seconds (default 30).
 set -euo pipefail
 
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
-# shellcheck source=../lib/tmux.sh
-. "$(dirname "$0")/../lib/tmux.sh"
+# shellcheck source=../lib/mux.sh
+. "$(dirname "$0")/../lib/mux.sh"
 # shellcheck source=../lib/portable.sh
 . "$(dirname "$0")/../lib/portable.sh"
-# shellcheck source=../lib/tmux.sh
-. "$(dirname "$0")/../lib/tmux.sh"
 
 usage() { echo "usage: kingpin-launch-check <task-dir>" >&2; }
 
@@ -79,38 +78,43 @@ age=$((now - since))
 id=$(basename "$task_dir")
 harness=$(kp_env_get "$env_file" HARNESS)
 [ -n "$harness" ] || harness=claude
-# The socket the task's window lives on (issue #142); empty for an older record.
-tmux_socket=$(kp_tmux_socket_from_env "$env_file")
-# A tmux server that cannot be reached says nothing about the worker.
-kp_tmux "$tmux_socket" list-sessions >/dev/null 2>&1 || exit 1
+# A mux that cannot be reached says nothing about the worker (issue #142, #144).
+kp_mux_reachable "$task_dir" || exit 1
 
-# The task's own window, found by name first (lib/tmux.sh): a stale recorded id that now
-# names a foreign window must not be judged as this worker's pane.
-if ! kp_window_find "$task_dir" >/dev/null 2>&1; then
-  cause="exited, tmux window gone"
-elif panes=$(kp_tmux "$KP_WINDOW_SOCKET" list-panes -t "$KP_WINDOW_ID" -F '#{pane_dead}' 2>/dev/null); then
-  [ -n "$panes" ] || exit 1
-  if printf '%s\n' "$panes" | grep -qvx 1; then
+# The task's own terminal, found through lib/mux.sh: a tmux window by name first
+# (a stale recorded id that now names a foreign window must not be judged as this
+# worker's pane), a Herdr pane by label first.
+if kp_mux_find "$task_dir" >/dev/null 2>&1; then
+  found=1
+else
+  found=0
+fi
+case "${KP_MUX:-tmux}" in
+  herdr) gone="exited, herdr pane gone" ;;
+  *) gone="exited, tmux window gone" ;;
+esac
+state=''
+[ "$found" = 1 ] && state=$(kp_mux_target_state "$KP_WINDOW_ID")
+case $state in
+  alive)
     # Alive. Only a worker that stopped and has been silent since counts.
     [ -n "$stop" ] || exit 1
-    activity=$(kp_tmux "$KP_WINDOW_SOCKET" display-message -p -t "$KP_WINDOW_ID" '#{window_activity}' 2>/dev/null || true)
-    [[ $activity =~ ^[0-9]+$ ]] || exit 1
-    [ $((now - activity)) -ge "$grace" ] || exit 1
+    silent=$(kp_mux_activity_age "$task_dir") || exit 1
+    [[ $silent =~ ^[0-9]+$ ]] || exit 1
+    [ "$silent" -ge "$grace" ] || exit 1
     # The Stop hook fires while background agents still run: a pane that shows a
     # working marker is not dead. The marker list lives in lib/status.sh, shared
     # with the Stop hook and kingpin-wait's `quiet` check.
-    pane_tail=$(kp_tmux "$KP_WINDOW_SOCKET" capture-pane -pt "$KP_WINDOW_ID" -S -30 2>/dev/null || true)
+    pane_tail=$(kp_mux_capture "$KP_WINDOW_ID" --tail 30 2>/dev/null || true)
     if kp_pane_shows_working "$pane_tail" "$harness"; then
       exit 1
     fi
     cause="stopped and went silent"
     hint="; kingpin peek $id shows why"
-  else
-    cause="exited, tmux pane dead"
-  fi
-else
-  cause="exited, tmux window gone"
-fi
+    ;;
+  dead) cause="exited, ${KP_MUX:-tmux} pane dead" ;;
+  *) cause=$gone ;;
+esac
 
 # The worker is stopped, so nothing races this append; the re-check covers a second caller.
 ! has_status || exit 1
