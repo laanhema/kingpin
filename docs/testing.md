@@ -36,6 +36,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-send-peek.sh` | `send` and `peek` |
 | `test-spawn.sh` | `spawn`: window ID tracking, descriptive slugs, pinned window names |
 | `test-sync.sh` | `sync` |
+| `test-git-compat.sh` | git 2.30 shim: `sync` and `guard install` refusals, `spawn` lease, `info/exclude` resolution, and helper paths with no `--path-format` line |
 | `test-cli-help.sh` | `--help` on every command in `kingpin --help`: usage text, exit 0, no window or task started |
 | `test-launch-check.sh` | `kingpin-launch-check`: workers that die at launch |
 | `test-worker-stop.sh` | `bin/kingpin-stop`: the outcome a Stop leaves (`failed:`/`waiting:`), fail-soft, `WAITING`/`SILENT`/`Unseen` in `list`, all four harnesses |
@@ -48,6 +49,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-pi-harness.sh` | Pi worker extension (`lib/pi-harness.mjs`): the `agent_settled` stop call, the `resources_discover` skills bridge, and the per-worktree `project_trust` answer |
 | `test-worker-scope.sh` | Worker instruction context: what each harness really loads, the spawn refusal, the installed contract |
 | `test-worker-settings.sh` | Orchestrator tool guard and worker edit boundary |
+| `test-excludes.sh` | spawn and done never write the main checkout's `.git/info/exclude`, and injected harness files stay out of a worktree's `git status` |
 | `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
 | `test-agents-paths.sh` | `.agents` artifact policy: nothing under `plans/`, `reports/` or `reviews/` is tracked, other `.agents/` files stay trackable, and the lint fails on a forced artifact |
 | `test-lint.sh` | the lint itself: a syntax error in a shell script or a `lib/*.mjs` module fails it by name, and a suite with no CI leg fails the matrix check |

@@ -24,6 +24,8 @@ KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/exclude.sh
 . "$KP_ROOT/lib/exclude.sh"
+# shellcheck source=../lib/gitdir.sh
+. "$KP_ROOT/lib/gitdir.sh"
 # The deny rules older versions wrote; install removes them, check rejects them.
 LEGACY_DENY='["Edit","Write","NotebookEdit","Agent"]'
 MATCHER='Edit|Write|NotebookEdit|Agent'
@@ -65,8 +67,16 @@ file="$dir/.claude/settings.local.json"
 hook_cmd="'$dir/bin/kingpin-guard' hook orchestrator || exit 2"
 
 # A leased worktree is a linked worktree; the guard file there would be a second copy.
-if [ "$(git -C "$dir" rev-parse --path-format=absolute --git-dir)" != \
-     "$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir)" ]; then
+# `warn` promises to always exit 0, so a failed read there stays silent rather than
+# turning a routine `kingpin list` into a failure (issue #86 review, L1).
+if [ "$cmd" = warn ]; then
+  git_dir=$(kp_git_dir "$dir") || exit 0
+  common_dir=$(kp_git_common_dir "$dir") || exit 0
+else
+  git_dir=$(kp_git_dir "$dir") || die "cannot read the git directory of $dir"
+  common_dir=$(kp_git_common_dir "$dir") || die "cannot read the common git directory of $dir"
+fi
+if [ "$git_dir" != "$common_dir" ]; then
   [ "$cmd" != warn ] || exit 0
   die "$dir is a linked worktree (a worker checkout); run this in the main Kingpin checkout"
 fi
@@ -84,7 +94,7 @@ opencode_cfg="$dir/.opencode/opencode.json"
 ensure_excluded() {
   local file=$1 rel excl
   rel=${file#"$dir"/}
-  excl=$(git -C "$dir" rev-parse --path-format=absolute --git-path info/exclude)
+  excl=$(kp_git_path "$dir" info/exclude) || die "cannot locate $dir's info/exclude"
   # The guard's entries live in the block it owns in that file, rewritten on every
   # install: a loose copy an older install appended is adopted, never duplicated, so
   # `kingpin spawn` stops naming files the guard hides (issue #123).
@@ -268,7 +278,7 @@ case "$cmd" in
     ' "$file" "$LEGACY_DENY" "$hook_cmd" "$MATCHER"
     # The guard file must stay out of git, or worker worktrees would inherit it.
     if ! git -C "$dir" check-ignore -q "$file"; then
-      excl=$(git -C "$dir" rev-parse --path-format=absolute --git-path info/exclude)
+      excl=$(kp_git_path "$dir" info/exclude) || die "cannot locate $dir's info/exclude"
       mkdir -p "$(dirname "$excl")"
       echo ".claude/settings.local.json" >> "$excl"
     fi

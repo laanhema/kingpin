@@ -18,7 +18,7 @@ The voice stays in the room. Commits, PRs, issues, code, status fields, review r
 
 Ensure the following tools are installed on your host:
 
-- `git` (2.31+)
+- `git` (2.30+)
 - `tmux`
 - `treehouse` (git worktree pool manager)
 - `node` (18+; Pi needs Node 22.19+)
@@ -27,8 +27,6 @@ Ensure the following tools are installed on your host:
   - `agy` (Google Antigravity CLI)
   - `opencode` (OpenCode CLI)
   - `pi` (Pi coding agent: `npm i -g @earendil-works/pi-coding-agent`)
-
-The 2.31 floor comes from `kingpin-spawn`, `kingpin-sync` and `kingpin guard install`: each passes `git rev-parse` an absolute-path option that 2.31 added, and issue #86 tracks removing that requirement.
 
 A Pi worker needs a model login done by hand: run `pi`, then `/login`, then `/model`. Kingpin does not provision credentials; it passes `PI_PROVIDER` and `PI_MODEL` from the project env only when they are set.
 

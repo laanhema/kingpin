@@ -33,6 +33,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_ROOT/lib/portable.sh"
 # shellcheck source=../lib/exclude.sh
 . "$KP_ROOT/lib/exclude.sh"
+# shellcheck source=../lib/gitdir.sh
+. "$KP_ROOT/lib/gitdir.sh"
 CLAUDE_CMD=${KINGPIN_CLAUDE:-claude}
 AGY_CMD=${KINGPIN_AGY:-agy}
 OPENCODE_CMD=${KINGPIN_OPENCODE:-opencode}
@@ -177,9 +179,9 @@ trap cleanup EXIT
 branch=kingpin/$id
 worktree=$(cd "$PROJECT_PATH" && treehouse get --lease -b "$branch") || die "treehouse could not lease a worktree"
 [ -d "$worktree" ] || die "treehouse returned no directory: $worktree"
-[ "$(git -C "$worktree" rev-parse --path-format=absolute --git-dir)" != \
-  "$(git -C "$worktree" rev-parse --path-format=absolute --git-common-dir)" ] \
-  || die "refusing to launch: $worktree is not a linked worktree"
+git_dir=$(kp_git_dir "$worktree") || die "refusing to launch: cannot read the git directory of $worktree"
+common_dir=$(kp_git_common_dir "$worktree") || die "refusing to launch: cannot read the common git directory of $worktree"
+[ "$git_dir" != "$common_dir" ] || die "refusing to launch: $worktree is not a linked worktree"
 [ "$(git -C "$worktree" branch --show-current)" = "$branch" ] || die "worktree is not on $branch"
 
 # The harness files this spawn writes into the worktree must not show up in its
@@ -211,7 +213,7 @@ done < <(git -C "$worktree" ls-files -z --others --exclude-standard 2>/dev/null 
 warn_shared_excludes() {
   local excl line rel joined='' named=() injected=()
   local in_guard=0
-  excl=$(git -C "$worktree" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
+  excl=$(kp_git_path "$worktree" info/exclude 2>/dev/null || true)
   [ -n "$excl" ] && [ -f "$excl" ] || return 0
   while IFS= read -r rel; do injected+=("$rel"); done < <(kp_exclude_injected_paths)
   while IFS= read -r line; do
