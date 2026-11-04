@@ -48,7 +48,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-markdown.sh` | `report check`: markdown prose masking, CRLF line numbers, the full rule list |
 | `test-ranks.sh` | rank voice: the contract's Ranks section, the capo preamble, and the neutral status lines |
 | `test-noir-template.sh` | noir dossier template: the three files ship together, every ref stays inside the folder, the diffs keep static fallbacks, the prose stays clean |
-| `test-worker-dossier-template.sh` | worker dossier template: the two files ship together, the sections the dossier is read for stay, the diffs keep static fallbacks, the preamble points at it, the prose stays clean |
+| `test-worker-dossier-template.sh` | worker dossier and handover templates: the files ship together, the sections each page is read for stay, the diffs keep static fallbacks, the decision forms keep their handler, the preamble points at the worker template, the prose stays clean |
 | `test-harnesses.sh` | Multi-harness contract and isolation |
 | `test-pi-harness.sh` | Pi worker extension (`lib/pi-harness.mjs`): the `agent_settled` stop call, the `resources_discover` skills bridge, and the per-worktree `project_trust` answer |
 | `test-worker-scope.sh` | Worker instruction context: what each harness really loads, the spawn refusal, the installed contract |

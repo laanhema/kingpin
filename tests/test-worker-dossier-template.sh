@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# worker dossier template: the two files ship together, the sections the contract relies on stay,
+# worker dossier and handover templates: the files ship together, the sections the contract relies on stay,
 # the diffs keep a static fallback and the page passes the report gate.
 #
-# assets/lavish/worker-dossier/ is what every worker's report.html is copied from, so a missing
-# section, a lost Lavish guard or a prose regression there spreads to every dossier made from it.
+# assets/lavish/worker-dossier/ is what every worker's report.html and every page handed to the boss
+# is copied from, so a missing section, a lost Lavish guard or a prose regression there spreads to
+# every page made from it.
 set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -63,8 +64,50 @@ check_dir() {
   fallbacks=$(grep -c 'class="kp-fallback"' "$dir/template.html" || true)
   [ "$surfaces" -ge 1 ] && [ "$fallbacks" -eq "$surfaces" ] || { echo "a diff surface has no static fallback ($fallbacks for $surfaces surfaces)" >&2; return 1; }
   # The gate every copied report inherits: renderable diffs, contained layout and clean prose.
+  grep -q 'Run the unslop skill' "$dir/template.html" || { echo "the how-to no longer tells the author to run the unslop skill" >&2; return 1; }
   "$KP_BIN/kingpin-report" check "$dir/template.html" >/dev/null || { echo "template.html fails the diff or prose check" >&2; return 1; }
   "$KP_BIN/kingpin-report" check --prose-only "$dir/DESIGN.md" >/dev/null || { echo "DESIGN.md fails the prose check" >&2; return 1; }
+  return 0
+}
+
+# check_handover <dir>: 0 when handover.html is a complete, self-contained, gate-clean template.
+check_handover() {
+  local dir=$1 f=$1/handover.html ref s forms handlers surfaces fallbacks recs
+  [ -s "$f" ] || { echo "missing or empty: handover.html" >&2; return 1; }
+  while IFS= read -r ref; do
+    case "$ref" in
+      http://*|https://*|data:*|mailto:*|tel:*|'#'*) continue ;;
+      /*|~*|file:*|[A-Za-z]:[\\/]*) echo "absolute path: $ref" >&2; return 1 ;;
+    esac
+    case "/${ref//\\//}/" in
+      */../*) echo "path climbs out of the folder: $ref" >&2; return 1 ;;
+    esac
+    [ -s "$dir/$ref" ] || { echo "missing asset: $ref" >&2; return 1; }
+  done < <(
+    perl -0pe 's/<!--.*?-->//gs' "$f" | grep -o 'src="[^"]*"' | sed 's/^src="//; s/"$//' || true
+    perl -0pe 's/<!--.*?-->//gs' "$f" | grep -o 'href="[^"]*"' | sed 's/^href="//; s/"$//' || true
+  )
+  grep -q '<html [^>]*data-theme="dark"' "$f" || { echo "<html> has no data-theme=\"dark\"" >&2; return 1; }
+  grep -q '<html [^>]*data-lavish-annotate="off"' "$f" || { echo "<html> has no data-lavish-annotate=\"off\"" >&2; return 1; }
+  for s in 'What Is Wrong Today' 'How It Would Work' 'Three Options Compared' 'Risks' 'The Change' 'Decisions'; do
+    grep -q ">$s</h[23]>" "$f" || { echo "missing section: $s" >&2; return 1; }
+  done
+  grep -q '<svg [^>]*role="img"' "$f" || { echo "the diagram is not an inline svg with role=img" >&2; return 1; }
+  grep -q '<title id=' "$f" || { echo "the diagram has no title" >&2; return 1; }
+  recs=$(grep -c 'badge-success badge-sm">RECOMMENDED</span>' "$f" || true)
+  [ "$recs" -eq 1 ] || { echo "expected exactly one RECOMMENDED option, found $recs" >&2; return 1; }
+  forms=$(grep -c 'data-lavish-question=' "$f" || true)
+  [ "$forms" -ge 2 ] || { echo "expected at least 2 decision forms, found $forms" >&2; return 1; }
+  handlers=$(grep -c '<form [^>]*data-lavish-question="[^"]*"[^>]*onsubmit="kpAnswer(event)"' "$f" || true)
+  [ "$handlers" -eq "$forms" ] || { echo "a decision form lost its onsubmit handler ($handlers of $forms)" >&2; return 1; }
+  grep -q 'queuePrompt(' "$f" || { echo "the handler no longer calls queuePrompt" >&2; return 1; }
+  grep -q 'window\.lavish' "$f" || { echo "the handler no longer guards window.lavish" >&2; return 1; }
+  grep -q 'Paste this answer into chat' "$f" || { echo "a copy opened without Lavish has no fallback message" >&2; return 1; }
+  surfaces=$(grep -c 'class="kp-diff"' "$f" || true)
+  fallbacks=$(grep -c 'class="kp-fallback"' "$f" || true)
+  [ "$surfaces" -ge 1 ] && [ "$fallbacks" -eq "$surfaces" ] || { echo "a diff surface has no static fallback ($fallbacks for $surfaces surfaces)" >&2; return 1; }
+  grep -q 'Run the unslop skill' "$f" || { echo "the how-to no longer tells the author to run the unslop skill" >&2; return 1; }
+  "$KP_BIN/kingpin-report" check "$f" >/dev/null || { echo "handover.html fails the diff or prose check" >&2; return 1; }
   return 0
 }
 
@@ -74,11 +117,15 @@ for f in template.html DESIGN.md; do
   [ -s "$TPL/$f" ] && pass "$f ships with the template" || fail "$f is missing or empty"
 done
 out=$(check_dir "$TPL" 2>&1) && pass "the template is complete, relative and gate-clean" || fail "the template does not check out: $out"
+[ -s "$TPL/handover.html" ] && pass "handover.html ships with the template" || fail "handover.html is missing or empty"
+out=$(check_handover "$TPL" 2>&1) && pass "the handover template is complete, relative and gate-clean" || fail "the handover template does not check out: $out"
 
 echo "=== it is the default for worker dossiers ==="
 grep -q 'assets/lavish/worker-dossier/template.html' "$KP_ROOT/worker/preamble.md" && pass "the worker preamble points at the template" || fail "worker/preamble.md does not name assets/lavish/worker-dossier/template.html"
-grep -q 'assets/lavish/worker-dossier/template.html' "$KP_ROOT/AGENTS.md" && pass "AGENTS.md names the template" || fail "AGENTS.md does not name assets/lavish/worker-dossier/template.html"
-[ -s "$KP_ROOT/assets/lavish/noir-dossier/template.html" ] && pass "the noir dossier template is still there for handover pages" || fail "the noir dossier template was removed"
+grep -q 'assets/lavish/worker-dossier/template.html' "$KP_ROOT/AGENTS.md" && pass "AGENTS.md names the worker template" || fail "AGENTS.md does not name assets/lavish/worker-dossier/template.html"
+grep -q 'assets/lavish/worker-dossier/handover.html' "$KP_ROOT/AGENTS.md" && pass "AGENTS.md names the handover template" || fail "AGENTS.md does not name assets/lavish/worker-dossier/handover.html"
+grep -q 'start a handover artifact from the noir' -i "$KP_ROOT/AGENTS.md" && fail "AGENTS.md still starts handover pages from the noir template" || pass "AGENTS.md no longer starts handover pages from noir"
+[ -s "$KP_ROOT/assets/lavish/noir-dossier/template.html" ] && pass "the noir dossier template is still in the repo" || fail "the noir dossier template was removed"
 
 echo "=== the check fails on a broken copy ==="
 cp -a "$TPL" "$T/good"
@@ -152,6 +199,64 @@ cp -a "$TPL" "$T/no-colgroup"
 sed -i 's|<colgroup>.*</colgroup>||' "$T/no-colgroup/template.html"
 out=$(check_dir "$T/no-colgroup" 2>&1) && fail "tables without column widths passed" || pass "tables without column widths fail"
 echo "$out" | grep -q 'colgroup' && pass "the failure names the missing colgroup" || fail "unclear reason: $out"
+
+rm -rf "$T/unslop"
+cp -a "$TPL" "$T/unslop"
+sed -i 's/Run the unslop skill/Skip the prose pass/' "$T/unslop/template.html"
+out=$(check_dir "$T/unslop" 2>&1) && fail "a worker template how-to without the unslop step passed" || pass "a worker template how-to without the unslop step fails"
+echo "$out" | grep -q 'unslop skill' && pass "the failure names the unslop step" || fail "unclear reason: $out"
+
+echo "=== the handover check fails on a broken copy ==="
+cp -a "$TPL" "$T/h-good"
+check_handover "$T/h-good" >/dev/null 2>&1 && pass "a pristine handover copy passes" || fail "a pristine handover copy was rejected"
+
+cp -a "$TPL" "$T/h-none"
+rm "$T/h-none/handover.html"
+out=$(check_handover "$T/h-none" 2>&1) && fail "a copy without handover.html passed" || pass "a missing handover.html fails"
+echo "$out" | grep -q 'missing or empty: handover.html' && pass "the failure names the missing page" || fail "unclear reason: $out"
+
+for sec in 'Risks' 'Decisions' 'How It Would Work'; do
+  rm -rf "$T/h-sec"
+  cp -a "$TPL" "$T/h-sec"
+  sed -i "s|>$sec</h\\([23]\\)>|>Renamed</h\\1>|" "$T/h-sec/handover.html"
+  out=$(check_handover "$T/h-sec" 2>&1) && fail "a handover copy without $sec passed" || pass "a missing handover section fails: $sec"
+  echo "$out" | grep -q "missing section: $sec" && pass "the failure names the section: $sec" || fail "unclear reason for $sec: $out"
+done
+
+rm -rf "$T/h-handler"
+cp -a "$TPL" "$T/h-handler"
+sed -i '0,/<form [^>]*onsubmit="kpAnswer(event)"/s/ onsubmit="kpAnswer(event)"//' "$T/h-handler/handover.html"
+out=$(check_handover "$T/h-handler" 2>&1) && fail "a form without its handler passed" || pass "a decision form without its handler fails"
+echo "$out" | grep -q 'lost its onsubmit handler' && pass "the failure names the handler" || fail "unclear reason: $out"
+
+rm -rf "$T/h-nomsg"
+cp -a "$TPL" "$T/h-nomsg"
+sed -i 's/Paste this answer into chat/Nothing here/' "$T/h-nomsg/handover.html"
+out=$(check_handover "$T/h-nomsg" 2>&1) && fail "a handler without the no-Lavish message passed" || pass "a handler without the no-Lavish message fails"
+echo "$out" | grep -q 'no fallback message' && pass "the failure names the missing message" || fail "unclear reason: $out"
+
+rm -rf "$T/h-rec"
+cp -a "$TPL" "$T/h-rec"
+sed -i 's|badge-success badge-sm">RECOMMENDED</span>|badge-outline badge-sm">Option</span>|' "$T/h-rec/handover.html"
+out=$(check_handover "$T/h-rec" 2>&1) && fail "an options block with no recommendation passed" || pass "an options block with no recommendation fails"
+echo "$out" | grep -q 'exactly one RECOMMENDED' && pass "the failure names the recommendation rule" || fail "unclear reason: $out"
+
+rm -rf "$T/h-annot"
+cp -a "$TPL" "$T/h-annot"
+sed -i 's|data-lavish-annotate="off"|data-lavish-annotate="on"|' "$T/h-annot/handover.html"
+out=$(check_handover "$T/h-annot" 2>&1) && fail "a decision page that starts annotation on passed" || pass "a decision page that starts annotation on fails"
+
+rm -rf "$T/h-sloppy"
+cp -a "$TPL" "$T/h-sloppy"
+printf '<p>A seamless change — in order to ship it.</p>\n' >> "$T/h-sloppy/handover.html"
+out=$(check_handover "$T/h-sloppy" 2>&1) && fail "a handover prose regression passed" || pass "a handover prose regression fails"
+echo "$out" | grep -q 'fails the diff or prose check' && pass "the failure names the check" || fail "unclear reason: $out"
+
+rm -rf "$T/h-unslop"
+cp -a "$TPL" "$T/h-unslop"
+sed -i 's/Run the unslop skill/Skip the prose pass/' "$T/h-unslop/handover.html"
+out=$(check_handover "$T/h-unslop" 2>&1) && fail "a handover how-to without the unslop step passed" || pass "a handover how-to without the unslop step fails"
+echo "$out" | grep -q 'unslop skill' && pass "the failure names the unslop step" || fail "unclear reason: $out"
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL WORKER-DOSSIER-TEMPLATE TESTS PASSED"

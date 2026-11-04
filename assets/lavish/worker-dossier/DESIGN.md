@@ -7,8 +7,9 @@ folder is that design with sample content. Copy `template.html`, swap the conten
 
 ```
 worker-dossier/
-  template.html   the page: action bar, stat cards, what changed, review, validation, diffs
-  DESIGN.md       these notes, beside the file they describe
+  template.html   a worker's report.html: action bar, stat cards, what changed, review, validation, diffs
+  handover.html   a page handed to the boss: proposal, comparison, plan or review summary, with decision forms
+  DESIGN.md       these notes, beside the files they describe
 ```
 
 It has no local assets, so it is one file. A screenshot section is included as a comment; copy the
@@ -16,8 +17,10 @@ images beside the report and use relative `src` paths.
 
 ## When to use it
 
-A worker's `report.html` at the end of a task. It is the counterpart of `noir-dossier`, which is for
-pages handed to the boss.
+`template.html` is a worker's `report.html` at the end of a task. `handover.html` is every page you
+hand the boss to read and decide on. Both share one look, so a report and a proposal read the same
+way. `assets/lavish/noir-dossier/` is a different, parchment look that stays in the repo for later;
+nothing uses it by default.
 
 ## Rules that make it work
 
@@ -71,3 +74,34 @@ pages handed to the boss.
 
 The shipped `template.html` passes `bin/kingpin-report check`. `check` ignores comments, so the
 how-to block at the top does not trip the prose pass.
+
+## Handover pages
+
+`handover.html` has the same stack, palette, header, stat cards, badges, tables and `Code Changes`
+style as `template.html`, and adds four things:
+
+- **A decision header.** The action bar says what is needed ("Decision needed: 2 questions at the
+  bottom") with an amber `?` circle and a `Go to the decisions` link, instead of Approve & Land. The
+  badge row starts with the page kind (`PROPOSAL`, `REVIEW SUMMARY`) and a `DECISION NEEDED` or
+  `APPROVE` status.
+- **Callouts.** `.callout` is a blue left-bordered note for the point of a section, `.callout.rec`
+  is green for a recommendation, `.callout.warn` is amber for a risk that needs a decision. One per
+  section at most.
+- **Option cards and one comparison table.** Three cards side by side, exactly one marked
+  `RECOMMENDED`, then one table with a pill per cell. Do not repeat the same facts in both.
+- **Decision forms.** One `<form data-lavish-question>` per question at the bottom, built from
+  `.q-option` choice rows (DaisyUI `radio` or `checkbox`), an optional note and a `Queue answer`
+  button. Choice questions use `name="choice"`; a tick list sets `data-kind="batch"` and uses
+  `name="items"`. The shared `kpAnswer` script queues one prompt per form through
+  `window.lavish.queuePrompt`, and without Lavish it shows the answer to paste into chat. The
+  page carries `data-lavish-annotate="off"`, as every decision page does.
+- **Diagrams are inline SVG.** One concept per figure, drawn in the page palette, with a `<title>` on
+  every group so the boss can annotate it. No Mermaid and no div-and-arrow boxes.
+
+For a **review summary**, keep the header, What You Need to Know, the findings table, the checks table
+and one decision form (for example Land it, Land it after I read the diff, Request changes). Drop How It
+Would Work, the options, the risks and The Change.
+
+A handover page goes through the `unslop` skill and `bin/kingpin-report check <file>` before it is served,
+exactly like a worker dossier (`--prose-only` when the page has no diff section). Step 5 of the how-to
+comment at the top of `handover.html` says so.
