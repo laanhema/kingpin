@@ -38,9 +38,11 @@ grep -q 'new-name.txt' "$T/frag.html" && grep -q 'renamed from\|from old-name.tx
 "$KP_BIN/kingpin" report check "$T/frag.html" >/dev/null && pass "check accepts the generated fragment" || fail "check rejected generated fragment"
 
 echo "=== kingpin report check ==="
+patch_msg="\`patch:\` is not a FileDiff option and renders nothing; pass oldFile/newFile ({ name, contents })"
 printf '<div class="kp-diff-box"><div class="kp-diff"></div></div><script type="module">new FileDiff(o).render({containerWrapper: c, patch: d})</script>' > "$T/bad.html"
 out=$("$KP_BIN/kingpin" report check "$T/bad.html" 2>&1) && fail "check accepted a patch: report" || pass "check rejects a report"
 echo "$out" | grep -q 'patch:' && pass "check names the invalid patch option" || fail "no patch message: $out"
+echo "$out" | grep -qF "$patch_msg" && pass "the unquoted option keeps the existing patch message" || fail "no full patch message: $out"
 echo "$out" | grep -q 'without oldFile and newFile' && pass "check names the missing oldFile/newFile" || fail "no oldFile message: $out"
 echo "$out" | grep -q 'empty' && pass "check names the empty container" || fail "no empty-container message: $out"
 printf '<p>no diffs here</p>' > "$T/none.html"
@@ -48,6 +50,73 @@ printf '<p>no diffs here</p>' > "$T/none.html"
 "$KP_BIN/kingpin" report check "$T/missing.html" >/dev/null 2>&1 && fail "check accepted a missing file" || pass "check rejects a missing file"
 { echo '<p>We replaced the old patch: approach and the FileDiff call.</p>'; cat "$T/frag.html"; } > "$T/prose-ok.html"
 "$KP_BIN/kingpin" report check "$T/prose-ok.html" >/dev/null 2>&1 && pass "check ignores patch: in prose" || fail "check failed a good report because of prose"
+
+# The rule is about using `patch:`, not mentioning it: a correct FileDiff call that quotes the
+# rule in a comment and in a string literal passes (issue #83).
+cat > "$T/mentions-patch.html" <<'HTML'
+<div class="kp-diff" data-index="0"><pre class="kp-fallback">a diff</pre></div>
+<script type="module">
+// FileDiff takes oldFile/newFile; there is no patch: option.
+const hint = "never pass patch: to render";
+new FileDiff({ themeType: "dark" }).render({
+  containerWrapper: c,
+  oldFile: { name: "a.txt", contents: "one" },
+  newFile: { name: "a.txt", contents: "two" },
+});
+</script>
+HTML
+"$KP_BIN/kingpin" report check "$T/mentions-patch.html" >/dev/null 2>&1 && pass "check accepts a correct FileDiff call that mentions patch: in a comment and a string" || fail "check rejected a correct report that mentions patch: in prose"
+
+# A real option still fails, quoted or not, with the existing message: `"patch":` is the same
+# option as `patch:`, so masking string literals must not hide it.
+printf '<div class="kp-diff" data-index="0"><pre class="kp-fallback">a diff</pre></div><script type="module">new FileDiff(o).render({containerWrapper: c, "patch": d, oldFile: {name: "a", contents: ""}, newFile: {name: "a", contents: "b"}})</script>' > "$T/quoted-patch.html"
+out=$("$KP_BIN/kingpin" report check "$T/quoted-patch.html" 2>&1) && fail "check accepted a quoted patch: option" || pass "check rejects a quoted patch: option"
+echo "$out" | grep -qF "$patch_msg" && pass "the quoted option keeps the existing patch message" || fail "no patch message for the quoted option: $out"
+
+# The mask's offsets are UTF-16 units, like the script it indexes: an astral character earlier in
+# the script (a surrogate pair, two units) must not shift the blank and hide a quoted option.
+cat > "$T/astral-patch.html" <<'HTML'
+<div class="kp-diff" data-index="0"><pre class="kp-fallback">a diff</pre></div>
+<script type="module">
+const done = "🎉";
+new FileDiff(o).render({containerWrapper: c, "patch": d, oldFile: {name: "a", contents: ""}, newFile: {name: "a", contents: "b"}});
+</script>
+HTML
+out=$("$KP_BIN/kingpin" report check "$T/astral-patch.html" 2>&1) && fail "check accepted a quoted patch: option after an astral character" || pass "check rejects a quoted patch: option after an astral character"
+echo "$out" | grep -qF "$patch_msg" && pass "the astral option keeps the existing patch message" || fail "no patch message after an astral character: $out"
+
+# A quoted key that only names the rule is prose in a key position, not the option: only a key whose
+# own text is exactly `patch` fails.
+cat > "$T/quoted-key-hint.html" <<'HTML'
+<div class="kp-diff" data-index="0"><pre class="kp-fallback">a diff</pre></div>
+<script type="module">
+const hints = { "no patch: option": "pass oldFile/newFile" };
+new FileDiff(o).render({containerWrapper: c, oldFile: {name: "a", contents: ""}, newFile: {name: "a", contents: "b"}});
+</script>
+HTML
+"$KP_BIN/kingpin" report check "$T/quoted-key-hint.html" >/dev/null 2>&1 && pass "check accepts a quoted key that only mentions patch:" || fail "check rejected a quoted key that only mentions patch:"
+
+# A computed key is the same option as a plain one: `["patch"]:` must fail.
+cat > "$T/computed-patch.html" <<'HTML'
+<div class="kp-diff" data-index="0"><pre class="kp-fallback">a diff</pre></div>
+<script type="module">
+new FileDiff(o).render({containerWrapper: c, ["patch"]: d, oldFile: {name: "a", contents: ""}, newFile: {name: "a", contents: "b"}});
+</script>
+HTML
+out=$("$KP_BIN/kingpin" report check "$T/computed-patch.html" 2>&1) && fail "check accepted a computed patch: option" || pass "check rejects a computed patch: option"
+echo "$out" | grep -qF "$patch_msg" && pass "the computed option keeps the existing patch message" || fail "no patch message for the computed option: $out"
+
+# A backtick inside a regex literal is not a template opener: the mask must stay in step, so a real
+# option later in the same script still fails.
+cat > "$T/regex-backtick-patch.html" <<'HTML'
+<div class="kp-diff" data-index="0"><pre class="kp-fallback">a diff</pre></div>
+<script type="module">
+const ticks = /`/;
+new FileDiff(o).render({containerWrapper: c, patch: d, oldFile: {name: "a", contents: ""}, newFile: {name: "a", contents: "b"}});
+</script>
+HTML
+out=$("$KP_BIN/kingpin" report check "$T/regex-backtick-patch.html" 2>&1) && fail "check accepted a patch: option after a regex literal holding a backtick" || pass "check rejects a patch: option after a regex literal holding a backtick"
+echo "$out" | grep -qF "$patch_msg" && pass "the post-regex option keeps the existing patch message" || fail "no patch message after a regex literal: $out"
 printf '<p>FileDiff oldFile newFile</p>' > "$T/prose-only.html"
 "$KP_BIN/kingpin" report check "$T/prose-only.html" >/dev/null 2>&1 && fail "check accepted a report whose only FileDiff is prose" || pass "check rejects a report whose only FileDiff is prose"
 { echo '<div class="kp-diff-title"></div>'; cat "$T/frag.html"; } > "$T/title-empty.html"

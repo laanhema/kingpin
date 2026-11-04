@@ -20,8 +20,10 @@ usage: kingpin-report diffs [--repo <dir>] [--base <ref>]
   diffs  Print an HTML fragment: one container per changed file (committed since the
          merge-base, uncommitted, untracked), each with a static diff fallback and a
          FileDiff render call that passes oldFile/newFile. Paste it into report.html.
-  check  Exit 1 when report.html would show a blank diff: `patch:` used, FileDiff
-         without oldFile/newFile, no FileDiff at all, or an empty diff container.
+  check  Exit 1 when report.html would show a blank diff: `patch:` passed as a
+         FileDiff/render option (a comment or string that mentions it is fine),
+         FileDiff without oldFile/newFile, no FileDiff at all, or an empty diff
+         container.
          A `.md` or `.markdown` file is read as markdown: fenced blocks (backtick and
          tilde, nested fences included), indented code blocks, inline code spans and
          HTML comments are ignored, and the diff-section checks do not apply because
