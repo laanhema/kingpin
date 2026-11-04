@@ -538,11 +538,11 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 |---|---|---|
 | `KINGPIN_HOME` | every fleet command | Fleet state directory (default `~/.kingpin`): `tasks/`, `archive/`, `projects/`, `locks/`, `supervisor.pid` and `config.env`. |
 | `KINGPIN_HARNESS` | `bin/kingpin-lock:112` | Harness recorded by `lock acquire` when `--harness` is omitted (before the command-name and agent-marker detection). |
-| `KINGPIN_CLAUDE` | `bin/kingpin-spawn:48` | Command `spawn` launches for the `claude` harness (default `claude`). |
-| `KINGPIN_AGY` | `bin/kingpin-spawn:49` | Command `spawn` launches for the `agy` harness (default `agy`). |
-| `KINGPIN_OPENCODE` | `bin/kingpin-spawn:50` | Command `spawn` launches for the `opencode` harness (default `opencode`). |
-| `KINGPIN_PI` | `bin/kingpin-spawn:51`, `bin/kingpin-scope` | Command `spawn` launches for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
-| `KINGPIN_GH` | `bin/kingpin-spawn:52`, `bin/kingpin-curate` | `gh` command `spawn` uses to read an issue title for the task slug, and `curate` uses to create, view and merge the curator's PR (default `gh`). |
+| `KINGPIN_CLAUDE` | `lib/launch.sh` | Command `spawn` and `restore` launch for the `claude` harness (default `claude`). |
+| `KINGPIN_AGY` | `lib/launch.sh` | Command `spawn` and `restore` launch for the `agy` harness (default `agy`). |
+| `KINGPIN_OPENCODE` | `lib/launch.sh` | Command `spawn` and `restore` launch for the `opencode` harness (default `opencode`). |
+| `KINGPIN_PI` | `lib/launch.sh`, `bin/kingpin-scope` | Command `spawn` and `restore` launch for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
+| `KINGPIN_GH` | `bin/kingpin-spawn`, `bin/kingpin-curate` | `gh` command `spawn` uses to read an issue title for the task slug, and `curate` uses to create, view and merge the curator's PR (default `gh`). |
 | `KINGPIN_TMUX_SESSION` | `bin/kingpin-spawn:227` | tmux session `spawn` places the worker window in when it has no tmux client context and `--tmux-session` is not given. The session must already exist; an unknown name is refused. Unset, the spawn uses the one attached session, then the only session on the server, and refuses when several are unattached or more than one is attached. |
 | `KINGPIN_SEND_DELAY` | `bin/kingpin-send:60` | Seconds between the literal text and the Enter key (default `0.2`). |
 | `KINGPIN_CURATOR_CMD` | `bin/kingpin-curate` | Command `curate` launches the curator with; falls back to `KINGPIN_CLAUDE`, then `claude`. |
