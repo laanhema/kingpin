@@ -130,9 +130,11 @@ wait_until 75 log_has "[kingpin-watch] kingpin-wait warning: kingpin-launch-chec
   && pass "a warning from a healthy wait pass reaches the log" \
   || fail "the healthy-pass warning never reached the log: $(cat "$LOG")"
 sleep 2
-[ "$(grep -cF '[kingpin-watch] kingpin-wait warning:' "$LOG")" = "1" ] \
+# The fixture records name the default socket and no default server runs here, so the
+# pass also carries the dead-server warning (issue #165). Count the task warning only.
+[ "$(grep -cF "cannot parse CREATED='not-a-time'" "$LOG")" = "1" ] \
   && pass "the healthy-pass warning is logged once, not on every pass" \
-  || fail "the warning repeated: $(grep -cF '[kingpin-watch] kingpin-wait warning:' "$LOG")"
+  || fail "the warning repeated: $(grep -cF "cannot parse CREATED='not-a-time'" "$LOG")"
 rm -rf "$KINGPIN_HOME/tasks/t-warn"
 
 # Test 4: a second copy is refused quickly and never disturbs the first copy's claim
@@ -501,6 +503,41 @@ once_rc=0
 "$KP_BIN/kingpin-watch" --once >/dev/null 2>&1 || once_rc=$?
 [ "$once_rc" -eq 0 ] && pass "--once keeps its exit 0 one-shot contract" || fail "--once exited $once_rc against a failing wait"
 cp -p "$T/kingpin-wait.orig" "$KP_BIN/kingpin-wait"
+
+# Test 12b: a warning streak that ends is logged again when the same warning returns
+echo "=== Test 12b: a warning that clears and returns is logged again ==="
+# Test 3b proves a warning is logged once while it persists. A pass with no warning at
+# all ends the streak, so a fault that clears and returns hours later must reach the
+# log again instead of staying silent for the supervisor's life (#165 review L2).
+STREAK_LOG="$T/streak.log"
+export KP_TEST_STREAK_COUNT="$T/streak-count"
+cp -p "$KP_BIN/kingpin-wait" "$T/kingpin-wait.streak"
+cat > "$KP_BIN/kingpin-wait" << 'WK'
+#!/usr/bin/env bash
+# Pace the loop the way a real wait does, and warn on the first and third pass only:
+# a streak, a healthy pass with no warning, then the same warning again.
+n=$(cat "$KP_TEST_STREAK_COUNT" 2>/dev/null || true)
+n=$(( ${n:-0} + 1 ))
+printf '%s\n' "$n" > "$KP_TEST_STREAK_COUNT"
+case "$n" in
+  1|3) echo "kingpin-wait: a warning that comes and goes" >&2 ;;
+esac
+sleep 0.3
+exit 0
+WK
+chmod +x "$KP_BIN/kingpin-wait"
+: > "$KP_TEST_STREAK_COUNT"
+"$KP_BIN/kingpin-watch" --interval 1 >> "$STREAK_LOG" 2>&1 &
+streak_pid=$!
+wait_until 80 pidfile_names "$streak_pid" || fail "supervisor did not start against the streak fixture"
+sleep 3
+kill "$streak_pid" 2>/dev/null || true
+wait "$streak_pid" 2>/dev/null || true
+streak_warns=$(grep -cF "a warning that comes and goes" "$STREAK_LOG" 2>/dev/null || true)
+[ "$streak_warns" = "2" ] \
+  && pass "a warning that clears and returns is logged again ($streak_warns lines)" \
+  || fail "a returning warning stayed silent: $streak_warns line(s) in $(cat "$STREAK_LOG")"
+cp -p "$T/kingpin-wait.streak" "$KP_BIN/kingpin-wait"
 
 # Test 13: a dossier listener that dies is re-armed, and every blocker holds
 echo "=== Test 13: a dead dossier listener is re-armed ==="

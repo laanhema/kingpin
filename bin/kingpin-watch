@@ -27,6 +27,8 @@ KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$KP_ROOT/lib/status.sh"
+# shellcheck source=../lib/tmux.sh
+. "$KP_ROOT/lib/tmux.sh"
 # shellcheck source=../lib/landing.sh
 . "$KP_ROOT/lib/landing.sh"
 # shellcheck source=../lib/supervisor.sh
@@ -490,6 +492,46 @@ rearm_listeners() {
   done
 }
 
+# A tmux server that dies takes every worker window with it, and nothing restarts it:
+# the records still name the socket, so the fleet reads as a table of DEAD rows and no
+# worker is running. The supervisor owns the fleet's lifecycle, so it owns this too: for
+# each socket a live task record names that no longer answers, log one line and hand the
+# tasks on it to kingpin-restore (issue #149), which recreates the session (and with it
+# the server) and re-arms each window with a resume brief. This runs before the wait
+# pass, so a restored window is back before `exited` would be raised for it, and it runs
+# on every sweep, so a server that dies while the supervisor runs is brought back on the
+# next pass. Curator tasks are skipped (curate reaps its own window) and a terminal task
+# is skipped (restore would refuse it by name).
+restore_fleet_sockets() {
+  local dir sock checked=' ' ids id last isock
+  for dir in "$KP_HOME"/tasks/*; do
+    kp_task_is_live "$dir" || continue
+    [ -f "$dir/task.env" ] || continue
+    sock=$(kp_tmux_socket_from_env "$dir/task.env")
+    case "$checked" in *" ${sock:-default} "*) continue ;; esac
+    checked="$checked${sock:-default} "
+    kp_tmux_socket_reachable "$sock" && continue
+    ids=''
+    for id in "$KP_HOME"/tasks/*; do
+      kp_task_is_live "$id" || continue
+      [ -f "$id/task.env" ] || continue
+      # Normalized on both sides: no socket and `default` name the same server, so one
+      # restore brings back every task on it (issue #165 review M2).
+      isock=$(kp_tmux_socket_from_env "$id/task.env")
+      [ "${isock:-default}" = "${sock:-default}" ] || continue
+      [ "$(kp_env_get "$id/task.env" NO_LEASE)" = "1" ] && continue
+      last=$(kp_status_last "$id/status")
+      kp_status_is_terminal "$last" && continue
+      ids=${ids:+"$ids "}$(basename "$id")
+    done
+    [ -n "$ids" ] || continue
+    echo "[kingpin-watch] the tmux server '${sock:-default}' is not running; restoring $ids"
+    # shellcheck disable=SC2086 # ids is a space-separated list of task ids
+    "$KP_BIN/kingpin-restore" $ids >/dev/null 2>&1 \
+      || echo "[kingpin-watch] kingpin-restore refused at least one task on the tmux server '${sock:-default}'; run kingpin restore to see why" >&2
+  done
+}
+
 step_supervision() {
   local updates
   updates=$("$KP_BIN/kingpin-wait" --once 2>/dev/null || true)
@@ -505,6 +547,7 @@ step_supervision() {
 }
 
 if [ "$ONCE" -eq 1 ]; then
+  restore_fleet_sockets
   step_supervision || true
   retry_pending_cleanups
   advance_landing_queues
@@ -536,6 +579,7 @@ stop_waiter() {
 trap stop_waiter INT TERM
 
 while true; do
+  restore_fleet_sockets
   EVENTS_FILE=$(mktemp "$KP_HOME/watch-events.XXXXXX")
   WAIT_ERR=$(mktemp "$KP_HOME/watch-wait-err.XXXXXX")
   "$KP_BIN/kingpin-wait" --timeout "$INTERVAL" >"$EVENTS_FILE" 2>"$WAIT_ERR" &
@@ -561,13 +605,23 @@ while true; do
     continue
   fi
   WARNED=0
-  # A healthy pass can still warn about one task it could not judge (an unreadable
-  # mtime, an unparseable CREATED). Log the first line once per streak so it
-  # reaches the fleet log, not only the terminal of a manual `kingpin wait`.
-  if [ -n "$wait_warn" ] && [ "$wait_warn" != "$LAST_WARN" ]; then
+  # A healthy pass can still warn about a task it could not judge (an unreadable
+  # mtime, an unparseable CREATED) or about a tmux server that is not running, and a
+  # pass can carry more than one line. Log each distinct line once per streak so it
+  # reaches the fleet log, not only the terminal of a manual `kingpin wait`, and so a
+  # second warning is not hidden behind the first.
+  PASS_WARNED=0
+  while IFS= read -r wait_warn; do
+    [ -n "$wait_warn" ] || continue
+    PASS_WARNED=1
+    case " $LAST_WARN " in *" $wait_warn "*) continue ;; esac
     echo "[kingpin-watch] kingpin-wait warning: $wait_warn" >&2
-  fi
-  LAST_WARN=$wait_warn
+    LAST_WARN="${LAST_WARN:+$LAST_WARN }$wait_warn"
+  done < "$WAIT_ERR"
+  # A pass whose stderr held no line ends the streak, so a fault that clears and
+  # returns hours later reaches the log again instead of staying silent for the rest
+  # of the supervisor's life (issue #165 review L2).
+  [ "$PASS_WARNED" -eq 1 ] || LAST_WARN=''
   rm -f "$EVENTS_FILE" "$WAIT_ERR"
   EVENTS_FILE=''
   WAIT_ERR=''

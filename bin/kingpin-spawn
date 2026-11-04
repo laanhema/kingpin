@@ -63,6 +63,11 @@ die() { echo "kingpin-spawn: $*" >&2; exit 1; }
 # prints how to look at that server.
 fleet_socket=$(kp_tmux_socket_name)
 
+# Whether this spawn had to start the tmux server itself (issue #165). A spawn that
+# finds no session on a server that is not running creates both, and the OK line says
+# so instead of presenting a fresh empty server as business as usual.
+fleet_server_started=0
+
 # The session on that server, and where it came from. The session is resolved, never
 # guessed (issue #152): an explicit target must exist, and with none the one attached
 # session on the fleet server is used, then the only session it holds. Several
@@ -118,6 +123,7 @@ resolve_tmux_session() {
   fi
   # Nothing to join. This is the one case where a session is created, and the output
   # says so instead of leaving the worker silently in a session nobody watches.
+  kp_tmux_socket_reachable "$fleet_socket" || fleet_server_started=1
   kp_tmux "$fleet_socket" new-session -d -s kingpin -n home \
     || die "no session on the fleet's tmux server (tmux -L $fleet_socket) and the fallback session 'kingpin' could not be created"
   printf 'kingpin-spawn: no session on the fleet tmux server; created and using "kingpin" (name one with --tmux-session or KINGPIN_TMUX_SESSION)\n' >&2
@@ -527,4 +533,7 @@ kp_window_record_id "$task_dir" "$window_id" \
 rm -f "$task_dir/launching"
 launched=1
 
-echo "OK: spawned $id ($harness) in $worktree on $branch (tmux -L $fleet_socket $target_session:$id, session $target_session_source, window $window_id, mode $mode)"
+server_note=''
+[ "$fleet_server_started" = 0 ] \
+  || server_note=", started the tmux server on socket '$fleet_socket' (it was not running)"
+echo "OK: spawned $id ($harness) in $worktree on $branch (tmux -L $fleet_socket $target_session:$id, session $target_session_source, window $window_id, mode $mode$server_note)"
