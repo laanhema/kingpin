@@ -174,7 +174,10 @@ t21_other_after=$(tmux capture-pane -pJt "$t21_other" -S -50)
 mkdir -p "$T/t21-shim"
 cat > "$T/t21-shim/tmux" << EOF
 #!/usr/bin/env bash
-echo "\$1" >> "$T/t21-tmux.log"
+# lib/tmux.sh passes "-L <socket>" first; log the subcommand that follows it.
+args=("\$@")
+if [ "\${args[0]:-}" = "-L" ]; then args=("\${args[@]:2}"); fi
+echo "\${args[0]:-}" >> "$T/t21-tmux.log"
 exec "$T/bin/tmux" "\$@"
 EOF
 chmod +x "$T/t21-shim/tmux"
