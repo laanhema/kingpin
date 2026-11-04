@@ -1,13 +1,16 @@
 # shellcheck shell=bash
-# Shared reader for the task protocol files. Source it; it only defines functions
-# (no `set` options, no output, every function returns 0 unless stated).
+# Shared reader for the task protocol files, plus the one writer every note shares.
+# Source it; it only defines functions (no `set` options, no output beyond what each
+# states, every function returns 0 unless stated).
 #
 #   # shellcheck source=../lib/status.sh
 #   . "$KP_BIN/../lib/status.sh"
 #
 # The task `status` file is the fleet's state machine. Workers append one event
 # per line (ready:, fixed:, needs-input:, merged:, failed:, ...). kingpin-listen
-# appends two kinds of notes, approved: and feedback:. They are reminders for the
+# appends the approved: and feedback: notes, and kingpin-watch appends the
+# approved: auto (afk) note; both write through `kp_status_note`, so neither can
+# move the Stop hook's turn boundary on its own. They are reminders for the
 # orchestrator, not worker events, so the worker's current state is the last line
 # that is not one of them.
 #
@@ -45,6 +48,34 @@ kp_status_worker_events() {
   local n=0
   [ -f "${1:-}" ] && n=$(grep -vcE '^(approved|feedback):' "$1" 2>/dev/null || true)
   printf '%s\n' "${n:-0}"
+}
+
+# kp_status_note <status-file> <stopped-file> <line>
+# Append a note that is not the worker's report (an approved:/feedback: line)
+# without moving the Stop hook's turn boundary. kingpin-stop treats a status file
+# newer than the `stopped` marker as written during this turn (bin/kingpin-stop:82-90),
+# so a note must leave that boundary as it found it when the worker already
+# reported, and move it when the note arrived instead of a report. Otherwise the
+# next silent turn looks reported and never gets its `failed: no status:` line.
+# kingpin-listen and kingpin-watch must write every note through this one helper,
+# or the two disagree about the boundary again.
+#
+#   before the note  the worker reported  -> keep the boundary (the report owns it)
+#   before the note  no report            -> touch `stopped` after the append
+#   no `stopped` file                     -> first turn: nothing to move
+#
+# The mtime is the whole point; kingpin-wait, kingpin-launch-check and kingpin-ack
+# read the file's contents, which the note does not touch.
+kp_status_note() {
+  local status_file=${1:?} stopped_file=${2:?} line=${3:-} reported=0
+  if [ -f "$stopped_file" ] && [ "$status_file" -nt "$stopped_file" ]; then
+    reported=1
+  fi
+  printf '%s\n' "$line" >> "$status_file"
+  if [ "$reported" -eq 0 ] && [ -f "$stopped_file" ]; then
+    touch "$stopped_file" 2>/dev/null \
+      || echo "kp_status_note: cannot move the stop boundary $stopped_file" >&2
+  fi
 }
 
 # kp_status_is_terminal <status-line>
