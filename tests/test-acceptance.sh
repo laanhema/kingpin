@@ -45,7 +45,7 @@ F
 chmod +x "$T/fake-claude"
 export KINGPIN_CLAUDE=$T/fake-claude
 
-tmux display-message -p '#{socket_path}' | grep -q "$TEST_SOCKET" && pass "test operates on private tmux socket" || fail "test socket not isolated"
+tmux display-message -p '#{socket_path}' | grep -qF "$TMUX_TMPDIR/" && pass "test operates on the private fleet socket" || fail "test socket not isolated"
 
 # 2. Spawn 3 parallel tasks
 echo "Spawning 3 parallel tasks..."

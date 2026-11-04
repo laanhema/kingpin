@@ -13,6 +13,8 @@ set -euo pipefail
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
+# shellcheck source=../lib/tmux.sh
+. "$(dirname "$0")/../lib/tmux.sh"
 
 usage() { echo "usage: kingpin-peek <task-id> [--lines N]" >&2; }
 
@@ -58,6 +60,9 @@ task_dir="$KP_HOME/tasks/$id"
 [ -d "$task_dir" ] || { echo "kingpin-peek: task $id not found: $task_dir" >&2; exit 1; }
 
 env_file="$task_dir/task.env"
+# The socket the task's window lives on (issue #142). A record written before the
+# fleet had its own server carries no TMUX_SOCKET and resolves on the default server.
+tmux_socket=$(kp_tmux_socket_from_env "$env_file")
 tmux_target="kingpin:$id"
 if [ -f "$env_file" ]; then
   tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
@@ -75,12 +80,12 @@ if [ -f "$env_file" ]; then
   fi
 fi
 
-if ! tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
+if ! kp_tmux "$tmux_socket" list-panes -t "$tmux_target" >/dev/null 2>&1; then
   echo "kingpin-peek: tmux window $shown_target is not alive" >&2
   exit 1
 fi
 
-pane=$(tmux capture-pane -p -J -t "$tmux_target" -S -2000 2>/dev/null) || {
+pane=$(kp_tmux "$tmux_socket" capture-pane -p -J -t "$tmux_target" -S -2000 2>/dev/null) || {
   echo "kingpin-peek: could not read tmux window $shown_target" >&2
   exit 1
 }

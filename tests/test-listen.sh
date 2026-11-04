@@ -98,6 +98,7 @@ PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/wt-lavish-1
 ISSUE=401
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-1
 EOF
 tmux new-window -d -t kingpin: -n task-lavish-1 cat
@@ -176,6 +177,7 @@ PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
 ISSUE=402
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-2
 EOF
 tmux new-window -d -t kingpin: -n task-lavish-2 cat
@@ -248,6 +250,7 @@ PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-nowin
 EOFNW
 echo "ready: branch=b review=APPROVE report=none" > "$t11_nowin/status"
@@ -270,6 +273,7 @@ PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-arch
 EOFA
 tmux new-window -d -t kingpin: -n task-lavish-arch cat
@@ -319,6 +323,7 @@ PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-dup
 EOFD
 tmux new-window -d -t kingpin: -n task-lavish-dup cat
@@ -424,6 +429,7 @@ PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-legacy
 EOFL
 tmux new-window -d -t kingpin: -n task-lavish-legacy cat
@@ -480,6 +486,7 @@ PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-answer
 EOFAN
 tmux new-window -d -t kingpin: -n task-lavish-answer cat
@@ -548,6 +555,7 @@ PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-timeout
 EOFTO
 tmux new-window -d -t kingpin: -n task-lavish-timeout cat
@@ -607,6 +615,7 @@ PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-replyfail
 EOFRF
 tmux new-window -d -t kingpin: -n task-lavish-replyfail cat
@@ -649,6 +658,7 @@ PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-tmoutfail
 EOFTF
 tmux new-window -d -t kingpin: -n task-lavish-tmoutfail cat
@@ -687,6 +697,7 @@ PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-orphan
 EOFO
 tmux new-window -d -t kingpin: -n task-lavish-orphan cat
@@ -752,6 +763,7 @@ PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
 ISSUE=403
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-3
 EOF3
 echo "ready: branch=b review=APPROVE report=none" >> "$t11_task3/status"
@@ -778,6 +790,7 @@ PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
 ISSUE=404
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-gate
 EOF4
 tmux new-window -d -t kingpin: -n task-lavish-gate cat
@@ -802,6 +815,7 @@ PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
 ISSUE=406
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-state
 EOF8
 printf '%s\n' "ready: branch=b review=APPROVE report=none" "needs-input: which API shape?" > "$t11_state/status"
@@ -825,6 +839,7 @@ PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
 ISSUE=407
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-unknown
 EOF9
 printf '%s\n' "ready: branch=b review=LGTM report=r.md" > "$t11_unknown/status"
@@ -847,6 +862,7 @@ PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
 ISSUE=405
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-repeat
 EOF5
 tmux new-window -d -t kingpin: -n task-lavish-repeat cat
@@ -958,6 +974,7 @@ PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-multiline
 EOFML
 tmux new-window -d -t kingpin: -n task-lavish-multiline cat
@@ -983,6 +1000,7 @@ PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-recover
 EOF11
 tmux new-window -d -t kingpin: -n task-lavish-recover cat
@@ -1016,6 +1034,7 @@ PROJECT=demo-auto
 PROJECT_PATH=$T/proj
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:task-lavish-recover-skip
 EOF11S
 echo "ready: branch=b review=APPROVE report=none" > "$t11_recskip/status"

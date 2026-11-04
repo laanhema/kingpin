@@ -19,6 +19,7 @@ TASK_ID=t13-send
 PROJECT=demo-auto
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t13-send
 EOF
 
@@ -65,6 +66,7 @@ TASK_ID=t20-peek
 PROJECT=demo-auto
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t20-peek
 TMUX_WINDOW_ID=$t20_wid
 EOF
@@ -95,7 +97,7 @@ done
 mkdir -p "$T/t20-shim"
 cat > "$T/t20-shim/tmux" << EOF
 #!/usr/bin/env bash
-echo "\$1" >> "$T/t20-tmux.log"
+echo "\$*" >> "$T/t20-tmux.log"
 exec "$T/bin/tmux" "\$@"
 EOF
 chmod +x "$T/t20-shim/tmux"
@@ -106,7 +108,9 @@ t20_pane_before=$(tmux capture-pane -pJt "$t20_wid" -S -200)
 PATH="$T/t20-shim:$PATH" "$KP_BIN/kingpin" peek t20-peek >/dev/null
 t20_after=$(t20_sum)
 t20_pane_after=$(tmux capture-pane -pJt "$t20_wid" -S -200)
-if [ -s "$T/t20-tmux.log" ] && ! grep -qv -e '^list-panes$' -e '^capture-pane$' "$T/t20-tmux.log"; then pass "t20: peek only runs list-panes and capture-pane"; else fail "t20: peek ran other tmux commands: $(sort -u "$T/t20-tmux.log" | tr '\n' ' ')"; fi
+# kp_tmux names the socket on every call, so a logged line is `-L <socket>` and
+# then the subcommand; anything else is a command peek has no business running.
+if [ -s "$T/t20-tmux.log" ] && ! grep -qvE '^(-L [^ ]+ )?(list-panes|capture-pane)( |$)' "$T/t20-tmux.log"; then pass "t20: peek only runs list-panes and capture-pane"; else fail "t20: peek ran other tmux commands: $(sort -u "$T/t20-tmux.log" | tr '\n' ' ')"; fi
 [ "$t20_before" = "$t20_after" ] && pass "t20: peek leaves the task folder unchanged" || fail "t20: task folder changed"
 [ "$t20_pane_before" = "$t20_pane_after" ] && pass "t20: peek leaves the pane unchanged" || fail "t20: pane changed"
 

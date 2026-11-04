@@ -16,6 +16,8 @@ set -euo pipefail
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
+# shellcheck source=../lib/tmux.sh
+. "$(dirname "$0")/../lib/tmux.sh"
 tasks_dir="$KP_HOME/tasks"
 
 ALL=0
@@ -91,6 +93,9 @@ ack_task() {
   fi
 
   # 3. If tmux window is no longer alive, touch seen_exited
+  # The socket the task's window lives on (issue #142); empty for an older record.
+  local tmux_socket=""
+  tmux_socket=$(kp_tmux_socket_from_env "$task_env")
   local tmux_target=""
   if [ -f "$task_env" ]; then
     tmux_target=$(kp_env_get "$task_env" TMUX_TARGET)
@@ -103,12 +108,12 @@ ack_task() {
   fi
   [ -n "$window_id" ] && tmux_target=$window_id
 
-  if ! tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
+  if ! kp_tmux "$tmux_socket" list-panes -t "$tmux_target" >/dev/null 2>&1; then
     touch "$task_dir/seen_exited"
   else
     # 4. Remember the pane activity time: kingpin-wait holds a repeated `quiet`
     # for an acknowledged needs-input until it changes.
-    tmux display-message -p -t "$tmux_target" '#{window_activity}' > "$task_dir/seen_activity" 2>/dev/null || rm -f "$task_dir/seen_activity"
+    kp_tmux "$tmux_socket" display-message -p -t "$tmux_target" '#{window_activity}' > "$task_dir/seen_activity" 2>/dev/null || rm -f "$task_dir/seen_activity"
   fi
 }
 
