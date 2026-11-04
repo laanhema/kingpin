@@ -14,15 +14,33 @@ set -euo pipefail
 kp_test_setup "restore"
 kp_test_project
 
-# The fake harness: prints every line it reads, appends one status line when it is
-# asked to report, and stays on stdin like a real TUI. It ignores its argv. It runs on
-# node, not on a shell, so `#{pane_current_command}` really does stop being a plain
-# shell name once a placeholder window is reclaimed.
+# The fake harness: answers `session list` from the fixture the case wrote, records the
+# argv a launch really received (one word per line, so the resume brief is readable as
+# text), prints every line it reads, appends one status line when it is asked to report,
+# and stays on stdin like a real TUI. It runs on node, not on a shell, so
+# `#{pane_current_command}` really does stop being a plain shell name once a placeholder
+# window is reclaimed.
 cat > "$T/fake-harness" << 'F'
 #!/usr/bin/env node
 const fs = require("fs");
 const readline = require("readline");
+const args = process.argv.slice(2);
 const taskDir = process.env.KINGPIN_TASK_DIR || "";
+if (args[0] === "session" && args[1] === "list") {
+  const fixture = process.env.KP_TEST_OPENCODE_SESSIONS;
+  if (!fixture || !fs.existsSync(fixture)) process.exit(1);
+  let text = fs.readFileSync(fixture, "utf8");
+  // Honor `-n` like the real listing does, so a case can exceed the requested cap.
+  const capAt = args.indexOf("-n");
+  const cap = capAt === -1 ? NaN : Number(args[capAt + 1]);
+  if (Number.isFinite(cap)) {
+    let rows = null;
+    try { rows = JSON.parse(text); } catch {}
+    if (Array.isArray(rows)) text = JSON.stringify(rows.slice(0, cap));
+  }
+  process.stdout.write(text, () => process.exit(0));
+}
+if (taskDir) fs.writeFileSync(`${taskDir}/fake-argv`, args.join("\n"));
 readline.createInterface({ input: process.stdin }).on("line", (line) => {
   console.log(`got: ${line}`);
   if (line === "report" && taskDir) {
@@ -32,9 +50,12 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 F
 chmod +x "$T/fake-harness"
 export KINGPIN_AGY=$T/fake-harness
-# The pi harness stand-in for the provider/model case: the launch script the restore
-# generates is the assertion, and no real pi binary is needed.
+# The pi harness stand-in for the provider/model case and the opencode/claude stand-ins
+# for the session cases: the launch script the restore generates is the assertion, and no
+# real harness binary is needed.
 export KINGPIN_PI=$T/fake-harness
+export KINGPIN_OPENCODE=$T/fake-harness
+export KINGPIN_CLAUDE=$T/fake-harness
 
 env_get() { sed -n "s/^$2=//p" "$1" | tail -n 1; }
 
@@ -91,6 +112,17 @@ snapshot() { # <dir>: a stable listing of every path and file content
   ( cd "$1" && find . -type f | sort | xargs sha256sum; find . | sort )
 }
 
+set_sessions() { # <json>: the rows the fake harness answers `session list` with
+  printf '%s\n' "$1" > "$T/opencode-sessions.json"
+  export KP_TEST_OPENCODE_SESSIONS=$T/opencode-sessions.json
+}
+
+session_json() { # <directory> <updated-epoch-seconds> <id> <title>: one fixture row
+  printf '{"id":"%s","title":"%s","updated":%s,"directory":"%s"}' "$3" "$4" "$(( $2 * 1000 ))" "$1"
+}
+
+fake_argv_has() { waited_line "$1/fake-argv" "$2"; }
+
 spawn_task() { # <id>
   "$KP_BIN/kingpin-spawn" demo-auto --issue 149 --id "$1" --harness agy >/dev/null
   printf '%s\n' "$KINGPIN_HOME/tasks/$1"
@@ -127,6 +159,9 @@ r1_pane_pid=$(tmux list-panes -t "$r1_new" -F '#{pane_pid}' | head -n 1)
 cmp -s "$r1/status" "$T/r1.status.before" && pass "restore leaves the status file byte-identical" || fail "restore changed the status file"
 echo "$r1_out" | grep -q "^OK: restored r1 (agy) in kingpin:r1 ($r1_new) on $r1_branch" \
   && pass "the OK line names the id, harness, window, id and branch" \
+  || fail "restore OK line: $r1_out"
+echo "$r1_out" | grep -qF "started a new session (agy cannot report an existing session)" \
+  && pass "the OK line says agy cannot report an existing session" \
   || fail "restore OK line: $r1_out"
 
 # ---------------------------------------------------------------------------
@@ -489,6 +524,187 @@ fi
 rm -rf "$d"
 tmux kill-window -t 'kingpin:=k-session' 2>/dev/null || true
 tmux kill-session -t '=kingpin-workers' 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Test 15: a restored task resumes the session it already had
+echo "=== Test 15: restore resumes the session the task already has ==="
+treehouse_stub
+leased_json
+now=$(date +%s)
+set_sessions "[$(session_json "$T/fixture-wt" $((now - 30)) ses_task168 "Issue #168 workflow"),$(session_json "$T/other-wt" $((now - 30)) ses_other "Another worktree")]"
+d=$(mk_fixture t-resume "$T/fixture-wt" "HARNESS=opencode"); printf 'issue: #168\n' > "$d/status"
+t_resume_rc=0
+t_resume_out=$("$KP_BIN/kingpin" restore t-resume 2>"$T/t-resume.err") || t_resume_rc=$?
+[ "$t_resume_rc" -eq 0 ] && pass "restore of an opencode task exits 0" || fail "restore exited $t_resume_rc: $(cat "$T/t-resume.err")"
+grep -q -- '--session ses_task168' "$d/launch.sh" 2>/dev/null \
+  && pass "launch.sh resumes with --session and the task's id" \
+  || fail "launch.sh has no --session: $(cat "$d/launch.sh" 2>/dev/null)"
+fake_argv_has "$d" --session && pass "the harness received --session" || fail "fake argv: $(cat "$d/fake-argv" 2>/dev/null)"
+fake_argv_has "$d" ses_task168 && pass "the harness received the session id as its own argv word" || fail "fake argv: $(cat "$d/fake-argv" 2>/dev/null)"
+fake_argv_has "$d" "# Kingpin resume brief" && pass "the whole resume brief still arrives" || fail "fake argv: $(cat "$d/fake-argv" 2>/dev/null)"
+echo "$t_resume_out" | grep -q "resumed session ses_task168" \
+  && pass "the OK line names the resumed session" || fail "restore OK line: $t_resume_out"
+grep -qF "session this task already had" "$d/resume-prompt.txt" \
+  && pass "the brief says the earlier conversation was resumed" \
+  || fail "brief: $(head -n 6 "$d/resume-prompt.txt")"
+[ "$(env_get "$d/task.env" HARNESS_SESSION)" = ses_task168 ] \
+  && pass "task.env records HARNESS_SESSION" || fail "task.env: $(cat "$d/task.env")"
+t_resume_win=$(env_get "$d/task.env" TMUX_WINDOW_ID)
+t_resume_pid=$(tmux list-panes -t "$t_resume_win" -F '#{pane_pid}' 2>/dev/null | head -n 1)
+[ -n "$t_resume_pid" ] && [ "$(cat "$d/harness.pid" 2>/dev/null || true)" = "$t_resume_pid" ] \
+  && pass "harness.pid is the resumed pane pid" \
+  || fail "harness.pid '$(cat "$d/harness.pid" 2>/dev/null || true)' is not the pane pid '$t_resume_pid'"
+window_named t-resume && pass "the resumed task has its window" || fail "no window named t-resume"
+rm -rf "$d"
+tmux kill-window -t 'kingpin:=t-resume' 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Test 16: two live sessions are refused without --force
+echo "=== Test 16: two live sessions are refused without --force ==="
+treehouse_stub
+leased_json
+now=$(date +%s)
+set_sessions "[$(session_json "$T/fixture-wt" $((now - 300)) ses_older "Older live"),$(session_json "$T/fixture-wt" $((now - 60)) ses_newer "Newer live")]"
+d=$(mk_fixture t-two "$T/fixture-wt" "HARNESS=opencode"); printf 'issue: #168\n' > "$d/status"
+t_two_before=$(snapshot "$d")
+t_two_rc=0
+t_two_err=$("$KP_BIN/kingpin" restore t-two 2>&1 >/dev/null) || t_two_rc=$?
+[ "$t_two_rc" -eq 1 ] && pass "two live sessions refuse the restore" || fail "restore exited $t_two_rc: $t_two_err"
+grep -q "refused t-two:" <<< "$t_two_err" && pass "the refusal names the task" || fail "stderr: $t_two_err"
+grep -q "ses_older" <<< "$t_two_err" && pass "the refusal names the older live session" || fail "stderr: $t_two_err"
+grep -q "ses_newer" <<< "$t_two_err" && pass "the refusal names the newer live session" || fail "stderr: $t_two_err"
+grep -qF "last active" <<< "$t_two_err" && pass "the refusal gives an age for each session" || fail "stderr: $t_two_err"
+window_named t-two && fail "the refused restore created a window" || pass "the refused restore created no window"
+[ "$(snapshot "$d")" = "$t_two_before" ] && pass "the refusal left the task folder unchanged" || fail "the refusal changed the task folder"
+t_two_frc=0
+t_two_frc_out=$("$KP_BIN/kingpin" restore t-two --force 2>"$T/t-two-force.err") || t_two_frc=$?
+[ "$t_two_frc" -eq 0 ] && pass "--force restores past two live sessions" || fail "--force exited $t_two_frc: $(cat "$T/t-two-force.err")"
+echo "$t_two_frc_out" | grep -q "resumed session ses_newer" && pass "--force resumes the newest live session" || fail "--force OK line: $t_two_frc_out"
+grep -q -- '--session ses_newer' "$d/launch.sh" && pass "the forced launch carries the newest session" || fail "launch.sh: $(cat "$d/launch.sh" 2>/dev/null)"
+grep -q "ses_older" "$T/t-two-force.err" && pass "--force names the session it leaves running" || fail "stderr: $(cat "$T/t-two-force.err")"
+rm -rf "$d"
+tmux kill-window -t 'kingpin:=t-two' 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Test 17: no session starts fresh
+echo "=== Test 17: no session starts fresh ==="
+treehouse_stub
+leased_json
+set_sessions '[]'
+d=$(mk_fixture t-fresh "$T/fixture-wt" "HARNESS=opencode"); printf 'issue: #168\n' > "$d/status"
+t_fresh_rc=0
+t_fresh_out=$("$KP_BIN/kingpin" restore t-fresh 2>"$T/t-fresh.err") || t_fresh_rc=$?
+[ "$t_fresh_rc" -eq 0 ] && pass "a task with no session is restored" || fail "restore exited $t_fresh_rc: $(cat "$T/t-fresh.err")"
+grep -q -- '--session' "$d/launch.sh" 2>/dev/null && fail "a fresh launch carries --session: $(cat "$d/launch.sh")" || pass "a fresh launch carries no --session"
+echo "$t_fresh_out" | grep -q "started a new session" && pass "the OK line says it started a new session" || fail "restore OK line: $t_fresh_out"
+fake_argv_has "$d" "# Kingpin resume brief" && pass "the fresh launch still receives the brief" || fail "fake argv: $(cat "$d/fake-argv" 2>/dev/null)"
+grep -qF "You have no memory" "$d/resume-prompt.txt" && pass "the fresh brief keeps the no-memory wording" || fail "brief: $(head -n 6 "$d/resume-prompt.txt")"
+t_fresh_win=$(env_get "$d/task.env" TMUX_WINDOW_ID)
+[ -n "$t_fresh_win" ] && tmux list-panes -t "$t_fresh_win" -F '#{pane_pid}' >/dev/null 2>&1 \
+  && pass "TMUX_WINDOW_ID names the fresh window" || fail "recorded window id '$t_fresh_win' does not resolve"
+t_fresh_pid=$(tmux list-panes -t "$t_fresh_win" -F '#{pane_pid}' 2>/dev/null | head -n 1)
+[ -n "$t_fresh_pid" ] && [ "$(cat "$d/harness.pid" 2>/dev/null || true)" = "$t_fresh_pid" ] \
+  && pass "harness.pid is the fresh pane pid" || fail "harness.pid is not the pane pid"
+rm -rf "$d"
+tmux kill-window -t 'kingpin:=t-fresh' 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Test 18: the recorded session wins over a newer one
+echo "=== Test 18: the recorded session wins over a newer one ==="
+treehouse_stub
+leased_json
+now=$(date +%s)
+set_sessions "[$(session_json "$T/fixture-wt" $((now - 7200)) ses_recorded "Recorded session"),$(session_json "$T/fixture-wt" $((now - 3600)) ses_newer "Newer session")]"
+d=$(mk_fixture t-recorded "$T/fixture-wt" "HARNESS=opencode" "HARNESS_SESSION=ses_recorded"); printf 'issue: #168\n' > "$d/status"
+t_recorded_rc=0
+t_recorded_out=$("$KP_BIN/kingpin" restore t-recorded 2>"$T/t-recorded.err") || t_recorded_rc=$?
+[ "$t_recorded_rc" -eq 0 ] && pass "the task with a recorded session is restored" || fail "restore exited $t_recorded_rc: $(cat "$T/t-recorded.err")"
+grep -q -- '--session ses_recorded' "$d/launch.sh" && pass "the recorded session is the one resumed" || fail "launch.sh: $(cat "$d/launch.sh" 2>/dev/null)"
+grep -q -- 'ses_newer' "$d/launch.sh" && fail "the newer session was chosen over the recorded one" || pass "the newer session was not chosen"
+echo "$t_recorded_out" | grep -q "resumed session ses_recorded" && pass "the OK line names the recorded session" || fail "restore OK line: $t_recorded_out"
+rm -rf "$d"
+tmux kill-window -t 'kingpin:=t-recorded' 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Test 19: claude resumes through its transcript store
+echo "=== Test 19: claude resumes through its transcript store ==="
+treehouse_stub
+leased_json
+claude_slug=$(printf '%s' "$T/fixture-wt" | sed 's/[^A-Za-z0-9-]/-/g')
+claude_id=11111111-1111-4111-8111-111111111111
+mkdir -p "$CLAUDE_CONFIG_DIR/projects/$claude_slug"
+printf '{"type":"user"}\n' > "$CLAUDE_CONFIG_DIR/projects/$claude_slug/$claude_id.jsonl"
+d=$(mk_fixture t-claude "$T/fixture-wt" "HARNESS=claude"); printf 'issue: #168\n' > "$d/status"
+t_claude_rc=0
+t_claude_out=$("$KP_BIN/kingpin" restore t-claude 2>"$T/t-claude.err") || t_claude_rc=$?
+[ "$t_claude_rc" -eq 0 ] && pass "the claude task is restored" || fail "restore exited $t_claude_rc: $(cat "$T/t-claude.err")"
+grep -q -- '--continue' "$d/launch.sh" && pass "the claude launch continues the directory's conversation" || fail "launch.sh: $(cat "$d/launch.sh" 2>/dev/null)"
+echo "$t_claude_out" | grep -q "resumed session $claude_id" && pass "the OK line names the detected transcript" || fail "restore OK line: $t_claude_out"
+[ "$(env_get "$d/task.env" HARNESS_SESSION)" = "$claude_id" ] && pass "the transcript id is recorded for a later change" || fail "task.env: $(cat "$d/task.env")"
+rm -rf "$d"
+tmux kill-window -t 'kingpin:=t-claude' 2>/dev/null || true
+# A claude task whose store holds no transcript starts fresh.
+d=$(mk_fixture t-claude-new "$T/fixture-wt" "HARNESS=claude"); printf 'issue: #168\n' > "$d/status"
+t_claude_new_rc=0
+t_claude_new_out=$(CLAUDE_CONFIG_DIR=$T/cfg-empty "$KP_BIN/kingpin" restore t-claude-new 2>"$T/t-claude-new.err") || t_claude_new_rc=$?
+[ "$t_claude_new_rc" -eq 0 ] && pass "a claude task with no transcript is restored" || fail "restore exited $t_claude_new_rc: $(cat "$T/t-claude-new.err")"
+grep -q -- '--continue' "$d/launch.sh" 2>/dev/null && fail "an empty store still passed --continue" || pass "an empty store passes no --continue"
+echo "$t_claude_new_out" | grep -q "started a new session" && pass "the empty store starts a new session" || fail "restore OK line: $t_claude_new_out"
+rm -rf "$d"
+tmux kill-window -t 'kingpin:=t-claude-new' 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Test 20: a --harness override never abandons a live session
+echo "=== Test 20: a --harness override never abandons a live session ==="
+treehouse_stub
+leased_json
+now=$(date +%s)
+set_sessions "[$(session_json "$T/fixture-wt" $((now - 45)) ses_live "Live opencode session")]"
+d=$(mk_fixture t-override "$T/fixture-wt" "HARNESS=opencode"); printf 'issue: #168\n' > "$d/status"
+t_override_before=$(snapshot "$d")
+t_override_rc=0
+t_override_err=$("$KP_BIN/kingpin" restore t-override --harness agy 2>&1 >/dev/null) || t_override_rc=$?
+[ "$t_override_rc" -eq 1 ] && pass "the override of a live recorded session is refused" || fail "restore exited $t_override_rc: $t_override_err"
+grep -q "refused t-override:" <<< "$t_override_err" && pass "the refusal names the task" || fail "stderr: $t_override_err"
+grep -q "ses_live" <<< "$t_override_err" && pass "the refusal names the live session it would abandon" || fail "stderr: $t_override_err"
+grep -qF -- "--harness agy would add a second live session" <<< "$t_override_err" && pass "the refusal says why the override is unsafe" || fail "stderr: $t_override_err"
+window_named t-override && fail "the refused override created a window" || pass "the refused override created no window"
+[ "$(snapshot "$d")" = "$t_override_before" ] && pass "the refused override left the task folder unchanged" || fail "the refusal changed the task folder"
+t_override_frc=0
+t_override_frc_err=$("$KP_BIN/kingpin" restore t-override --harness agy --force 2>&1 >/dev/null) || t_override_frc=$?
+[ "$t_override_frc" -eq 0 ] && pass "--force launches the override anyway" || fail "--force exited $t_override_frc: $t_override_frc_err"
+grep -q "ses_live" <<< "$t_override_frc_err" && pass "--force notes the session it leaves running" || fail "stderr: $t_override_frc_err"
+grep -q -- '--prompt-interactive' "$d/launch.sh" && pass "the forced launch runs the overriding harness" || fail "launch.sh: $(cat "$d/launch.sh" 2>/dev/null)"
+grep -q -- '--session' "$d/launch.sh" 2>/dev/null && fail "the overriding harness received a resume flag it cannot use" || pass "the overriding harness gets no resume flag"
+rm -rf "$d"
+tmux kill-window -t 'kingpin:=t-override' 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Test 21: a listing that fills the cap is disclosed as truncated, not read as none
+echo "=== Test 21: a truncated session listing is disclosed in the OK line ==="
+treehouse_stub
+leased_json
+# 1000 rows for another worktree fill the cap, and the task's own session is the 1001st,
+# so a listing of exactly the cap length must not be read as "this task has no session".
+# shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
+set_sessions "$(node -e '
+  const now = Math.floor(Date.now() / 1000);
+  const rows = [];
+  for (let i = 1; i <= 1000; i++) {
+    rows.push({ id: `ses_other_${i}`, title: `Other worktree ${i}`, updated: (now - i) * 1000, directory: process.argv[1] });
+  }
+  rows.push({ id: "ses_beyond_cap", title: "Task session beyond the cap", updated: (now - 2000) * 1000, directory: process.argv[2] });
+  process.stdout.write(JSON.stringify(rows));
+' "$T/other-wt" "$T/fixture-wt")"
+d=$(mk_fixture t-truncated "$T/fixture-wt" "HARNESS=opencode"); printf 'issue: #168\n' > "$d/status"
+t_truncated_rc=0
+t_truncated_out=$("$KP_BIN/kingpin" restore t-truncated 2>"$T/t-truncated.err") || t_truncated_rc=$?
+[ "$t_truncated_rc" -eq 0 ] && pass "a task outside a truncated listing is still restored" || fail "restore exited $t_truncated_rc: $(cat "$T/t-truncated.err")"
+grep -q -- '--session' "$d/launch.sh" 2>/dev/null && fail "a truncated listing resumed a session: $(cat "$d/launch.sh")" || pass "a truncated listing starts no session it cannot see"
+echo "$t_truncated_out" | grep -qF "the list was truncated" && pass "the OK line says the listing was truncated" || fail "restore OK line: $t_truncated_out"
+echo "$t_truncated_out" | grep -qF "did not report its sessions" && fail "the OK line claims the harness reported nothing" || pass "the OK line does not claim the harness reported no sessions"
+rm -rf "$d"
+tmux kill-window -t 'kingpin:=t-truncated' 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 
