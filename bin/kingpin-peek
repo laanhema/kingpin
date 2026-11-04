@@ -4,10 +4,10 @@
 # Usage: kingpin-peek <task-id> [--lines N]
 #
 # Prints the last N (default 20) non-empty lines of the worker's pane, scrollback
-# included, with wrapped lines joined. The pane is found like kingpin-send does:
-# the window ID recorded at spawn first (it survives a rename or move), then
-# TMUX_TARGET. Only `tmux list-panes` and `tmux capture-pane` run: no keys are
-# sent and nothing is written.
+# included, with wrapped lines joined. The window is resolved like kingpin-send does
+# (lib/tmux.sh): the task's own window name first, which is the one key that survives a
+# tmux server restart, then the recorded window ID for a hand-renamed window. Only
+# `tmux list-panes` and `tmux capture-pane` run: no keys are sent and nothing is written.
 set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
@@ -59,34 +59,16 @@ done
 task_dir="$KP_HOME/tasks/$id"
 [ -d "$task_dir" ] || { echo "kingpin-peek: task $id not found: $task_dir" >&2; exit 1; }
 
-env_file="$task_dir/task.env"
-# The socket the task's window lives on (issue #142). A record written before the
-# fleet had its own server carries no TMUX_SOCKET and resolves on the default server.
-tmux_socket=$(kp_tmux_socket_from_env "$env_file")
-tmux_target="kingpin:$id"
-if [ -f "$env_file" ]; then
-  tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
-  [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
-fi
-
-# Prefer the window ID (survives rename and move); task.env files from before
-# it was recorded only have the name target.
-shown_target=$tmux_target
-if [ -f "$env_file" ]; then
-  window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
-  if [ -n "$window_id" ]; then
-    tmux_target=$window_id
-    shown_target="$shown_target ($window_id)"
-  fi
-fi
-
-if ! kp_tmux "$tmux_socket" list-panes -t "$tmux_target" >/dev/null 2>&1; then
-  echo "kingpin-peek: tmux window $shown_target is not alive" >&2
+# The window is resolved by lib/tmux.sh: its own name first, then the recorded id,
+# on the socket the task record names (issue #142). Only `list-panes` and
+# `capture-pane` run: no keys are sent and nothing is written.
+if ! kp_window_find "$task_dir"; then
+  echo "kingpin-peek: tmux window $KP_WINDOW_LABEL is not alive" >&2
   exit 1
 fi
 
-pane=$(kp_tmux "$tmux_socket" capture-pane -p -J -t "$tmux_target" -S -2000 2>/dev/null) || {
-  echo "kingpin-peek: could not read tmux window $shown_target" >&2
+pane=$(kp_tmux "$KP_WINDOW_SOCKET" capture-pane -p -J -t "$KP_WINDOW_ID" -S -2000 2>/dev/null) || {
+  echo "kingpin-peek: could not read tmux window $KP_WINDOW_LABEL" >&2
   exit 1
 }
 

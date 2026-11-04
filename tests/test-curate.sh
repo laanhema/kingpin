@@ -159,6 +159,7 @@ live_err=$("$KP_BIN/kingpin" curate 2>&1 >/dev/null) || live_rc=$?
 echo "$live_err" | grep -q "already active" && pass "live curator refusal names the active window" || fail "live curator stderr: $live_err"
 [ ! -f "$T/curator-live-ran.txt" ] && pass "refused run launched no curator" || fail "refused run still launched a curator"
 tmux list-panes -t kingpin:curator >/dev/null 2>&1 && pass "live curator window survived the refused run" || fail "refused run killed the live curator window"
+[ -d "$KINGPIN_HOME/tasks/curator" ] && pass "the refused run left the stale curator record for a later reconcile" || fail "the refused run reconciled the stale record away"
 tmux kill-window -t kingpin:curator 2>/dev/null || true
 
 # 8.2d A curator whose launch.sh exited is reaped instead of blocking the next run

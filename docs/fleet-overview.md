@@ -14,7 +14,7 @@ kingpin list
 
 For any live task whose folder holds a `report.html`, whatever its mode or status, `kingpin list` displays the dossier line directly below the task row: the recorded Lavish session URL, or the `lavish-axi <path>` command when none is recorded. It carries `(listening: pid <n>)` while that task's listener runs; finished and archived rows show no dossier line, and `--all` shows the archived rows without one.
 
-The `STATE` column describes a live pane: `WAITING` means the worker is blocked on a human (`needs-input:`, a listener's `feedback:` note, or the Stop hook's `waiting:` line), `SILENT` means it stopped without reporting (`failed: no status:`), and `Unseen: N` counts status lines written since the supervisor last acknowledged the task. `-` is a worker that is running normally or whose window is gone.
+The `STATE` column describes a live pane: `WAITING` means the worker is blocked on a human (`needs-input:`, a listener's `feedback:` note, or the Stop hook's `waiting:` line), `SILENT` means it stopped without reporting (`failed: no status:`), `DEAD` means the task is live but its window is gone (or the recorded harness is no longer in it), and `Unseen: N` counts status lines written since the supervisor last acknowledged the task. `-` is a worker that is running normally. When any live task is `DEAD`, one `Fleet: <n> live task(s) have no live window; run kingpin restore` line follows the table.
 
 The `SESSION` column names the tmux session the worker's window lives in, read from the live window, so a window moved to another session is reported where it really is. An archived row shows the session recorded at spawn, because its window is gone; `-` means neither a live window nor a recorded target.
 
@@ -34,6 +34,8 @@ To see why a worker is quiet or stuck, look at the tail of its pane without touc
 kingpin peek <task-id>              # last 20 non-empty lines
 kingpin peek <task-id> --lines 50   # more context
 ```
+
+A tmux server that dies takes every worker window with it, and a resurrected fleet comes back as plain shells. `kingpin list` marks those tasks `DEAD` and prints the hint, and `kingpin restore` brings each live task back: it reclaims a same-named window or creates one, in the task's own worktree and on the branch the worktree has checked out, relaunches the recorded harness from a regenerated launch script, hands it a resume brief that says where the work stands and what to do next, and repairs `TMUX_WINDOW_ID`. A task it cannot restore is refused by name with the reason, and nothing is deleted. The supervisor's pidfile died with the server too, so start `kingpin watch` again afterwards; a review dossier's listener is the supervisor's job, not restore's.
 
 To pick up merged changes in the main checkout, fast-forward it without raw git:
 

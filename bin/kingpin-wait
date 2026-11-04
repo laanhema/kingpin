@@ -25,6 +25,8 @@ set -euo pipefail
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
+# shellcheck source=../lib/tmux.sh
+. "$(dirname "$0")/../lib/tmux.sh"
 # shellcheck source=../lib/portable.sh
 . "$(dirname "$0")/../lib/portable.sh"
 # shellcheck source=../lib/tmux.sh
@@ -146,23 +148,19 @@ check_task() {
     return 0
   fi
 
-  # Read tmux target
-  # The socket the task's window lives on (issue #142); empty for a record written
-  # before the fleet had its own server.
+  # 2. Window liveness check. The resolver (lib/tmux.sh) finds the task's own window by
+  # name first, on the socket the record names (issue #142), so a stale recorded id that
+  # now names a foreign window cannot make a dead task look alive. `exited` keeps its old
+  # meaning: the *window* is gone. A window that exists while its harness is gone is the
+  # DEAD state `kingpin list` reports, not an event here (changing that would fire
+  # `exited` for every fixture pane running a shell).
   local tmux_socket=""
-  tmux_socket=$(kp_tmux_socket_from_env "$task_env")
   local tmux_target=""
-  tmux_target=$(kp_env_get "$task_env" TMUX_TARGET)
-  [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
-  # The window ID survives rename and move; older task.env files lack it.
-  local window_id=""
-  window_id=$(kp_env_get "$task_env" TMUX_WINDOW_ID)
-  [ -n "$window_id" ] && tmux_target=$window_id
-
-  # 2. Window liveness check
   local window_alive=0
-  if kp_tmux "$tmux_socket" list-panes -t "$tmux_target" >/dev/null 2>&1; then
+  if kp_window_find "$dir" >/dev/null 2>&1; then
     window_alive=1
+    tmux_socket=$KP_WINDOW_SOCKET
+    tmux_target=$KP_WINDOW_ID
   fi
 
   if [ "$window_alive" -eq 0 ]; then
