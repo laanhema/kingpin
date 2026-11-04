@@ -16,6 +16,8 @@ set -euo pipefail
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
+# shellcheck source=../lib/tmux.sh
+. "$(dirname "$0")/../lib/tmux.sh"
 tasks_dir="$KP_HOME/tasks"
 
 ALL=0
@@ -64,7 +66,6 @@ ack_task() {
   local task_dir=$1
   local id
   id=$(basename "$task_dir")
-  local task_env="$task_dir/task.env"
   local status_file="$task_dir/status"
   local stopped_file="$task_dir/stopped"
 
@@ -90,25 +91,15 @@ ack_task() {
     cat "$stopped_file" 2>/dev/null | tr -d ' ' > "$task_dir/seen_stopped"
   fi
 
-  # 3. If tmux window is no longer alive, touch seen_exited
-  local tmux_target=""
-  if [ -f "$task_env" ]; then
-    tmux_target=$(kp_env_get "$task_env" TMUX_TARGET)
-  fi
-  [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
-  # The window ID survives rename and move; older task.env files lack it.
-  local window_id=""
-  if [ -f "$task_env" ]; then
-    window_id=$(kp_env_get "$task_env" TMUX_WINDOW_ID)
-  fi
-  [ -n "$window_id" ] && tmux_target=$window_id
-
-  if ! tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
-    touch "$task_dir/seen_exited"
-  else
+  # 3. If no window of this task is alive, touch seen_exited. The resolver (lib/tmux.sh)
+  # looks for the task's own window name first, so a stale recorded id that now names a
+  # foreign window no longer counts as this task being alive.
+  if kp_window_find "$task_dir" >/dev/null 2>&1; then
     # 4. Remember the pane activity time: kingpin-wait holds a repeated `quiet`
     # for an acknowledged needs-input until it changes.
-    tmux display-message -p -t "$tmux_target" '#{window_activity}' > "$task_dir/seen_activity" 2>/dev/null || rm -f "$task_dir/seen_activity"
+    tmux display-message -p -t "$KP_WINDOW_ID" '#{window_activity}' > "$task_dir/seen_activity" 2>/dev/null || rm -f "$task_dir/seen_activity"
+  else
+    touch "$task_dir/seen_exited"
   fi
 }
 

@@ -8,6 +8,7 @@
 #   kingpin watch [--once] [--interval <seconds>]
 #   kingpin land <task-id>        (alias: kingpin approve <task-id>)
 #   kingpin done <task-id> [--force]
+#   kingpin restore [<task-id> ...] [--harness <name>] [--dry-run] [--force]
 #   kingpin send <task-id> "<text>"
 #   kingpin peek <task-id> [--lines N]
 #   kingpin sync                  (fast-forward the main checkout; run it in the main checkout)
@@ -31,6 +32,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_BIN/../lib/supervisor.sh"
 # shellcheck source=../lib/afk.sh
 . "$KP_BIN/../lib/afk.sh"
+# shellcheck source=../lib/tmux.sh
+. "$KP_BIN/../lib/tmux.sh"
 
 usage() {
   cat << 'HELP'
@@ -45,6 +48,7 @@ Commands:
   watch     Run the fleet supervisor (one per fleet; refuses a second copy)
   land      Land a ready worker; when its review has findings, run the fix pass first (alias: approve)
   done      Verify merge, release worktree lease, and advance queue
+  restore   Bring every live task's window back after a tmux server restart
   send      Send input or approval keys to a worker
   peek      Show the last lines of a worker's tmux pane (read-only)
   sync      Fast-forward the main checkout from its upstream (ff-only; refuses a tracked change, an untracked overwrite or a worktree)
@@ -89,6 +93,9 @@ case "$cmd" in
     ;;
   done)
     exec "$KP_BIN/kingpin-done" "$@"
+    ;;
+  restore)
+    exec "$KP_BIN/kingpin-restore" "$@"
     ;;
   send)
     exec "$KP_BIN/kingpin-send" "$@"
@@ -141,7 +148,7 @@ case "$cmd" in
     print_task_row() {
       local d=$1 suffix=${2:-}
       local tid env_file proj harness mode status_file st listen_info lpid url
-      local state last lines seen tmux_target window_id
+      local state last lines seen dead window_alive
       tid=$(basename "$d")
       env_file="$d/task.env"
       proj="-" harness="claude" mode="review"
@@ -159,14 +166,32 @@ case "$cmd" in
       if [ -f "$status_file" ] && [ -s "$status_file" ]; then
         st=$(kp_status_newest "$status_file")
         last=$(kp_status_last "$status_file")
-        # WAITING and SILENT are states of a live pane: a dead window is already
-        # visible through its last line and `kingpin done`. The window survives
-        # rename, so the recorded window ID wins over the session:name target.
-        tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
-        [ -n "$tmux_target" ] || tmux_target="kingpin:$tid"
-        window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
-        [ -n "$window_id" ] && tmux_target=$window_id
-        if tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
+        # The window is resolved by name first (lib/tmux.sh), so a fleet whose tmux
+        # server died reads as dead instead of healthy: DEAD is a task whose window is
+        # gone, or one whose recorded harness is no longer in the window that carries
+        # its name. WAITING and SILENT still describe a pane that is really there.
+        # Nothing here trusts a raw recorded id, which after a restart may name another
+        # task's window (issue #149).
+        dead=0 window_alive=0
+        if kp_window_find "$d" >/dev/null 2>&1; then
+          window_alive=1
+        fi
+        if [ -n "$suffix" ]; then
+          # An archived row is finished: its window was killed by `kingpin done`, and a
+          # window check on a record that no longer runs would only say "DEAD" for good.
+          dead=0
+        elif [ "$window_alive" -eq 0 ]; then
+          dead=1
+        elif [ -f "$d/harness.pid" ] && ! kp_window_harness_live "$d"; then
+          dead=1
+        fi
+        if [ "$dead" -eq 1 ] && kp_status_is_terminal "$last"; then
+          dead=0
+        fi
+        if [ "$dead" -eq 1 ]; then
+          state="DEAD"
+          [ -n "$suffix" ] || dead_count=$((dead_count + 1))
+        elif [ "$window_alive" -eq 1 ]; then
           if kp_status_is_waiting "$st"; then
             state="WAITING"
           elif kp_status_is_silent "$last"; then
@@ -211,6 +236,7 @@ case "$cmd" in
     # resolves (issue #115); it is not a live record, and --all shows it once,
     # from archive/.
     live_dirs=()
+    dead_count=0
     for d in "$KP_HOME/tasks"/*; do
       kp_task_is_live "$d" || continue
       if [ "$show_all" -eq 0 ] && [ -f "$d/done_cleaned" ]; then continue; fi
@@ -237,6 +263,11 @@ case "$cmd" in
       for d in ${archived_dirs[@]+"${archived_dirs[@]}"}; do
         print_task_row "$d" " (archived)"
       done
+    fi
+    # A fleet whose windows are gone used to read as healthy. Say it plainly, and say
+    # what brings it back, before the supervisor and lock lines.
+    if [ "${dead_count:-0}" -gt 0 ]; then
+      printf 'Fleet: %s live task(s) have no live window; run kingpin restore\n' "$dead_count"
     fi
     # Whether anyone is watching the fleet, and how to start a supervisor when not.
     printf "\n%s\n" "$(kp_supervisor_line "$KP_HOME")"

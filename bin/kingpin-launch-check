@@ -22,6 +22,8 @@ set -euo pipefail
 
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
+# shellcheck source=../lib/tmux.sh
+. "$(dirname "$0")/../lib/tmux.sh"
 # shellcheck source=../lib/portable.sh
 . "$(dirname "$0")/../lib/portable.sh"
 
@@ -75,27 +77,25 @@ age=$((now - since))
 id=$(basename "$task_dir")
 harness=$(kp_env_get "$env_file" HARNESS)
 [ -n "$harness" ] || harness=claude
-tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
-[ -n "$tmux_target" ] || tmux_target="kingpin:$id"
-# The window ID survives rename and move; older task.env files lack it.
-window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
-[ -z "$window_id" ] || tmux_target=$window_id
-
 # A tmux server that cannot be reached says nothing about the worker.
 tmux list-sessions >/dev/null 2>&1 || exit 1
 
-if panes=$(tmux list-panes -t "$tmux_target" -F '#{pane_dead}' 2>/dev/null); then
+# The task's own window, found by name first (lib/tmux.sh): a stale recorded id that now
+# names a foreign window must not be judged as this worker's pane.
+if ! kp_window_find "$task_dir" >/dev/null 2>&1; then
+  cause="exited, tmux window gone"
+elif panes=$(tmux list-panes -t "$KP_WINDOW_ID" -F '#{pane_dead}' 2>/dev/null); then
   [ -n "$panes" ] || exit 1
   if printf '%s\n' "$panes" | grep -qvx 1; then
     # Alive. Only a worker that stopped and has been silent since counts.
     [ -n "$stop" ] || exit 1
-    activity=$(tmux display-message -p -t "$tmux_target" '#{window_activity}' 2>/dev/null || true)
+    activity=$(tmux display-message -p -t "$KP_WINDOW_ID" '#{window_activity}' 2>/dev/null || true)
     [[ $activity =~ ^[0-9]+$ ]] || exit 1
     [ $((now - activity)) -ge "$grace" ] || exit 1
     # The Stop hook fires while background agents still run: a pane that shows a
     # working marker is not dead. The marker list lives in lib/status.sh, shared
     # with the Stop hook and kingpin-wait's `quiet` check.
-    pane_tail=$(tmux capture-pane -pt "$tmux_target" -S -30 2>/dev/null || true)
+    pane_tail=$(tmux capture-pane -pt "$KP_WINDOW_ID" -S -30 2>/dev/null || true)
     if kp_pane_shows_working "$pane_tail" "$harness"; then
       exit 1
     fi

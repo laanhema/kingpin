@@ -4,7 +4,9 @@
 # Usage: kingpin-send <task-id> "<text>"
 #
 # The text is typed literally (send-keys -l), so words like Escape or C-c reach
-# the pane as characters, not as keypresses. Enter follows in a separate call
+# the pane as characters, not as keypresses. The window is resolved by lib/tmux.sh:
+# its own name first, so a send after a tmux server restart reaches the task's own
+# window rather than whichever window inherited the stale recorded id. Enter follows in a separate call
 # after a short pause (KINGPIN_SEND_DELAY seconds, default 0.2), so a long
 # message that a TUI treats as a paste is submitted instead of swallowed.
 set -euo pipefail
@@ -12,6 +14,8 @@ set -euo pipefail
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
+# shellcheck source=../lib/tmux.sh
+. "$(dirname "$0")/../lib/tmux.sh"
 
 usage() {
   cat <<'HELP'
@@ -33,30 +37,12 @@ keys="$*"
 task_dir="$KP_HOME/tasks/$id"
 [ -d "$task_dir" ] || { echo "kingpin-send: task $id not found: $task_dir" >&2; exit 1; }
 
-env_file="$task_dir/task.env"
-tmux_target="kingpin:$id"
-if [ -f "$env_file" ]; then
-  tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
-  [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
-fi
-
-# Prefer the window ID (survives rename and move); task.env files from before
-# it was recorded only have the name target.
-shown_target=$tmux_target
-if [ -f "$env_file" ]; then
-  window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
-  if [ -n "$window_id" ]; then
-    tmux_target=$window_id
-    shown_target="$shown_target ($window_id)"
-  fi
-fi
-
-if ! tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
-  echo "kingpin-send: tmux window $shown_target is not alive" >&2
+if ! kp_window_find "$task_dir"; then
+  echo "kingpin-send: tmux window $KP_WINDOW_LABEL is not alive" >&2
   exit 1
 fi
 
-tmux send-keys -t "$tmux_target" -l -- "$keys"
+tmux send-keys -t "$KP_WINDOW_ID" -l -- "$keys"
 sleep "${KINGPIN_SEND_DELAY:-0.2}"
-tmux send-keys -t "$tmux_target" Enter
-echo "OK: sent to $shown_target"
+tmux send-keys -t "$KP_WINDOW_ID" Enter
+echo "OK: sent to $KP_WINDOW_LABEL"

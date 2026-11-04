@@ -1,0 +1,418 @@
+#!/usr/bin/env bash
+# Bring a live task's window back after the tmux server dies.
+#
+# A tmux server that dies takes every worker window with it. The task records still
+# say what the worker last reported, but nothing is running, and tmux window ids
+# restart at @0, so a reader that trusts a recorded id can reach a stranger's pane.
+# This command recreates or reclaims one window per live task, in the task's own
+# worktree and on its own branch, launches the recorded harness through the same
+# lib/launch.sh a spawn uses, and hands it a resume brief that says where the work
+# stands. It never deletes anything: a task it cannot bring back is refused by name
+# with the reason and the remedy, and its record, worktree and branch stay in place.
+#
+# Usage: kingpin-restore [<task-id> ...] [--harness <name>] [--dry-run] [--force]
+#   (no ids)    restore every live task under $KINGPIN_HOME/tasks
+#   --harness   launch this harness instead of the recorded one, and record it
+#   --dry-run   print the plan and touch nothing
+#   --force     restore a task whose harness still looks alive, or whose lease
+#               cannot be verified; it never overrides a missing worktree, an
+#               archived task or a terminal status line
+#
+# KINGPIN_HOME defaults to ~/.kingpin. Harness command overrides: KINGPIN_CLAUDE,
+# KINGPIN_AGY, KINGPIN_OPENCODE, KINGPIN_PI.
+set -euo pipefail
+
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+# shellcheck source=../lib/status.sh
+. "$KP_ROOT/lib/status.sh"
+# shellcheck source=../lib/tmux.sh
+. "$KP_ROOT/lib/tmux.sh"
+# shellcheck source=../lib/launch.sh
+. "$KP_ROOT/lib/launch.sh"
+# shellcheck source=../lib/exclude.sh
+. "$KP_ROOT/lib/exclude.sh"
+# shellcheck source=../lib/gitdir.sh
+. "$KP_ROOT/lib/gitdir.sh"
+# shellcheck source=../lib/landing.sh
+. "$KP_ROOT/lib/landing.sh"
+# shellcheck source=../lib/mutex.sh
+. "$KP_ROOT/lib/mutex.sh"
+
+die() { echo "kingpin-restore: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'HELP'
+usage: kingpin-restore [<task-id> ...] [--harness <name>] [--dry-run] [--force]
+
+  (no ids)   restore every live task under $KINGPIN_HOME/tasks
+  --harness  harness to launch instead of the recorded one (recorded afterwards)
+  --dry-run  print what would happen, and touch nothing
+  --force    restore a task whose harness still looks alive, or whose lease cannot
+             be verified; a missing worktree, an archived task and a terminal
+             status stay refused
+HELP
+}
+
+harness_cli='' dry_run=0 force=0
+ids=()
+while [ $# -gt 0 ]; do
+  case $1 in
+    -h|--help) usage; exit 0 ;;
+    --harness)
+      [ $# -ge 2 ] || { echo "kingpin-restore: --harness needs a name" >&2; exit 2; }
+      harness_cli=$2
+      shift 2
+      ;;
+    --dry-run) dry_run=1; shift ;;
+    --force) force=1; shift ;;
+    -*) echo "kingpin-restore: unknown argument: $1" >&2; usage >&2; exit 2 ;;
+    *)
+      [[ $1 =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "kingpin-restore: invalid task id: $1" >&2; exit 2; }
+      ids+=("$1")
+      shift
+      ;;
+  esac
+done
+case ${harness_cli:-none} in
+  none|claude|agy|opencode|pi) ;;
+  *) echo "kingpin-restore: --harness must be claude, agy, opencode, or pi: $harness_cli" >&2; exit 2 ;;
+esac
+
+# One restore at a time: two operators, or one operator and a retry, must never both
+# start a harness for the same task. A dry run takes no lock because it writes nothing.
+mutex="$KP_HOME/locks/restore.mutex"
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
+release_restore_mutex() { kp_mutex_release "$mutex"; }
+if [ "$dry_run" -eq 0 ]; then
+  if ! kp_mutex_acquire "$mutex"; then
+    die "another restore is running (pid ${kp_mutex_owner:-unknown})"
+  fi
+  trap release_restore_mutex EXIT
+fi
+
+if [ ${#ids[@]} -eq 0 ]; then
+  for d in "$KP_HOME"/tasks/*; do
+    kp_task_is_live "$d" || continue
+    [ -f "$d/task.env" ] || continue
+    ids+=("$(basename "$d")")
+  done
+  if [ ${#ids[@]} -gt 0 ]; then
+    # Stable output: the same fleet restores in the same order on every run.
+    sorted=()
+    while IFS= read -r line; do
+      sorted+=("$line")
+    done < <(printf '%s\n' "${ids[@]}" | LC_ALL=C sort)
+    ids=("${sorted[@]}")
+  fi
+fi
+
+restored=0 live=0 refused=0 would=0
+refuse() {
+  printf 'kingpin-restore: refused %s: %s\n' "$1" "$2" >&2
+  refused=$((refused + 1))
+}
+
+# set_env_key <env-file> <KEY> <value>: rewrite one KEY=value line, adding it when the
+# record has none (bin/kingpin-rename:55-58 shape: a temp file in the same folder).
+set_env_key() {
+  local env_file=$1 key=$2 value=$3 cur tmp
+  cur=$(kp_env_get "$env_file" "$key")
+  [ "$cur" = "$value" ] && return 0
+  tmp="$env_file.set.$$"
+  if grep -q "^$key=" "$env_file"; then
+    sed "s|^$key=.*|$key=$value|" "$env_file" > "$tmp" \
+      || { rm -f "$tmp"; return 1; }
+  else
+    { cat "$env_file" && printf '%s=%s\n' "$key" "$value"; } > "$tmp" \
+      || { rm -f "$tmp"; return 1; }
+  fi
+  mv -f "$tmp" "$env_file" || { rm -f "$tmp"; return 1; }
+  return 0
+}
+
+# next_step <task-dir> <task-id> <project> <last-status-line>
+# The one instruction the resumed worker needs, keyed by its last *worker* event (notes
+# included never decide it). The landing-lane row wins: a task whose landing was already
+# sent must not send another one.
+next_step() {
+  local task_dir=$1 id=$2 project=$3 last=$4 holder=''
+  if [ -f "$task_dir/landing_sent" ]; then
+    holder=$(kp_landing_holder "$KP_HOME" "$project")
+  fi
+  if [ -n "$holder" ] && [ "$holder" = "$id" ]; then
+    printf '%s\n' "the landing was already sent when the tmux server died: check whether the merge happened, report merged: pr=<url> if it did, otherwise say what is left, and never re-run kingpin land"
+    return 0
+  fi
+  case $last in
+    ''|issue:*)
+      printf '%s\n' "read $task_dir/prompt.txt and continue the job; report as the preamble says"
+      ;;
+    ready:*)
+      printf 'the review stands: the dossier is %s/report.html, do not land, wait for the operator%s next message\n' \
+        "$task_dir" "'s"
+      ;;
+    fixed:*)
+      printf '%s\n' "the fix pass is done; the landing continues, so check the PR state and report merged: pr=<url> once it merged"
+      ;;
+    needs-input:*)
+      printf 'an open question is in %s/question.md; wait for the answer, do not ask again\n' "$task_dir"
+      ;;
+    waiting:*)
+      local path=${last##* }
+      case $path in
+        /*) [ -f "$path" ] || path="$task_dir/question.md" ;;
+        *) path="$task_dir/question.md" ;;
+      esac
+      printf 'an open question is in %s; wait for the answer, do not ask again\n' "$path"
+      ;;
+    *)
+      printf 'read %s/prompt.txt and continue the job from its last status line; report as the preamble says\n' "$task_dir"
+      ;;
+  esac
+}
+
+# write_resume_prompt <task-dir> <id> <project> <worktree> <branch> <mode> <harness> <last> <next>
+# The harness restarts with no conversational memory, so the brief repeats the task's
+# identity, where the work stands, what to do next, and the house rules that still hold.
+write_resume_prompt() {
+  local task_dir=$1 id=$2 project=$3 worktree=$4 branch=$5 mode=$6 harness=$7 last=$8 next=$9
+  local status_file="$task_dir/status"
+  {
+    printf '# Kingpin resume brief\n\n'
+    printf 'The tmux server died and your window went with it. Kingpin restored the window\n'
+    printf 'in the same worktree, on the same branch, with the same job. You have no memory\n'
+    printf 'of the earlier session: this brief and the worker preamble are the context you get.\n\n'
+    printf -- '- Task id: %s\n' "$id"
+    printf -- '- Project: %s\n' "$project"
+    printf -- '- Worktree: %s\n' "$worktree"
+    printf -- '- Branch: %s\n' "$branch"
+    printf -- '- Mode: %s\n' "$mode"
+    printf -- '- Harness: %s\n' "$harness"
+    printf -- '- Status file: %s\n' "$status_file"
+    printf -- '- Last status line: %s\n' "${last:-none}"
+    printf -- '- Next step: %s\n\n' "$next"
+    printf 'The original job prompt is still in %s/prompt.txt. Read it first, then check what\n' "$task_dir"
+    printf 'is already on disk before you act: the work may be part-finished.\n\n'
+    printf 'House rules that still hold:\n'
+    printf -- '- Report every event as one literal status line appended to %s, the same protocol\n' "$status_file"
+    printf '  the preamble describes. ready:, fixed: and merged: keep their fields, with no flavor.\n'
+    printf -- '- Questions go up through needs-input: after the whole question is written to\n'
+    printf '  %s/question.md. Ask through that file only.\n' "$task_dir"
+    printf -- '- Never run kingpin spawn, lock, land, done, listen or send.\n'
+    printf -- '- The record stays clean: commits, PRs, issues, code and review reports carry no rank talk.\n'
+  } > "$task_dir/resume-prompt.txt" \
+    || { echo "cannot write $task_dir/resume-prompt.txt" >&2; return 1; }
+  return 0
+}
+
+for id in ${ids[@]+"${ids[@]}"}; do
+  task_dir="$KP_HOME/tasks/$id"
+  # The dossier link `kingpin done` leaves is not a live task: name the archive.
+  if archived=$(kp_task_archive_dir "$KP_HOME" "$id"); then
+    refuse "$id" "finished and archived at $archived"
+    continue
+  fi
+  [ -d "$task_dir" ] || { refuse "$id" "not found"; continue; }
+  env_file="$task_dir/task.env"
+  [ -f "$env_file" ] || { refuse "$id" "task.env missing in $task_dir"; continue; }
+
+  tid=$(kp_env_get "$env_file" TASK_ID)
+  project=$(kp_env_get "$env_file" PROJECT)
+  worktree=$(kp_env_get "$env_file" WORKTREE)
+  tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
+  [ -n "$tid" ] || { refuse "$id" "TASK_ID missing in $env_file"; continue; }
+  [ -n "$project" ] || { refuse "$id" "PROJECT missing in $env_file"; continue; }
+  [ -n "$worktree" ] || { refuse "$id" "WORKTREE missing in $env_file"; continue; }
+  [ -n "$tmux_target" ] || { refuse "$id" "TMUX_TARGET missing in $env_file"; continue; }
+
+  if [ "$(kp_env_get "$env_file" NO_LEASE)" = "1" ]; then
+    refuse "$id" "curator task; run kingpin curate"
+    continue
+  fi
+
+  # The last *worker* event decides whether the task is still restorable. A terminal
+  # line means the job is over: there is nothing to resume, and each refusal names the
+  # command that finishes or replaces the task.
+  last=$(kp_status_last "$task_dir/status")
+  case $last in
+    merged:*) refuse "$id" "$last; run kingpin done $id"; continue ;;
+    cleanup-refused:*) refuse "$id" "$last; run kingpin done $id --force, or fix the cause"; continue ;;
+    failed:*) refuse "$id" "$last; spawn a new task, or run kingpin done $id"; continue ;;
+  esac
+
+  # A harness that is really in its window means nothing needs restoring; --force is
+  # for a driver that knows better (a wedged pane, for example).
+  if kp_window_harness_live "$task_dir"; then
+    if [ "$force" -eq 0 ]; then
+      printf 'OK: %s is already live (%s)\n' "$id" "$KP_WINDOW_LABEL"
+      live=$((live + 1))
+      continue
+    fi
+    printf 'kingpin-restore: %s still looks alive (%s); restoring it again because of --force\n' \
+      "$id" "$KP_WINDOW_LABEL" >&2
+  fi
+
+  [ -d "$worktree" ] || { refuse "$id" "worktree missing: $worktree"; continue; }
+  git_dir=$(kp_git_dir "$worktree") || { refuse "$id" "cannot read the git directory of $worktree"; continue; }
+  common_dir=$(kp_git_common_dir "$worktree") || { refuse "$id" "cannot read the common git directory of $worktree"; continue; }
+  [ "$git_dir" != "$common_dir" ] || { refuse "$id" "$worktree is not a linked worktree"; continue; }
+  # The worktree's current branch is what the worker runs on (kingpin-done reads it the
+  # same way): a worker may have moved branches since task.env was written.
+  branch=$(git -C "$worktree" symbolic-ref --short -q HEAD 2>/dev/null || true)
+  [ -n "$branch" ] || { refuse "$id" "worktree $worktree has a detached HEAD; check out the task's branch first"; continue; }
+
+  # The lease is what keeps a slot from being handed to another task while this worker
+  # runs. It is advisory here: an unreadable or free lease refuses unless --force, so a
+  # driver can still bring back work whose pool state it has already checked.
+  project_path=$(kp_env_get "$env_file" PROJECT_PATH)
+  lease='unreadable'
+  lease_raw=''
+  if [ -n "$project_path" ] && [ -d "$project_path" ]; then
+    if lease_raw=$(cd "$project_path" && treehouse status --json 2>&1); then
+      lease=$(printf '%s\n' "$lease_raw" | node -e '
+        const chunks = [];
+        process.stdin.on("data", (d) => chunks.push(d)).on("end", () => {
+          const text = chunks.join("");
+          const want = process.argv[1];
+          const norm = (p) => {
+            try { return require("fs").realpathSync(p); } catch { return require("path").resolve(p); }
+          };
+          let rows = null;
+          try { rows = JSON.parse(text); } catch {}
+          if (!Array.isArray(rows)) {
+            for (const line of text.split("\n")) {
+              const t = line.trim();
+              if (!t.startsWith("[")) continue;
+              try { const r = JSON.parse(t); if (Array.isArray(r)) { rows = r; break; } } catch {}
+            }
+          }
+          if (!Array.isArray(rows)) { console.log("unreadable"); return; }
+          const target = norm(want);
+          const hit = rows.find((r) => r && typeof r.path === "string" && norm(r.path) === target);
+          if (!hit) { console.log("missing"); return; }
+          console.log(hit.status === "leased" ? "leased" : "available");
+        });
+      ' "$worktree" 2>/dev/null || echo unreadable)
+    fi
+  fi
+  if [ "$lease" != "leased" ]; then
+    case $lease in
+      available) lease_reason="worktree $worktree is no longer leased (treehouse reports the slot available)" ;;
+      missing) lease_reason="worktree $worktree is not in treehouse's pool listing" ;;
+      *) lease_reason="cannot verify the lease on $worktree (treehouse status --json is unavailable or unreadable)" ;;
+    esac
+    if [ -z "$project_path" ] || [ ! -d "$project_path" ]; then
+      lease_reason="PROJECT_PATH is missing or not a directory in $env_file"
+    fi
+    if [ "$force" -eq 0 ]; then
+      refuse "$id" "$lease_reason; run treehouse lease for this worktree if the slot is still yours, or pass --force"
+      continue
+    fi
+    printf 'kingpin-restore: %s continues without a verified lease (%s) because of --force\n' \
+      "$id" "$lease_reason" >&2
+  fi
+
+  harness=${harness_cli:-$(kp_env_get "$env_file" HARNESS)}
+  [ -n "$harness" ] || harness=claude
+  case $harness in
+    claude|agy|opencode|pi) ;;
+    *) refuse "$id" "unsupported harness in $env_file: $harness (must be claude, agy, opencode, or pi)"; continue ;;
+  esac
+  harness_cmd=$(kp_harness_command "$harness") || { refuse "$id" "unsupported harness: $harness"; continue; }
+  if ! command -v "${harness_cmd%% *}" >/dev/null 2>&1; then
+    refuse "$id" "missing command: ${harness_cmd%% *}"
+    continue
+  fi
+
+  IFS=$'\t' read -r session name < <(kp_window_parts "$env_file")
+  [ -n "$session" ] || session=kingpin
+  [ -n "$name" ] || name=$id
+  next=$(next_step "$task_dir" "$id" "$project" "$last")
+
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'would restore %s (%s) in %s:%s on %s; last status: %s; next: %s\n' \
+      "$id" "$harness" "$session" "$name" "$branch" "${last:-none}" "$next"
+    would=$((would + 1))
+    continue
+  fi
+
+  # Past this point the command writes: the resume brief, the preamble, the launch
+  # script, the worktree exclude and the window. Everything above refused first.
+  if ! write_resume_prompt "$task_dir" "$id" "$project" "$worktree" "$branch" \
+       "$(kp_env_get "$env_file" MODE)" "$harness" "$last" "$next"; then
+    refuse "$id" "cannot write the resume brief"
+    continue
+  fi
+  if ! kp_worker_preamble "$task_dir" "$worktree" "$(kp_env_get "$env_file" MODE)"; then
+    refuse "$id" "cannot write the worker preamble"
+    continue
+  fi
+  if ! kp_harness_launch_script "$task_dir" "$worktree" "$harness" "$task_dir/resume-prompt.txt"; then
+    refuse "$id" "cannot prepare the $harness launch (reason above)"
+    continue
+  fi
+  # A slot whose exclude pointer was lost would start the worker on a dirty tree: the
+  # paths the original launch recorded are hidden again before the harness starts.
+  injected=()
+  if [ -s "$task_dir/injected" ]; then
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      injected+=("$rel")
+    done < "$task_dir/injected"
+  fi
+  if [ "${#injected[@]}" -gt 0 ]; then
+    if ! kp_exclude_write "$worktree" "$task_dir" "$id" "$harness" "${injected[@]}"; then
+      refuse "$id" "cannot hide the harness files this launch writes in $worktree"
+      continue
+    fi
+  fi
+  if ! "$KP_ROOT/bin/kingpin-scope" check --harness "$harness" --worktree "$worktree" \
+       --preamble "$task_dir/preamble.md"; then
+    refuse "$id" "refusing to launch a $harness worker: its instruction context is unsafe (files named above)"
+    continue
+  fi
+
+  # The recorded session died with the server; recreate it under the same name, as a
+  # spawn's resolve_tmux_session does for `kingpin`, so the record needs no other change.
+  if ! tmux has-session -t "$session" 2>/dev/null; then
+    if ! tmux new-session -d -s "$session" -n home 2>/dev/null; then
+      refuse "$id" "cannot create the tmux session $session"
+      continue
+    fi
+  fi
+
+  # The marker kingpin-wait reads: a task with a fresh `launching` file is not reported
+  # exited between the window creation and the id record.
+  : > "$task_dir/launching"
+  if ! new_id=$(kp_window_start "$task_dir" "$session" "$name" "$worktree" "$task_dir/launch.sh"); then
+    rm -f "$task_dir/launching"
+    refuse "$id" "cannot start the window in $session"
+    continue
+  fi
+  if ! kp_window_record_id "$task_dir" "$new_id"; then
+    rm -f "$task_dir/launching"
+    refuse "$id" "the window exists ($new_id) but its id could not be recorded"
+    continue
+  fi
+  rm -f "$task_dir/launching"
+  if [ -n "$harness_cli" ] && ! set_env_key "$env_file" HARNESS "$harness"; then
+    refuse "$id" "cannot record HARNESS=$harness in $env_file"
+    continue
+  fi
+
+  printf 'OK: restored %s (%s) in %s:%s (%s) on %s; last status: %s; next: %s\n' \
+    "$id" "$harness" "$session" "$name" "$new_id" "$branch" "${last:-none}" "$next"
+  restored=$((restored + 1))
+done
+
+if [ "$dry_run" -eq 1 ]; then
+  printf 'OK: would restore %d, %d already live\n' "$would" "$live"
+else
+  printf 'OK: %d restored, %d already live\n' "$restored" "$live"
+fi
+if [ "$refused" -gt 0 ]; then
+  printf 'kingpin-restore: refused %d task(s)\n' "$refused" >&2
+  exit 1
+fi
+exit 0

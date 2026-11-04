@@ -386,7 +386,9 @@ if [ "$DRY_RUN" -eq 0 ]; then
     if ! kp_curate_due "$KP_HOME"; then
       exit 0
     fi
-    reconcile_curator_task
+    # Settle the shared window name before reconciling: reconcile closes a terminal
+    # record through `kingpin done curator`, and done resolves the window by name, so
+    # reconciling first would take down a live run that already owns kingpin:curator.
     case "$(kp_curate_window_state)" in
       alive)
         kp_curate_stamp "$KP_HOME" || true
@@ -399,6 +401,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
         ;;
       none) : ;;
     esac
+    reconcile_curator_task
     if [ "$(kp_curate_pending_count "$KP_HOME")" -lt "$MIN_PENDING" ]; then
       exit 0
     fi
@@ -444,22 +447,11 @@ if [ "$DRY_RUN" -eq 0 ]; then
     fi
   fi
 
-  reconcile_curator_task
-
-  # A manual run would replace the record, the status and the PR URL of a curator
-  # nobody has landed yet: refuse instead of truncating them. A terminal record
-  # was reconciled just above, and a record with no status at all is a launch
-  # that died before its first line: its window is reaped below and the run goes
-  # ahead, so only a real waiting state refuses.
-  if [ "$AUTO" -eq 0 ] && hold=$(curator_record_hold); then
-    last_line=${hold%$'\n'*}
-    if [ "$last_line" != "none" ]; then
-      die "task curator is still live (last status: $last_line; pr=${hold##*$'\n'}); land or close its PR first"
-    fi
-  fi
-
-  # The automated run already reaped its window and checked for a live record.
-  # A manual run keeps its own refusal and reap rules.
+  # The window named kingpin:curator is shared by every run, so settle it before
+  # reconciling a stale record: reconcile closes a terminal record through
+  # `kingpin done curator`, and done resolves the window by name now, which would
+  # take down a live run that already owns the name. A live window refuses; a dead
+  # pane is reaped first so the reconcile has nothing left to close.
   if [ "$AUTO" -eq 0 ]; then
     case "$(kp_curate_window_state)" in
       alive)
@@ -471,6 +463,20 @@ if [ "$DRY_RUN" -eq 0 ]; then
         ;;
       none) : ;;
     esac
+  fi
+
+  reconcile_curator_task
+
+  # A manual run would replace the record, the status and the PR URL of a curator
+  # nobody has landed yet: refuse instead of truncating them. A terminal record
+  # was reconciled just above, and a record with no status at all is a launch
+  # that died before its first line: its dead window was reaped above and the run
+  # goes ahead, so only a real waiting state refuses.
+  if [ "$AUTO" -eq 0 ] && hold=$(curator_record_hold); then
+    last_line=${hold%$'\n'*}
+    if [ "$last_line" != "none" ]; then
+      die "task curator is still live (last status: $last_line; pr=${hold##*$'\n'}); land or close its PR first"
+    fi
   fi
 
   # claude stops at the folder-trust dialog in a directory it has not been trusted

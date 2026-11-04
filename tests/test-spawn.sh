@@ -57,15 +57,19 @@ echo "$t15_wait" | grep -q "^t15-move exited" && fail "t15: kingpin-wait reporte
 ! tmux list-windows -a -F '#{window_id}' | grep -qx "$t15_wid" && pass "t15: kingpin-done closed the renamed+moved window" || fail "t15: kingpin-done left the renamed+moved window alive"
 tmux kill-session -t kp-t15-other 2>/dev/null || true
 
-# Recorded window gone: reads as exited, even though a window with the old name exists again
+# A window that comes back under the task's name is the task's window (resolution is
+# name-first), so it is not `exited`; that is the DEAD state kingpin list reports.
 t15g_wid=$(mk_t15 t15-gone)
 tmux kill-window -t "$t15g_wid"
 tmux new-window -d -t kingpin: -n t15-gone cat
 t15g_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
-echo "$t15g_out" | grep -q "^t15-gone exited" && pass "t15: task whose window ID is gone reads as exited" || fail "t15: gone window not reported as exited (got: $t15g_out)"
+echo "$t15g_out" | grep -q "^t15-gone exited" && fail "t15: a resurrected window with the task's name was reported exited" || pass "t15: a resurrected window with the task's name is not exited"
+tmux kill-window -t kingpin:t15-gone 2>/dev/null || true
+# With no window under the name, the task reads as exited.
+t15g_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
+echo "$t15g_out" | grep -q "^t15-gone exited" && pass "t15: task whose window is gone reads as exited" || fail "t15: gone window not reported as exited (got: $t15g_out)"
 "$KP_BIN/kingpin" ack t15-gone
 [ -f "$KINGPIN_HOME/tasks/t15-gone/seen_exited" ] && pass "t15: kingpin ack marks the gone window exited" || fail "t15: seen_exited missing for gone window"
-tmux kill-window -t kingpin:t15-gone 2>/dev/null || true
 
 # Legacy task.env with only TMUX_TARGET still works through the name
 t15l_wid=$(mk_t15 t15-legacy)

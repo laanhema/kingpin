@@ -35,6 +35,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-done.sh` | `done`: refused cleanup, archive, slot guard, branch cleanup, single-flight, default-branch resolution |
 | `test-archive-link.sh` | an archived task's dossier link: the page keeps resolving, and `list`/`wait`/`watch`/`land`/`listen`/`spawn`/`ack` treat the link as finished |
 | `test-listen.sh` | `listen`: dossier opening, live listener, prompt routing |
+| `test-restore.sh` | `restore` after a tmux server restart, the `DEAD` list state, and the shared window resolver |
 | `test-send-peek.sh` | `send` and `peek` |
 | `test-spawn.sh` | `spawn`: window ID tracking, descriptive slugs, pinned window names |
 | `test-sync.sh` | `sync` |

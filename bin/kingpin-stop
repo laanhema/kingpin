@@ -32,6 +32,8 @@ set -euo pipefail
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 # shellcheck source=../lib/status.sh
 . "$KP_ROOT/lib/status.sh"
+# shellcheck source=../lib/tmux.sh
+. "$KP_ROOT/lib/tmux.sh"
 
 task_dir=${KINGPIN_TASK_DIR:-}
 if [ -z "$task_dir" ] || [ ! -d "$task_dir" ]; then
@@ -53,11 +55,7 @@ warn() { echo "kingpin-stop: $*" >&2; }
 pane_is_working() {
   local env_file="$task_dir/task.env"
   [ -f "$env_file" ] || return 1
-  local target window_id harness pane_tail
-  target=$(kp_env_get "$env_file" TMUX_TARGET)
-  window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
-  [ -n "$window_id" ] && target=$window_id
-  [ -n "$target" ] || target="kingpin:$(basename "$task_dir")"
+  local harness pane_tail
   harness=$(kp_env_get "$env_file" HARNESS)
   [ -n "$harness" ] || harness=claude
   # Pi is never "still working" here. `agent_settled` is Pi's final idle signal (it
@@ -68,7 +66,10 @@ pane_is_working() {
   # shared marker list still covers pi for kingpin-wait and kingpin-launch-check,
   # where the pane is live.
   if [ "$harness" = pi ]; then return 1; fi
-  pane_tail=$(tmux capture-pane -pt "$target" -S -30 2>/dev/null) || return 1
+  # The task's own window, by name first (lib/tmux.sh). A pane that cannot be found is
+  # not "working", exactly as before.
+  kp_window_find "$task_dir" >/dev/null 2>&1 || return 1
+  pane_tail=$(tmux capture-pane -pt "$KP_WINDOW_ID" -S -30 2>/dev/null) || return 1
   kp_pane_shows_working "$pane_tail" "$harness"
 }
 

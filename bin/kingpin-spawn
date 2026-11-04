@@ -35,10 +35,10 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_ROOT/lib/exclude.sh"
 # shellcheck source=../lib/gitdir.sh
 . "$KP_ROOT/lib/gitdir.sh"
-CLAUDE_CMD=${KINGPIN_CLAUDE:-claude}
-AGY_CMD=${KINGPIN_AGY:-agy}
-OPENCODE_CMD=${KINGPIN_OPENCODE:-opencode}
-PI_CMD=${KINGPIN_PI:-pi}
+# shellcheck source=../lib/tmux.sh
+. "$KP_ROOT/lib/tmux.sh"
+# shellcheck source=../lib/launch.sh
+. "$KP_ROOT/lib/launch.sh"
 GH_CMD=${KINGPIN_GH:-gh}
 # A hung gh call must degrade to the kp-<n> fallback, not stall the spawn.
 GH_TIMEOUT=; ! command -v timeout >/dev/null || GH_TIMEOUT="timeout 10"
@@ -105,6 +105,10 @@ PROJECT_PATH='' SETUP_CMD='' HARNESS=''
 PI_PROVIDER='' PI_MODEL=''
 # shellcheck source=/dev/null
 . "$conf"
+# lib/launch.sh reads the pi keys under the names documented in its contract; the
+# project env spells them PI_PROVIDER and PI_MODEL.
+KP_PI_PROVIDER=$PI_PROVIDER
+KP_PI_MODEL=$PI_MODEL
 [ -n "$PROJECT_PATH" ] && git -C "$PROJECT_PATH" rev-parse --git-dir >/dev/null 2>&1 \
   || die "PROJECT_PATH in $conf is not a git clone: $PROJECT_PATH"
 
@@ -118,12 +122,8 @@ case $harness in
   *) die "unsupported harness: $harness (must be claude, agy, opencode, or pi)" ;;
 esac
 
-case $harness in
-  claude) harness_bin=${CLAUDE_CMD%% *} ;;
-  agy) harness_bin=${AGY_CMD%% *} ;;
-  opencode) harness_bin=${OPENCODE_CMD%% *} ;;
-  pi) harness_bin=${PI_CMD%% *} ;;
-esac
+harness_cmd=$(kp_harness_command "$harness") || die "unsupported harness: $harness (must be claude, agy, opencode, or pi)"
+harness_bin=${harness_cmd%% *}
 
 for tool in git tmux treehouse node "$harness_bin"; do
   command -v "$tool" >/dev/null || die "missing command: $tool"
@@ -279,15 +279,9 @@ else
 fi
 printf '%s\n' "$prompt" > "$task_dir/prompt.txt"
 
-sed -e "s|{{TASK_ID}}|$id|g" -e "s|{{TASK_DIR}}|$task_dir|g" -e "s|{{MODE}}|$mode|g" -e "s|{{WORKTREE}}|$worktree|g" -e "s|{{KP_ROOT}}|$KP_ROOT|g" \
-  "$KP_ROOT/worker/preamble.md" > "$task_dir/preamble.md"
-# Pi ships no subagent tool (spike.md, Check 2): a delegating skill's steps run
-# inline, and /do's no-subagent branch otherwise stops to ask whether to continue.
-# The sentence lives in the pi preamble, not the job prompt, so the prompt can start
-# with the skill command Pi needs to see (issue #93 review, M2).
-if [ "$harness" = pi ]; then
-  printf '%s\n' '' 'This harness has no subagent tool: run every step of the skill inline in this session, and continue rather than asking whether to continue without subagents.' >> "$task_dir/preamble.md"
-fi
+# The preamble and the launch script are written by lib/launch.sh, below, once task.env
+# exists: kp_worker_preamble reads the harness from the record (the pi arm has one extra
+# sentence) and kp_harness_launch_script records what it injected into the worktree.
 : > "$task_dir/status"
 
 target_session=$(resolve_tmux_session)
@@ -314,180 +308,21 @@ TMUX_TARGET=$target_session:$id
 CREATED=$created
 EOF
 
-case "$harness" in
-  claude)
-    node "$KP_ROOT/lib/claude-trust.mjs" "$worktree" >/dev/null
-    cat > "$task_dir/launch.sh" <<EOF
-#!/usr/bin/env bash
-export KINGPIN_TASK_DIR='$task_dir'
-export KINGPIN_WORKTREE='$worktree'
-export KINGPIN_ROOT='$KP_ROOT'
-exec $CLAUDE_CMD --append-system-prompt-file '$task_dir/preamble.md' --settings '$KP_ROOT/worker/hooks.json' "\$(cat '$task_dir/prompt.txt')"
-EOF
-    ;;
-  agy)
-    node "$KP_ROOT/lib/agy-trust.mjs" "$worktree" >/dev/null
-    mkdir -p "$worktree/.agents/rules"
-    # A rules file agy does not recognize is skipped without a word, so the preamble
-    # carries the trigger frontmatter that makes agy load it (verified with agy 1.4.12).
-    {
-      printf -- '---\ntrigger: always_on\ndescription: Kingpin worker preamble\n---\n\n'
-      cat "$task_dir/preamble.md"
-    } > "$worktree/.agents/rules/kingpin.md"
-    cat > "$worktree/.agents/hooks.json" << 'EOF_HOOKS'
-{
-  "kingpin": {
-    "Stop": [
-      {
-        "type": "command",
-        "command": "[ -n \"${KINGPIN_TASK_DIR:-}\" ] || exit 0; if [ -x \"${KINGPIN_ROOT:-/nonexistent}/bin/kingpin-stop\" ]; then \"$KINGPIN_ROOT/bin/kingpin-stop\" || true; else echo \"kingpin: stop hook unavailable (KINGPIN_ROOT unset or kingpin-stop missing); the worker's outcome is not recorded\" >&2; fi; exit 0",
-        "timeout": 30
-      }
-    ]
-  }
-}
-EOF_HOOKS
-    task_exclude_paths+=('.agents/rules/kingpin.md' '.agents/hooks.json')
-    cat > "$task_dir/launch.sh" <<EOF
-#!/usr/bin/env bash
-export KINGPIN_TASK_DIR='$task_dir'
-export KINGPIN_ROOT='$KP_ROOT'
-exec $AGY_CMD --prompt-interactive "\$(cat '$task_dir/prompt.txt')" --dangerously-skip-permissions
-EOF
-    ;;
-  opencode)
-    mkdir -p "$worktree/.opencode/plugins"
-    # OpenCode V2 reads opencode.json(c) (or .opencode/opencode.json), not
-    # .opencode/config.json, which it ignores without a word (verified with
-    # opencode 2.2.5: the old file left the worker with no preamble at all).
-    # That path is also a project's normal config, holding its own instructions and
-    # permissions, so it is merged into, never truncated. A file the project tracks
-    # cannot be hidden by .git/info/exclude: rewriting it would start the worker on a
-    # dirty tree and a worker could commit the change, so the spawn refuses instead.
-    if git -C "$worktree" ls-files --error-unmatch .opencode/opencode.json >/dev/null 2>&1; then
-      die "refusing to launch: $worktree/.opencode/opencode.json is tracked by the project; Kingpin must add the preamble to its instructions, so untrack that file (add it to .gitignore) and respawn"
-    fi
-    # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
-    node -e '
-      const fs = require("fs");
-      const [file, entry] = [process.argv[1], process.argv[2]];
-      let cfg = {};
-      if (fs.existsSync(file)) {
-        try { cfg = JSON.parse(fs.readFileSync(file, "utf8")); }
-        catch (e) { console.error(`kingpin-spawn: ${file} is not valid JSON; fix it before spawning`); process.exit(1); }
-      }
-      if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
-        console.error(`kingpin-spawn: ${file} must contain a JSON object`); process.exit(1);
-      }
-      if (cfg.instructions !== undefined && !Array.isArray(cfg.instructions)) {
-        console.error(`kingpin-spawn: "instructions" in ${file} must be a JSON array`); process.exit(1);
-      }
-      cfg.$schema = cfg.$schema || "https://opencode.ai/config.json";
-      cfg.instructions = (cfg.instructions || []).filter((e) => e !== entry).concat(entry);
-      const tmp = `${file}.tmp.${process.pid}`;
-      fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + "\n");
-      fs.renameSync(tmp, file);
-    ' "$worktree/.opencode/opencode.json" "$task_dir/preamble.md"
-    cat > "$worktree/.opencode/plugins/package.json" << 'EOF_OC_PKG'
-{ "private": true, "type": "module" }
-EOF_OC_PKG
-    cat > "$worktree/.opencode/plugins/kingpin-stop.js" << 'EOF_OC_PLUG'
-import { execFileSync } from "node:child_process";
-import path from "node:path";
+# The preamble and the launch script come from lib/launch.sh, so a restored worker gets
+# exactly what a freshly spawned one does, and one writer owns `<task-dir>/injected`.
+kp_worker_preamble "$task_dir" "$worktree" "$mode" \
+  || die "cannot write the worker preamble in $task_dir"
+kp_harness_launch_script "$task_dir" "$worktree" "$harness" "$task_dir/prompt.txt" \
+  || die "could not prepare the $harness launch in $worktree (reason above)"
 
-// The one Stop hook: bin/kingpin-stop records the turn end and appends the missing
-// outcome (issue #102). A failed hook warns here and never blocks the stop.
-const recordStop = () => {
-  const taskDir = process.env.KINGPIN_TASK_DIR;
-  if (!taskDir) return;
-  const root = process.env.KINGPIN_ROOT;
-  if (!root) {
-    console.error("kingpin: stop hook unavailable (KINGPIN_ROOT unset); the worker's outcome is not recorded");
-    return;
-  }
-  try {
-    execFileSync(path.join(root, "bin", "kingpin-stop"), [], { stdio: ["ignore", "ignore", "inherit"] });
-  } catch (err) {
-    console.error(`kingpin: stop hook failed: ${err && err.message ? err.message : err}`);
-  }
-};
-
-const setupEventSubscription = (ctx, handler) => {
-  if (!ctx || !ctx.event || !ctx.event.subscribe) return false;
-  const controller = new AbortController();
-  void (async () => {
-    try {
-      const stream = await ctx.event.subscribe({ signal: controller.signal, onActivity() {} });
-      for await (const event of stream) await handler(event);
-    } catch {}
-  })();
-  return true;
-};
-
-const makeHandler = () => {
-  return async (event) => {
-    const type = event && (event.type || event.name) || "";
-    if (
-      type === "session.execution.succeeded" ||
-      type === "session.execution.interrupted" ||
-      type === "session.execution.failed" ||
-      type === "session.idle"
-    ) {
-      recordStop();
-    }
-  };
-};
-
-export const KingpinStop = async () => {
-  const handleEvent = makeHandler();
-  return {
-    event: async ({ event }) => handleEvent(event),
-  };
-};
-
-export default {
-  id: "kingpin.stop",
-  server: KingpinStop,
-  setup(ctx) {
-    setupEventSubscription(ctx, makeHandler());
-  },
-};
-EOF_OC_PLUG
-    task_exclude_paths+=('.opencode/opencode.json' '.opencode/plugins/package.json' '.opencode/plugins/kingpin-stop.js')
-    cat > "$task_dir/launch.sh" <<EOF
-#!/usr/bin/env bash
-export KINGPIN_TASK_DIR='$task_dir'
-export KINGPIN_ROOT='$KP_ROOT'
-exec $OPENCODE_CMD --standalone --auto --prompt "\$(cat '$task_dir/prompt.txt')"
-EOF
-    ;;
-  pi)
-    # Pi writes nothing into the worktree (Decision 3): the preamble arrives through
-    # --append-system-prompt and the extension loads from this checkout by absolute
-    # path, so there is no injected path and no task exclude file. The extension
-    # records the turn end and answers the project-trust prompt for this worktree.
-    [ -f "$KP_ROOT/worker/pi/kingpin-harness.ts" ] \
-      || die "missing harness extension: $KP_ROOT/worker/pi/kingpin-harness.ts"
-    pi_args=(--append-system-prompt "$task_dir/preamble.md" -e "$KP_ROOT/worker/pi/kingpin-harness.ts")
-    # Each flag is passed only when its own project key is set: a vendor `/login`
-    # host keeps Pi's default model, and an inconsistent pair fails in the pane
-    # rather than at spawn (no auth preflight here; `kingpin scope doctor` is that job).
-    [ -z "$PI_PROVIDER" ] || pi_args+=(--provider "$PI_PROVIDER")
-    [ -z "$PI_MODEL" ] || pi_args+=(--model "$PI_MODEL")
-    # %q on every argv word keeps a path with spaces intact; the prompt is read from
-    # its file at launch, so a long request is never re-quoted into the command line.
-    {
-      printf '#!/usr/bin/env bash\n'
-      printf 'export KINGPIN_TASK_DIR=%q\n' "$task_dir"
-      printf 'export KINGPIN_WORKTREE=%q\n' "$worktree"
-      printf 'export KINGPIN_ROOT=%q\n' "$KP_ROOT"
-      printf 'exec %s' "$PI_CMD"
-      printf ' %q' "${pi_args[@]}"
-      # shellcheck disable=SC2016 # the program text belongs to the generated launch script
-      printf ' "$(cat %q)"\n' "$task_dir/prompt.txt"
-    } > "$task_dir/launch.sh"
-    ;;
-esac
+# The paths this launch injected into the worktree, as the library recorded them.
+task_exclude_paths=()
+if [ -f "$task_dir/injected" ]; then
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    task_exclude_paths+=("$rel")
+  done < "$task_dir/injected"
+fi
 
 # An earlier task's files at Kingpin's own harness paths (issue #127). A `done` removes
 # only the paths its own task recorded, so a pooled slot can still carry them, and a
@@ -535,13 +370,10 @@ for rel in ${kingpin_paths[@]+"${kingpin_paths[@]}"}; do
   fi
 done
 
-# Record exactly the paths this spawn injected, so the cleanup (`kingpin-done`, or the
-# failure trap below) removes only those: a file someone left at another harness's path
-# in this slot is not Kingpin's to delete (issue #77 review).
-if [ "${#task_exclude_paths[@]}" -gt 0 ]; then
-  printf '%s\n' "${task_exclude_paths[@]}" > "$task_dir/injected"
-fi
-
+# The paths this spawn injected are already in `<task-dir>/injected`, written by
+# lib/launch.sh: one writer owns that file, so the cleanup (`kingpin-done`, or the
+# failure trap below) removes exactly those, and a file someone left at another
+# harness's path in this slot is not Kingpin's to delete (issue #77 review).
 if [ "${#task_exclude_paths[@]}" -gt 0 ]; then
   kp_exclude_write "$worktree" "$task_dir" "$id" "$harness" "${task_exclude_paths[@]}" \
     || die "refusing to launch: $worktree cannot hide the harness files this spawn writes (issue #77)"
@@ -549,8 +381,6 @@ fi
 # The user's shared exclude file is checked on every spawn, whatever the harness: the
 # stale lines an older Kingpin left there are not this harness's business.
 warn_shared_excludes
-
-chmod +x "$task_dir/launch.sh"
 
 # Refuse a worker whose context would carry the orchestrator contract, and name the
 # file that leaks it (issue #96). The check reads the files the harness really loads,
@@ -560,16 +390,14 @@ chmod +x "$task_dir/launch.sh"
 "$KP_ROOT/bin/kingpin-scope" check --harness "$harness" --worktree "$worktree" --preamble "$task_dir/preamble.md" \
   || die "refusing to launch a $harness worker: its instruction context is unsafe (files named above)"
 
-# Record the window ID (@N): unlike the name in TMUX_TARGET, it survives a
-# rename or a move to another session.
-window_id=$(tmux new-window -d -P -F '#{window_id}' -t "$target_session:" -n "$id" -c "$worktree" "$task_dir/launch.sh")
-# Pin the name: ambient `automatic-rename on` and `allow-rename on` (tmux config,
-# or an escape sequence from the worker's child commands) would otherwise
-# rename the window. Only kingpin-rename/kingpin-wait renames it, explicitly.
-# `|| true`: a failed pin is cosmetic and must not tear down a started worker.
-tmux set-window-option -t "$window_id" automatic-rename off || true
-tmux set-window-option -t "$window_id" allow-rename off || true
-printf 'TMUX_WINDOW_ID=%s\n' "$window_id" >> "$task_dir/task.env"
+# Create the window through lib/tmux.sh, which also pins the name and records the pane
+# pid as the task's harness identity. `--fresh`: a spawn must never take over a window
+# that already carries this name. Only a window that already exists is refused, and the
+# id it would have used is the one kp_window_record_id then writes.
+window_id=$(kp_window_start "$task_dir" "$target_session" "$id" "$worktree" "$task_dir/launch.sh" --fresh) \
+  || die "cannot start the worker window in $target_session"
+kp_window_record_id "$task_dir" "$window_id" \
+  || die "cannot record the window id $window_id in $task_dir/task.env"
 rm -f "$task_dir/launching"
 launched=1
 

@@ -22,13 +22,18 @@ run_claude_stop() { # <task-dir>
   KINGPIN_TASK_DIR=$1 KINGPIN_ROOT=$KP_ROOT bash -c "$claude_stop_cmd"
 }
 
-# One live window stands in for the worker pane, so `kingpin list` sees the tasks as live.
+# A live window stands in for a worker pane, so `kingpin list` sees the tasks as live.
+# Each task gets its own window, named after it: one window id shared by several records
+# is exactly the stale-id shape the shared resolver refuses to follow (issue #149).
 probe_wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n kp102-probe 'exec bash')
 [ -n "$probe_wid" ] && pass "probe window created ($probe_wid)" || fail "could not create the probe window"
 
 mk_task() { # <id> <harness> [window-id]; prints the task dir
   local d="$KINGPIN_HOME/tasks/$1"
-  local win=${3:-$probe_wid}
+  local win=${3:-}
+  if [ -z "$win" ]; then
+    win=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n "$1" 'exec bash')
+  fi
   mkdir -p "$d"
   cat > "$d/task.env" << ENV
 TASK_ID=$1
