@@ -167,19 +167,19 @@ echo "$out" | grep -q 'ignored.html:[0-9]*: em dash .*Another em' && pass "the u
 } > "$T/wrapped-attributes.html"
 out=$("$KP_BIN/kingpin" report check "$T/wrapped-attributes.html" 2>&1) && pass "prose pass ignores wrapped tags and attribute values holding >" || fail "wrapped attributes tripped the check: $out"
 
-printf '<html><body><h1>One fix in the diff path</h1><p>The patch is small.</p></body></html>' > "$T/page.html"
+printf '<html data-lavish-annotate="off"><body><h1>One fix in the diff path</h1><p>The patch is small.</p></body></html>' > "$T/page.html"
 "$KP_BIN/kingpin" report check "$T/page.html" >/dev/null 2>&1 && fail "check accepts a page with no diff section" || pass "check still requires a diff section"
 "$KP_BIN/kingpin" report check --prose-only "$T/page.html" >/dev/null 2>&1 && pass "check --prose-only accepts a clean page with no diffs" || fail "check --prose-only rejected a clean page"
-printf '<html><body><p>We delve into it.</p></body></html>' > "$T/page-sloppy.html"
+printf '<html data-lavish-annotate="off"><body><p>We delve into it.</p></body></html>' > "$T/page-sloppy.html"
 "$KP_BIN/kingpin" report check --prose-only "$T/page-sloppy.html" >/dev/null 2>&1 && fail "--prose-only accepted sloppy prose" || pass "--prose-only rejects sloppy prose"
 "$KP_BIN/kingpin" report check --bogus "$T/page.html" >/dev/null 2>&1 && fail "check accepted an unknown option" || pass "check rejects an unknown option"
 
-printf '<html><body><p>Delving into the code, it is not just a fix.</p></body></html>' > "$T/page-inflected.html"
+printf '<html data-lavish-annotate="off"><body><p>Delving into the code, it is not just a fix.</p></body></html>' > "$T/page-inflected.html"
 out=$("$KP_BIN/kingpin" report check --prose-only "$T/page-inflected.html" 2>&1) && fail "--prose-only accepted inflected tells" || pass "--prose-only rejects inflected tells"
 echo "$out" | grep -q 'page-inflected.html:1: "delve"' && pass "check catches delving" || fail "delving not caught: $out"
 echo "$out" | grep -q 'page-inflected.html:1: "it.s not just"' && pass "check catches it is not just" || fail "expanded negative parallelism not caught: $out"
 
-printf '<html><body><div class="kp-diff"></div><p>The patch is small.</p></body></html>' > "$T/page-empty-container.html"
+printf '<html data-lavish-annotate="off"><body><div class="kp-diff"></div><p>The patch is small.</p></body></html>' > "$T/page-empty-container.html"
 "$KP_BIN/kingpin" report check --prose-only "$T/page-empty-container.html" >/dev/null 2>&1 && pass "--prose-only ignores an empty diff container" || fail "--prose-only failed an empty diff container"
 "$KP_BIN/kingpin" report check "$T/page-empty-container.html" >/dev/null 2>&1 && fail "full check accepted an empty diff container" || pass "full check still rejects an empty diff container"
 
@@ -193,7 +193,7 @@ echo "$out" | grep -q 'has renderable diffs and clean prose' && pass "the fixtur
 # element or rule the failure must name, so a verdict without a location cannot pass here.
 cat > "$T/pre-bare.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   code { overflow-wrap: anywhere; }
 </style></head><body>
@@ -205,7 +205,7 @@ echo "$out" | grep -q 'pre-bare.html:6: <pre> has no wrap rule' && pass "the <pr
 
 cat > "$T/table-bare.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   code { overflow-wrap: anywhere; }
 </style></head><body>
@@ -217,7 +217,7 @@ echo "$out" | grep -q 'table-bare.html:6: <table> has no wrap rule' && pass "the
 
 cat > "$T/grid-bare.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   code { overflow-wrap: anywhere; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; }
 </style></head><body>
@@ -227,11 +227,11 @@ HTML
 out=$("$KP_BIN/kingpin" report check --prose-only "$T/grid-bare.html" 2>&1) && fail "check accepted a grid with no shrink guard" || pass "check rejects a grid with no shrink guard"
 echo "$out" | grep -q 'grid-bare.html:4: grid/flex layout has no shrink guard' && pass "the grid failure names its line" || fail "no file:line for the grid: $out"
 
-printf '<!DOCTYPE html>\n<html><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body>\n<img src="/home/lauri/kingpin.jpg" alt="banner" />\n</body></html>\n' > "$T/abs-src.html"
+printf '<!DOCTYPE html>\n<html data-lavish-annotate="off"><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body>\n<img src="/home/lauri/kingpin.jpg" alt="banner" />\n</body></html>\n' > "$T/abs-src.html"
 out=$("$KP_BIN/kingpin" report check --prose-only "$T/abs-src.html" 2>&1) && fail "check accepted an absolute asset path" || pass "check rejects an absolute asset path"
 echo "$out" | grep -q 'abs-src.html:6: absolute asset path: /home/lauri/kingpin.jpg' && pass "the absolute path failure names its line" || fail "no file:line for the absolute path: $out"
 
-printf '<!DOCTYPE html>\n<html><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body>\n<img src="../kingpin.jpg" alt="banner" />\n</body></html>\n' > "$T/climb-src.html"
+printf '<!DOCTYPE html>\n<html data-lavish-annotate="off"><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body>\n<img src="../kingpin.jpg" alt="banner" />\n</body></html>\n' > "$T/climb-src.html"
 out=$("$KP_BIN/kingpin" report check --prose-only "$T/climb-src.html" 2>&1) && fail "check accepted an asset path climbing out of the folder" || pass "check rejects an asset path that climbs out of the folder"
 echo "$out" | grep -q 'climb-src.html:6: asset path climbs out of the page folder: ../kingpin.jpg' && pass "the climbing path failure names its line" || fail "no file:line for the climbing path: $out"
 
@@ -251,7 +251,7 @@ echo "$out" | grep -q 'stripped.html:[0-9]*: <img> has no max-width rule' && pas
 # An image keeps its intrinsic width unless a max-width rule reaches it.
 cat > "$T/img-bare.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   code { overflow-wrap: anywhere; }
 </style></head><body>
@@ -264,7 +264,7 @@ echo "$out" | grep -q 'img-bare.html:6: <img> has no max-width rule' && pass "th
 # overflow-wrap inherits, so a rule on p reaches the inline code inside it.
 cat > "$T/inherited-wrap.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   p { overflow-wrap: anywhere; }
 </style></head><body>
@@ -278,7 +278,7 @@ HTML
 long=$(printf 'a%.0s' $(seq 1 400))
 cat > "$T/p-wrap-outside-code.html" <<HTML
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   p { overflow-wrap: anywhere; }
 </style></head><body>
@@ -292,7 +292,7 @@ echo "$out" | grep -q 'p-wrap-outside-code.html:6: <code> has no wrap rule' && p
 # This page measured 2879/1280 in Chrome while the old selector-shape matcher printed OK.
 cat > "$T/grid2-p-guard.html" <<HTML
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   code { overflow-wrap: anywhere; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; }
   p { min-width: 0; }
@@ -306,7 +306,7 @@ echo "$out" | grep -q 'grid2-p-guard.html:4: grid/flex layout has no shrink guar
 # A `p` wrap rule does not reach a table's cells either, so a fixed table still needs its own rule.
 cat > "$T/table-fixed-p-wrap.html" <<HTML
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   p { overflow-wrap: anywhere; }
   table { width: 100%; max-width: 100%; table-layout: fixed; }
@@ -320,7 +320,7 @@ echo "$out" | grep -q 'table-fixed-p-wrap.html:7: <table> has no wrap rule' && p
 # A layout guard is judged per layout rule: an unrelated min-width rule does not cover this grid.
 cat > "$T/grid-unrelated-guard.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   code { overflow-wrap: anywhere; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; }
   .muted { min-width: 0; color: #888; }
@@ -334,7 +334,7 @@ echo "$out" | grep -q 'grid-unrelated-guard.html:4: grid/flex layout has no shri
 # `display` declared only in an inline style is still a layout.
 cat > "$T/grid-inline-display.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   code { overflow-wrap: anywhere; }
 </style></head><body>
 <div style="display: grid; grid-template-columns: 1fr 1fr"><p>left</p><p>right</p></div>
@@ -346,7 +346,7 @@ echo "$out" | grep -q 'grid-inline-display.html:5: grid/flex layout has no shrin
 # A comment and a script body are not rendered, so the elements written there are not judged.
 cat > "$T/ignored-elements.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   code { overflow-wrap: anywhere; }
 </style></head><body>
@@ -360,7 +360,7 @@ HTML
 # A fixed table layout alone leaves a long token running into the next column.
 cat > "$T/table-fixed-bare.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   code { overflow-wrap: anywhere; }
   table { width: 100%; max-width: 100%; table-layout: fixed; }
@@ -374,7 +374,7 @@ echo "$out" | grep -q 'table-fixed-bare.html:7: <table> has no wrap rule' && pas
 # The declaration parser accepts the shorthand, !important and a single-quoted style.
 cat > "$T/pre-overflow-shorthand.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   code { overflow-wrap: anywhere; }
   pre { overflow: auto; }
@@ -386,7 +386,7 @@ HTML
 
 cat > "$T/pre-important.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   code { overflow-wrap: anywhere; }
   pre { white-space: pre-wrap !important; }
@@ -398,7 +398,7 @@ HTML
 
 cat > "$T/pre-single-quote.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   code { overflow-wrap: anywhere; }
 </style></head><body>
@@ -412,7 +412,7 @@ HTML
 # finding. Both pages carry the documented block and measured 1280/1280 and 1024/1024 in Chrome.
 {
   echo '<!DOCTYPE html>'
-  echo '<html><head>'
+  echo '<html data-lavish-annotate="off"><head>'
   awk '/^```html$/ { if (!seen) { seen = 1; inside = 1; next } } inside && /^```$/ { exit } inside { print }' "$KP_ROOT/worker/preamble.md"
   echo '<style>'
   echo '  .badge { display: inline-flex; align-items: center; padding: 1px 10px; }'
@@ -425,7 +425,7 @@ out=$("$KP_BIN/kingpin" report check --prose-only "$T/block-badge.html" 2>&1) &&
 
 {
   echo '<!DOCTYPE html>'
-  echo '<html><head>'
+  echo '<html data-lavish-annotate="off"><head>'
   awk '/^```html$/ { if (!seen) { seen = 1; inside = 1; next } } inside && /^```$/ { exit } inside { print }' "$KP_ROOT/worker/preamble.md"
   echo '<style>'
   echo '  .cards-2up { display: grid; grid-template-columns: 1fr 1fr; }'
@@ -440,7 +440,7 @@ out=$("$KP_BIN/kingpin" report check --prose-only "$T/block-badge.html" 2>&1) &&
 # and 1024/1024 in Chrome.
 cat > "$T/flex-heading.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   body { margin: 0; }
   h2 { display: flex; align-items: center; gap: 10px; }
@@ -453,7 +453,7 @@ HTML
 # A flex row with real children and no guard still fails: H4 skips only the childless case.
 cat > "$T/flex-row-bare.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   .row { display: flex; }
 </style></head><body>
 <div class="row"><span>left</span><span>right</span></div>
@@ -466,7 +466,7 @@ echo "$out" | grep -q 'flex-row-bare.html:3: grid/flex layout has no shrink guar
 # and 1024/1024 in Chrome and were rejected by the old parser, which split them on the inner comma.
 cat > "$T/where-wrap.html" <<HTML
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   :where(p, td) { overflow-wrap: anywhere; }
   table { width: 100%; max-width: 100%; table-layout: fixed; }
@@ -479,7 +479,7 @@ HTML
 
 cat > "$T/where-guard.html" <<HTML
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   code { overflow-wrap: anywhere; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; }
   :where(.cell) { min-width: 0; }
@@ -493,7 +493,7 @@ HTML
 # compound only, so these two pages printed OK while measuring 3128/1280 and 2879/1280 in Chrome.
 cat > "$T/scoped-wrap.html" <<HTML
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   .panel p { overflow-wrap: anywhere; }
 </style></head><body>
@@ -506,7 +506,7 @@ echo "$out" | grep -q 'scoped-wrap.html:7: <code> has no wrap rule' && pass "the
 
 cat > "$T/scoped-guard.html" <<HTML
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   .grid-a { display: grid; grid-template-columns: 1fr 1fr; }
   .grid-b { display: grid; grid-template-columns: 1fr 1fr; }
   .grid-a .cell { min-width: 0; }
@@ -522,7 +522,7 @@ echo "$out" | grep -q 'scoped-guard.html:4: grid/flex layout has no shrink guard
 # worker/preamble.md must pass, with a table, a long pre, a grid, inline code and an image.
 {
   echo '<!DOCTYPE html>'
-  echo '<html><head>'
+  echo '<html data-lavish-annotate="off"><head>'
   awk '/^```html$/ { if (!seen) { seen = 1; inside = 1; next } } inside && /^```$/ { exit } inside { print }' "$KP_ROOT/worker/preamble.md"
   echo '<style>'
   echo '  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }'
@@ -543,7 +543,7 @@ echo "=== kingpin report check: stylesheet parse and palette ==="
 # swallows the rule that follows it, so the body palette never reaches the page.
 cat > "$T/stray-decl.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   color-scheme: dark;
   body {
@@ -564,7 +564,7 @@ echo "$out" | grep -q 'color-scheme: dark;' && pass "the stray declaration failu
 # The same page with the declaration moved inside :root passes.
 cat > "$T/stray-fixed.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   :root { color-scheme: dark; }
   body {
@@ -581,20 +581,20 @@ HTML
 "$KP_BIN/kingpin" report check --prose-only "$T/stray-fixed.html" >/dev/null 2>&1 && pass "the same page passes with the declaration inside :root" || fail "the fixed two-line repro was rejected"
 
 # The walk is by brace depth, not a search for color-scheme.
-printf '<!DOCTYPE html>\n<html><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  margin: 0;\n  body { margin: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body><p>Clean prose.</p></body></html>\n' > "$T/stray-generic.html"
+printf '<!DOCTYPE html>\n<html data-lavish-annotate="off"><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  margin: 0;\n  body { margin: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body><p>Clean prose.</p></body></html>\n' > "$T/stray-generic.html"
 out=$("$KP_BIN/kingpin" report check --prose-only "$T/stray-generic.html" 2>&1) && fail "check accepted a bare margin declaration" || pass "check rejects a stray declaration that is not color-scheme"
 echo "$out" | grep -q 'stray-generic.html:4: declaration outside any selector' && pass "the generic stray declaration names its line" || fail "no file:line for the generic stray declaration: $out"
 echo "$out" | grep -q 'margin: 0;' && pass "the generic stray declaration quotes the line" || fail "the generic line is not quoted: $out"
 
 # A declaration with no trailing semicolon still swallows the rule it precedes.
-printf '<!DOCTYPE html>\n<html><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  color-scheme: dark\n  body { margin: 0; background: #0d1117; color: #e6edf3; }\n  code { overflow-wrap: anywhere; }\n</style></head><body><p>Clean prose.</p></body></html>\n' > "$T/stray-no-semicolon.html"
+printf '<!DOCTYPE html>\n<html data-lavish-annotate="off"><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  color-scheme: dark\n  body { margin: 0; background: #0d1117; color: #e6edf3; }\n  code { overflow-wrap: anywhere; }\n</style></head><body><p>Clean prose.</p></body></html>\n' > "$T/stray-no-semicolon.html"
 out=$("$KP_BIN/kingpin" report check --prose-only "$T/stray-no-semicolon.html" 2>&1) && fail "check accepted a stray declaration with no semicolon" || pass "check rejects a stray declaration with no semicolon"
 echo "$out" | grep -q 'stray-no-semicolon.html:4: declaration outside any selector' && pass "the semicolon-less declaration names its line" || fail "no file:line for the semicolon-less declaration: $out"
 
 # An at-statement and an at-rule block at depth 0 are not declarations.
 cat > "$T/at-rules.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; min-width: 0; }
   body { margin: 0; background: #0d1117; color: #e6edf3; }
@@ -611,7 +611,7 @@ HTML
 # like the elements the layout pass ignores.
 cat > "$T/commented-style.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   body { margin: 0; background: #0d1117; color: #e6edf3; }
   code { overflow-wrap: anywhere; }
@@ -630,7 +630,7 @@ HTML
 # A `<style>` sequence inside a script string is JavaScript, not a sheet.
 cat > "$T/script-style.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   * { box-sizing: border-box; min-width: 0; }
   body { margin: 0; background: #0d1117; color: #e6edf3; }
   code { overflow-wrap: anywhere; }
@@ -645,7 +645,7 @@ HTML
 # the declarations between them, so the sheet is live and its declarations are read as usual.
 cat > "$T/cdo-wrap.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style><!--
+<html data-lavish-annotate="off"><head><style><!--
   * { box-sizing: border-box; min-width: 0; }
   body { margin: 0; background: #0d1117; color: #e6edf3; }
   code { overflow-wrap: anywhere; }
@@ -659,7 +659,7 @@ HTML
 # wrapper's tokens are not.
 cat > "$T/cdo-wrap-stray.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style><!--
+<html data-lavish-annotate="off"><head><style><!--
   * { box-sizing: border-box; min-width: 0; }
   color-scheme: dark;
   body { margin: 0; background: #0d1117; color: #e6edf3; }
@@ -675,7 +675,7 @@ echo "$out" | grep -q 'cdo-wrap-stray.html:7:' && fail "the wrapper's closing to
 # A dark claim with no background on body, html or :root leaves a white page.
 cat > "$T/palette-missing.html" <<'HTML'
 <!DOCTYPE html>
-<html><head><style>
+<html data-lavish-annotate="off"><head><style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; min-width: 0; }
   body { margin: 0; color: #e6edf3; }
@@ -688,7 +688,7 @@ echo "$out" | grep -q 'palette-missing.html:3: color-scheme: dark has no backgro
 # Every legitimate way of painting the root or body satisfies the claim.
 palette_pass() {
   local name=$1 body=$2
-  printf '<!DOCTYPE html>\n<html><head><style>\n%s\n  * { box-sizing: border-box; min-width: 0; }\n  pre { white-space: pre-wrap; overflow-wrap: anywhere; }\n  code { overflow-wrap: anywhere; }\n</style></head>%s</html>\n' "$body" "$3" > "$T/$name.html"
+  printf '<!DOCTYPE html>\n<html data-lavish-annotate="off"><head><style>\n%s\n  * { box-sizing: border-box; min-width: 0; }\n  pre { white-space: pre-wrap; overflow-wrap: anywhere; }\n  code { overflow-wrap: anywhere; }\n</style></head>%s</html>\n' "$body" "$3" > "$T/$name.html"
   "$KP_BIN/kingpin" report check --prose-only "$T/$name.html" >/dev/null 2>&1 && pass "palette: $name passes" || fail "palette: $name was rejected"
 }
 palette_pass "palette-html" '  :root { color-scheme: dark; }
@@ -705,8 +705,55 @@ palette_pass "palette-class" '  :root { color-scheme: dark; }
   .page { background: #0d1117; color: #e6edf3; }' '<body class="page"><p>Clean prose.</p></body>'
 
 # A page that makes no dark claim is not asked to paint one.
-printf '<!DOCTYPE html>\n<html><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  body { margin: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body><p>Clean prose.</p></body></html>\n' > "$T/palette-unclaimed.html"
+printf '<!DOCTYPE html>\n<html data-lavish-annotate="off"><head><style>\n  * { box-sizing: border-box; min-width: 0; }\n  body { margin: 0; }\n  code { overflow-wrap: anywhere; }\n</style></head><body><p>Clean prose.</p></body></html>\n' > "$T/palette-unclaimed.html"
 "$KP_BIN/kingpin" report check --prose-only "$T/palette-unclaimed.html" >/dev/null 2>&1 && pass "a page with no dark claim needs no palette" || fail "a page with no dark claim was rejected"
+
+echo "=== kingpin report check: annotation default ==="
+
+# Lavish opens a page in annotation mode unless its root element opts out, so a dossier without
+# `data-lavish-annotate` on <html> fails at the root's line; an explicit "off" or a deliberate
+# "on" both pass (issue #141).
+cat > "$T/annotate-missing.html" <<'HTML'
+<!DOCTYPE html>
+<html lang="en"><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body><p>Clean prose.</p></body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/annotate-missing.html" 2>&1) && fail "check accepted a page with no data-lavish-annotate" || pass "check rejects a page with no data-lavish-annotate"
+echo "$out" | grep -q 'annotate-missing.html:2: no data-lavish-annotate="off" on <html>' && pass "the annotation failure names the root element's line" || fail "no file:line for the missing annotation default: $out"
+[ "$(echo "$out" | grep -c 'FAILED:')" -eq 1 ] && pass "the annotation default is the only failure on that page" || fail "another rule fired on a clean page: $out"
+
+cat > "$T/annotate-off.html" <<'HTML'
+<!DOCTYPE html>
+<html lang="en" data-lavish-annotate="off"><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body><p>Clean prose.</p></body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/annotate-off.html" >/dev/null 2>&1 && pass "check accepts data-lavish-annotate=\"off\"" || fail "check rejected data-lavish-annotate=\"off\""
+
+cat > "$T/annotate-on.html" <<'HTML'
+<!DOCTYPE html>
+<html lang="en" data-lavish-annotate="on"><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body><p>Clean prose.</p></body></html>
+HTML
+"$KP_BIN/kingpin" report check --prose-only "$T/annotate-on.html" >/dev/null 2>&1 && pass "check accepts a deliberate data-lavish-annotate=\"on\"" || fail "check rejected data-lavish-annotate=\"on\""
+
+# The name written inside another attribute's value is not an attribute: a page that only mentions
+# the rule still opens in annotation mode, so `check` must reject it at the root's line.
+cat > "$T/annotate-mentioned.html" <<'HTML'
+<!DOCTYPE html>
+<html lang="en" title="add data-lavish-annotate=off here"><head><style>
+  * { box-sizing: border-box; min-width: 0; }
+  code { overflow-wrap: anywhere; }
+</style></head><body><p>Clean prose.</p></body></html>
+HTML
+out=$("$KP_BIN/kingpin" report check --prose-only "$T/annotate-mentioned.html" 2>&1) && fail "check accepted a page that only mentions data-lavish-annotate in another attribute's value" || pass "check rejects a page that only mentions data-lavish-annotate in another attribute's value"
+echo "$out" | grep -q 'annotate-mentioned.html:2: no data-lavish-annotate="off" on <html>' && pass "the mentioned-only failure names the root element's line" || fail "no file:line for the mentioned-only annotation case: $out"
+[ "$(echo "$out" | grep -c 'FAILED:')" -eq 1 ] && pass "the mentioned-only page has no other failure" || fail "another rule fired on the mentioned-only page: $out"
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL REPORT TESTS PASSED"
