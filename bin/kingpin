@@ -140,7 +140,7 @@ case "$cmd" in
 
     print_task_row() {
       local d=$1 suffix=${2:-}
-      local tid env_file proj harness mode status_file st listen_info lpid
+      local tid env_file proj harness mode status_file st listen_info lpid url
       local state last lines seen tmux_target window_id
       tid=$(basename "$d")
       env_file="$d/task.env"
@@ -191,13 +191,18 @@ case "$cmd" in
       printf "%-22s %-10s %-8s %-12s %-18s %s%s\n" "$tid" "$proj" "$harness" "$mode" "$state" "$st" "$suffix"
       if [ -z "$suffix" ] && [ -f "$d/report.html" ]; then
         listen_info=""
+        # The URL the listener recorded when it opened the page (issue #146): handing it
+        # over opens no second tab. Without one, the command that opens the page is the
+        # only way in, so it stays as the fallback.
+        url=""
+        [ -s "$d/dossier.url" ] && url=$(head -n 1 "$d/dossier.url")
         if [ -f "$d/listener.pid" ]; then
           lpid=$(cat "$d/listener.pid" 2>/dev/null || true)
           if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
             listen_info=" (listening: pid $lpid)"
           fi
         fi
-        printf "  %-20s %s%s\n" "↳ Review:" "lavish-axi $d/report.html" "$listen_info"
+        printf "  %-20s %s%s\n" "↳ Review:" "${url:-lavish-axi $d/report.html}" "$listen_info"
       fi
     }
 
@@ -302,7 +307,11 @@ case "$cmd" in
           else
             echo "OK: $task_id is READY for review."
             if [ -f "$task_dir/report.html" ]; then
-              echo "  Review dossier: lavish-axi $task_dir/report.html"
+              if [ -s "$task_dir/dossier.url" ]; then
+                echo "  Review dossier: $(head -n 1 "$task_dir/dossier.url")"
+              else
+                echo "  Review dossier: lavish-axi $task_dir/report.html"
+              fi
             fi
             echo "  To land:        kingpin land $task_id"
             exit 0

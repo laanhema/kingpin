@@ -12,7 +12,7 @@ Monitor all active workers, leased worktrees, and current statuses:
 kingpin list
 ```
 
-For any live task whose folder holds a `report.html`, whatever its mode or status, `kingpin list` displays the dossier command directly below the task row, with `(listening: pid <n>)` while that task's listener runs; finished and archived rows show no dossier line, and `--all` shows the archived rows without one.
+For any live task whose folder holds a `report.html`, whatever its mode or status, `kingpin list` displays the dossier line directly below the task row: the recorded Lavish session URL, or the `lavish-axi <path>` command when none is recorded. It carries `(listening: pid <n>)` while that task's listener runs; finished and archived rows show no dossier line, and `--all` shows the archived rows without one.
 
 The `STATE` column describes a live pane: `WAITING` means the worker is blocked on a human (`needs-input:`, a listener's `feedback:` note, or the Stop hook's `waiting:` line), `SILENT` means it stopped without reporting (`failed: no status:`), and `Unseen: N` counts status lines written since the supervisor last acknowledged the task. `-` is a worker that is running normally or whose window is gone.
 
@@ -37,11 +37,7 @@ Finished tasks are archived by `kingpin done` and hidden from `kingpin list`; ru
 
 ### 2. Task Review Dossiers (`lavish-axi`)
 
-When a worker completes a task, it compiles a visual review dossier (`report.html`) containing problem context, verification tables, independent review verdicts, and syntax-highlighted split code diffs. Open it with Lavish:
-
-```bash
-lavish-axi ~/.kingpin/tasks/<task-id>/report.html
-```
+When a worker completes a task, it compiles a visual review dossier (`report.html`) containing problem context, verification tables, independent review verdicts, and syntax-highlighted split code diffs. The task's listener opens it once and records the Lavish session URL in the task directory's `dossier.url`, and `kingpin list` prints that URL under the task's row. Hand the URL over rather than running `lavish-axi` on a page a listener already opened, which puts a second tab on the same session. A task with no recorded URL still shows the `lavish-axi <path>` command.
 
 Review the changes and click **Approve & Land** on the dossier or run:
 
