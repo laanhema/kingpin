@@ -25,10 +25,16 @@ would otherwise be a wall of chat. Not for worker review dossiers: those come fr
 
 - **Paper on ink.** Page is deep ink (`--ink: #12100c`), panels are parchment (`--paper: #efe6d2`)
   with a thin inner rule. Never flip it: the contrast between the dark room and the paper is the look.
-- **Type is the costume.** `Playfair Display` 900 for display headings, `Special Elite` for labels,
-  exhibit names, code and the stamp, `Source Serif 4` for body. Do not swap in a UI sans.
+- **Type is the costume.** `Playfair Display` 900 for display headings, `Source Serif 4` for body and
+  option titles, `Courier Prime` for code, diffs and `pre`, `Special Elite` for short decorative text
+  (eyebrows, exhibit names, chips, the stamp). Do not swap in a UI sans.
 - **One accent.** Blood red (`--blood: #7d2020`) for emphasis and the stamp; gold (`--gold: #a8863a`)
-  only for the kicker. No third accent.
+  only for the kicker. No third accent. Status colour is not an accent: it belongs to the chip.
+- **Status is a chip, not a row.** `--pass: #2d4a24`, `--warn: #6b4a10` and `--fail: #7d2020`
+  (aliasing `--blood`). Each chip paints its own opaque tint, and the text on it clears WCAG AA
+  (4.5:1): pass on `#dce4d1` at 7.6:1, warn on `#ece0c2` at 6.1:1, fail on `#edd8d2` at 7.3:1. Rows
+  stay parchment. The 2026-11-03 before/after page showed that a tinted row reads like a dashboard,
+  so the row classes were dropped: if a table needs more colour than a chip, it is too big.
 - **Exhibits.** Each section opens with `EXHIBIT X · WHAT IT IS` in typewriter caps, then a
   sentence-case `h2`, then the content. It gives the page a spine and lets the boss cite sections.
 - **Banner.** The repo image across the top with the rotated outline stamp (`DRAFT · NOT FILED`).

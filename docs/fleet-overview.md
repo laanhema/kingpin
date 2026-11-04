@@ -12,9 +12,11 @@ Monitor all active workers, leased worktrees, and current statuses:
 kingpin list
 ```
 
-For any live task whose folder holds a `report.html`, whatever its mode or status, `kingpin list` displays the dossier command directly below the task row, with `(listening: pid <n>)` while that task's listener runs; finished and archived rows show no dossier line, and `--all` shows the archived rows without one.
+For any live task whose folder holds a `report.html`, whatever its mode or status, `kingpin list` displays the dossier line directly below the task row: the recorded Lavish session URL, or the `lavish-axi <path>` command when none is recorded. It carries `(listening: pid <n>)` while that task's listener runs; finished and archived rows show no dossier line, and `--all` shows the archived rows without one.
 
 The `STATE` column describes a live pane: `WAITING` means the worker is blocked on a human (`needs-input:`, a listener's `feedback:` note, or the Stop hook's `waiting:` line), `SILENT` means it stopped without reporting (`failed: no status:`), and `Unseen: N` counts status lines written since the supervisor last acknowledged the task. `-` is a worker that is running normally or whose window is gone.
+
+The `SESSION` column names the tmux session the worker's window lives in, read from the live window, so a window moved to another session is reported where it really is. An archived row shows the session recorded at spawn, because its window is gone; `-` means neither a live window nor a recorded target.
 
 `kingpin wait` wakes the orchestrator only for events that need action: a new status line other than the informational `issue:` line, a worker that stopped (`quiet`), or a window that is gone (`exited`). A worker whose last acknowledged status is `needs-input:` is not reported `quiet` again until its status or pane activity changes, and a task that `kingpin spawn` is still launching (its `launching` marker is fresh) is not reported `exited`.
 
@@ -43,11 +45,7 @@ Finished tasks are archived by `kingpin done` and hidden from `kingpin list`; ru
 
 ### 2. Task Review Dossiers (`lavish-axi`)
 
-When a worker completes a task, it compiles a visual review dossier (`report.html`) containing problem context, verification tables, independent review verdicts, and syntax-highlighted split code diffs. Open it with Lavish:
-
-```bash
-lavish-axi ~/.kingpin/tasks/<task-id>/report.html
-```
+When a worker completes a task, it compiles a visual review dossier (`report.html`) containing problem context, verification tables, independent review verdicts, and syntax-highlighted split code diffs. The task's listener opens it once and records the Lavish session URL in the task directory's `dossier.url`, and `kingpin list` prints that URL under the task's row. Hand the URL over rather than running `lavish-axi` on a page a listener already opened, which puts a second tab on the same session. A task with no recorded URL still shows the `lavish-axi <path>` command.
 
 Review the changes and click **Approve & Land** on the dossier or run:
 
@@ -72,5 +70,16 @@ Copy the folder into the artifact's directory (`.lavish/`), rename the html, swa
 lavish-axi .lavish/<artifact>.html
 ```
 
-Worker review dossiers are not made from this template: `worker/preamble.md` and `kingpin report diffs` own their layout. `tests/test-noir-template.sh` fails when the folder loses one of the three files, when `template.html` points at a file with an absolute path or through `..`, when a diff block loses its static fallback, or when the page stops passing the full `kingpin report check` (renderable diffs, contained layout and clean prose).
+Worker review dossiers are not made from this template: they start from the worker dossier template described below. `tests/test-noir-template.sh` fails when the folder loses one of the three files, when `template.html` points at a file with an absolute path or through `..`, when a diff block loses its static fallback, or when the page stops passing the full `kingpin report check` (renderable diffs, contained layout and clean prose).
 
+### 4. Worker Review Dossiers (worker dossier template)
+
+A worker's `report.html` starts from the worker dossier template, which is the default for every task:
+
+```
+assets/lavish/worker-dossier/
+  template.html   the page: action bar, stat cards, what changed, review findings, validation, diffs
+  DESIGN.md       the rules the look depends on, beside the file they describe
+```
+
+`worker/preamble.md` tells the worker to copy `template.html` to the task folder as `report.html`, swap the sample values and `REPLACE` comments for the task's own, and paste the output of `kingpin report diffs` over the sample diff section. The look came from the dossiers that read most clearly: a dark GitHub palette on Tailwind and DaisyUI, one numbered Problem and Solution block per change, every review finding as a table row with its pass, ID, severity and outcome, and a validation table. `DESIGN.md` records the rules, including what each colour means. `tests/test-worker-dossier-template.sh` fails when the folder loses a file, when a section the dossier is read for goes missing, when the page stops passing the full `kingpin report check`, or when the preamble stops pointing at it. The noir dossier template stays for pages handed to the boss.

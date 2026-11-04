@@ -3,7 +3,7 @@
 # and launch the chosen harness (claude, agy, opencode, pi) with the worker
 # preamble and the turn-end Stop hook.
 #
-# Usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi]
+# Usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi] [--tmux-session <name>]
 #   --issue    an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
 #   --text     a free-text request: the worker runs /create-issue first, then the same
 #   --mode     review (default) stops at a ready branch for the Lavish review; auto merges when green
@@ -11,6 +11,15 @@
 #              (slug from the request). The id is also the branch (kingpin/<id>) and the
 #              tmux window name. An explicit --id skips slug generation.
 #   --harness  worker harness: claude, agy, opencode, or pi (overrides everything below)
+#   --tmux-session  tmux session for the worker window on the fleet's own server
+#
+# Workers run on the fleet's own tmux server (issue #142), socket `kingpin` unless
+# KINGPIN_TMUX_SOCKET names another. The window's session there is resolved, never
+# guessed (issue #152): --tmux-session, then KINGPIN_TMUX_SESSION (both must name a
+# session that exists), then the one attached session on that server, then the only
+# session it holds. Several unattached sessions, or more than one attached session,
+# are refused with their names; only a server with no session at all gets a `kingpin`
+# session, and the spawn says so. The success line names the chosen session.
 #
 # Default harness, first match wins: --harness > project HARNESS (only if set in
 # the project env) > the harness recorded by `kingpin lock acquire` for the live
@@ -47,30 +56,98 @@ GH_TIMEOUT=; ! command -v timeout >/dev/null || GH_TIMEOUT="timeout 10"
 
 die() { echo "kingpin-spawn: $*" >&2; exit 1; }
 
-# Workers live on the fleet's own tmux server (issue #142), in one `kingpin`
-# session there. An operator session kill, or a `tmux kill-server` on the default
-# socket, cannot reach them. `kingpin list` prints how to look at that server.
+# Workers live on the fleet's own tmux server (issue #142). Window creation, renames
+# and probes all go through kp_tmux on `fleet_socket`, so an operator session kill, or
+# a `tmux kill-server` on the default socket, cannot reach a worker. `kingpin list`
+# prints how to look at that server.
 fleet_socket=$(kp_tmux_socket_name)
-fleet_session=kingpin
+
+# The session on that server, and where it came from. The session is resolved, never
+# guessed (issue #152): an explicit target must exist, and with none the one attached
+# session on the fleet server is used, then the only session it holds. Several
+# candidates are refused, and only a server with no session at all gets the `kingpin`
+# fallback, with a note that it created one. The caller's own tmux client is on the
+# operator's server, not this one, so its session is not a candidate (issue #142).
+# A refusal runs before the worktree is leased, so it costs no worktree and leaves no
+# task record. Sets target_session and target_session_source; prints nothing on stdout.
+resolve_tmux_session() {
+  local explicit=${1:-} explicit_source=${2:-} name attached resolved=''
+  local all=() attached_names=() joined='' measured='' attached_joined=''
+  if [ -n "$explicit" ]; then
+    kp_tmux "$fleet_socket" has-session -t "$explicit" 2>/dev/null \
+      || die "refusing to spawn: the session '$explicit' from $explicit_source does not exist on the fleet's tmux server (tmux -L $fleet_socket); start it, or name a session that does"
+    # has-session accepts an unambiguous prefix, so record the name tmux resolved it to:
+    # storing the prefix would name a session that does not exist (issue #152).
+    resolved=$(kp_tmux "$fleet_socket" display-message -p -t "$explicit" '#S' 2>/dev/null) || resolved=''
+    [ -n "$resolved" ] \
+      || die "refusing to spawn: the session '$explicit' from $explicit_source could not be resolved to a session name"
+    target_session=$resolved
+    target_session_source="from $explicit_source"
+    return 0
+  fi
+  # Join a session on the fleet server that cannot be mistaken for another: the one an
+  # operator attached there, then the only one the server holds. One candidate is not
+  # a guess.
+  while IFS=$'\t' read -r name attached; do
+    [ -n "$name" ] || continue
+    all+=("$name")
+    [ "$attached" = 0 ] || attached_names+=("$name")
+  done < <(kp_tmux "$fleet_socket" list-sessions -F $'#{session_name}\t#{session_attached}' 2>/dev/null || true)
+  if [ "${#attached_names[@]}" -eq 1 ]; then
+    target_session=${attached_names[0]}
+    target_session_source='the only attached session'
+    return 0
+  fi
+  if [ "${#all[@]}" -eq 1 ]; then
+    target_session=${all[0]}
+    target_session_source='the only session on the server'
+    return 0
+  fi
+  if [ "${#all[@]}" -gt 1 ]; then
+    for name in "${all[@]}"; do joined=${joined:+"$joined, "}$name; done
+    if [ "${#attached_names[@]}" -eq 0 ]; then
+      measured="the fleet's tmux server has ${#all[@]} sessions and none has a client attached ($joined)"
+    else
+      for name in "${attached_names[@]}"; do
+        attached_joined=${attached_joined:+"$attached_joined, "}$name
+      done
+      measured="the fleet's tmux server has ${#all[@]} sessions and ${#attached_names[@]} of them have a client attached ($attached_joined)"
+    fi
+    die "refusing to spawn: no single target session on the fleet's tmux server, and $measured; name one with --tmux-session <name> or KINGPIN_TMUX_SESSION=<name>"
+  fi
+  # Nothing to join. This is the one case where a session is created, and the output
+  # says so instead of leaving the worker silently in a session nobody watches.
+  kp_tmux "$fleet_socket" new-session -d -s kingpin -n home \
+    || die "no session on the fleet's tmux server (tmux -L $fleet_socket) and the fallback session 'kingpin' could not be created"
+  printf 'kingpin-spawn: no session on the fleet tmux server; created and using "kingpin" (name one with --tmux-session or KINGPIN_TMUX_SESSION)\n' >&2
+  target_session=kingpin
+  target_session_source='the named fallback (no session existed)'
+  return 0
+}
 
 usage() {
   cat <<'HELP'
-usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi]
+usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi] [--tmux-session <name>]
 
   --issue    an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
   --text     a free-text request: the worker runs /create-issue first, then the same
   --mode     review (default) stops at a ready branch for the review; auto merges when green
   --id       task id; defaults to kp-<n>-<slug> (issue title) or kp-<slug> (request)
   --harness  worker harness: claude, agy, opencode, or pi (overrides the project and the lock)
+  --tmux-session  tmux session for the worker window on the fleet's own server
+             (also read from KINGPIN_TMUX_SESSION); it must already exist. Without
+             either, the one attached session or the only session on the fleet server
+             is used, and several unattached sessions or more than one attached
+             session are refused
 HELP
 }
 
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac
-[ $# -ge 1 ] || die "usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi]"
+[ $# -ge 1 ] || die "usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi] [--tmux-session <name>]"
 project=$1; shift
-issue='' text='' mode=review id='' harness_cli=''
+issue='' text='' mode=review id='' harness_cli='' session_cli=''
 while [ $# -gt 0 ]; do
   case $1 in
     -h|--help) usage; exit 0 ;;
@@ -79,6 +156,7 @@ while [ $# -gt 0 ]; do
     --mode) mode=${2:?--mode needs review or auto}; shift 2 ;;
     --id) id=${2:?--id needs a value}; shift 2 ;;
     --harness) harness_cli=${2:?--harness needs a value}; shift 2 ;;
+    --tmux-session) session_cli=${2:?--tmux-session needs a session name}; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -137,6 +215,17 @@ if [ -z "$id" ]; then
   fi
 fi
 [[ $id =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "task id must be lowercase letters, digits, and dashes: $id"
+
+# Resolve the tmux session before anything is leased or written, so a refusal (an
+# unknown target, or an ambiguous server) costs no worktree and leaves no record.
+target_session=''
+target_session_source=''
+session_target=${session_cli:-${KINGPIN_TMUX_SESSION:-}}
+session_source=''
+if [ -n "$session_target" ]; then
+  if [ -n "$session_cli" ]; then session_source='--tmux-session'; else session_source='KINGPIN_TMUX_SESSION'; fi
+fi
+resolve_tmux_session "$session_target" "$session_source"
 
 task_dir=$KP_HOME/tasks/$id
 mkdir -p "$KP_HOME/tasks"
@@ -278,8 +367,8 @@ if [ "$harness" = pi ]; then
 fi
 : > "$task_dir/status"
 
-kp_tmux_ensure_session "$fleet_socket" "$fleet_session" \
-  || die "cannot start the fleet's tmux server (tmux -L $fleet_socket)"
+kp_tmux "$fleet_socket" has-session -t "$target_session" 2>/dev/null \
+  || die "the session $target_session is gone from the fleet's tmux server (tmux -L $fleet_socket)"
 
 # kingpin-wait does not report "exited" for a task with a fresh marker: task.env
 # exists before the window does. Removed once the window ID is recorded.
@@ -300,7 +389,7 @@ MODE=$mode
 BRANCH=$branch
 WORKTREE=$worktree
 TMUX_SOCKET=$fleet_socket
-TMUX_TARGET=$fleet_session:$id
+TMUX_TARGET=$target_session:$id
 CREATED=$created
 EOF
 
@@ -552,7 +641,7 @@ chmod +x "$task_dir/launch.sh"
 
 # Record the window ID (@N): unlike the name in TMUX_TARGET, it survives a
 # rename or a move to another session.
-window_id=$(kp_tmux "$fleet_socket" new-window -d -P -F '#{window_id}' -t "$fleet_session:" -n "$id" -c "$worktree" "$task_dir/launch.sh")
+window_id=$(kp_tmux "$fleet_socket" new-window -d -P -F '#{window_id}' -t "$target_session:" -n "$id" -c "$worktree" "$task_dir/launch.sh")
 # Pin the name: ambient `automatic-rename on` and `allow-rename on` (tmux config,
 # or an escape sequence from the worker's child commands) would otherwise
 # rename the window. Only kingpin-rename/kingpin-wait renames it, explicitly.
@@ -563,4 +652,4 @@ printf 'TMUX_WINDOW_ID=%s\n' "$window_id" >> "$task_dir/task.env"
 rm -f "$task_dir/launching"
 launched=1
 
-echo "OK: spawned $id ($harness) in $worktree on $branch (tmux -L $fleet_socket $fleet_session:$id, window $window_id, mode $mode)"
+echo "OK: spawned $id ($harness) in $worktree on $branch (tmux -L $fleet_socket $target_session:$id, session $target_session_source, window $window_id, mode $mode)"

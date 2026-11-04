@@ -31,7 +31,7 @@ each task back as a visual review dossier. This file describes the repository.
 
 Every page we hand over is prose first: a worker's `report.html` dossier, and a plan or comparison page you open with `lavish-axi`, gets an unslop pass before it is served.
 
-- Start a handover artifact from the noir dossier template, not a blank page: copy `assets/lavish/noir-dossier/template.html` and its `kingpin.jpg` into the artifact's folder (`.lavish/`), swap the content, and keep the chrome. `assets/lavish/noir-dossier/DESIGN.md` sits beside the page and records the rules the look depends on; `tests/test-noir-template.sh` fails when the folder loses a file, when a `src`/`href` is absolute or climbs out of the folder, when a diff block loses its static fallback, or when the page stops passing `check`. This template is for the pages you hand the boss, not for worker review dossiers, which keep their own layout.
+- Start a handover artifact from the noir dossier template, not a blank page: copy `assets/lavish/noir-dossier/template.html` and its `kingpin.jpg` into the artifact's folder (`.lavish/`), swap the content, and keep the chrome. `assets/lavish/noir-dossier/DESIGN.md` sits beside the page and records the rules the look depends on; `tests/test-noir-template.sh` fails when the folder loses a file, when a `src`/`href` is absolute or climbs out of the folder, when a diff block loses its static fallback, or when the page stops passing `check`. This template is for the pages you hand the boss. A worker's review dossier starts from the worker dossier template instead: copy `assets/lavish/worker-dossier/template.html` to the task folder as `report.html`, keep its chrome, and read the `assets/lavish/worker-dossier/DESIGN.md` beside it; `tests/test-worker-dossier-template.sh` fails when the folder loses a file, when a section the dossier is read for goes missing, when the page stops passing `check`, or when `worker/preamble.md` stops pointing at it.
 - Run the `unslop` skill over the page, then `bin/kingpin-report check <file>`. A page with no diff section takes `--prose-only`.
 - `check` fails with `<file>:<line>:` and the offending line for the mechanical tells: em dash, "testament to", "it's not just", "delve", "seamless", "in order to", "let me know", "I hope this helps". Fix the line, or put `<!-- unslop:ignore -->` on it when the word is genuinely wanted.
 - The same `check` runs a layout pass over a full page (`*.html` with an `<html>` element) and names the line for a `<pre>` or inline `<code>` with no wrap rule, an `<img>` with no `max-width` rule, a table whose cells have no wrap rule, a grid/flex layout with no `min-width: 0` or `minmax(0, ...)` guard, a `src`/`href`/`url()` that is an absolute path or climbs out with `..`, and an `<html>` element with no `data-lavish-annotate` attribute, because Lavish otherwise opens the page in annotation mode; an explicit `"on"` passes. The block a worker dossier must carry is in `worker/preamble.md`, and `assets/lavish/noir-dossier/template.html` carries it too.
@@ -109,6 +109,9 @@ An instruction file a harness silently ignores is a bug, not a preference:
 
 `bin/kingpin-watch` is the fleet's one supervisor. It dispatches each unprocessed status
 line once, runs the cleanup on `merged:`, and re-arms a dossier listener that died.
+The listener opens a review dossier once and records its Lavish session URL in the task's
+`dossier.url`; `kingpin list` prints that URL, and the orchestrator hands it over instead of
+running `lavish-axi` on the page again.
 
 `kingpin afk on [--ttl <duration>]` arms session-scoped auto-landing. The state is
 `$KINGPIN_HOME/afk` (holder pid, arm epoch, expiry epoch), the default TTL is 8 hours, and
@@ -120,6 +123,20 @@ same note, while a pass left with High findings asks for a re-review and carries
 unreadable verdict, `needs-input:`, `cleanup-refused:` and `failed:` wait for the operator,
 and AFK never calls `kingpin done --force`. The arm reads as off once the TTL passes or the
 holder pid is gone, and `kingpin lock release` clears it.
+
+## Worker placement
+
+A spawn's tmux session is resolved, never guessed (issue #152): `--tmux-session <name>`, then
+`KINGPIN_TMUX_SESSION`, then the calling tmux client's own session. A named session must already
+exist, so a typo is refused rather than starting a second silent session. With no name and no
+client, the one attached session is used, then the only session the server holds; several
+unattached sessions, or more than one attached session, are refused with every candidate named
+and both ways to name a target. Only a server with no session at all gets the `kingpin` fallback,
+and the spawn says on stderr that it created one. The resolution runs before the worktree lease,
+so a refusal costs no worktree and leaves no task record, and the `OK:` line names the chosen
+session and where it came from.
+`kingpin list` prints it in a `SESSION` column read from the live window, so a window moved to
+another session is reported where it really is.
 
 ## Orchestrating from this repository
 

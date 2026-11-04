@@ -25,6 +25,15 @@ check_dir() {
     [ -s "$dir/$f" ] || { echo "missing or empty: $f" >&2; return 1; }
   done
   grep -q '<section' "$dir/template.html" || { echo "template.html has no sections" >&2; return 1; }
+  # The status palette is the only way a verification row reads pass, warn or fail, so a copy that
+  # loses a token or a chip class has lost the semantic layer this template exists to carry.
+  local status tok
+  for tok in --pass --warn --fail; do
+    grep -q -- "$tok:" "$dir/template.html" || { echo "status token missing: $tok" >&2; return 1; }
+  done
+  for status in pass warn fail; do
+    grep -q "\.chip\.$status" "$dir/template.html" || { echo "chip class missing: .chip.$status" >&2; return 1; }
+  done
   # No local absolute path, no ref that climbs out of the folder, and every relative src/href
   # resolves beside the page. The template is copied as a folder, so a ref through `..` breaks
   # every artifact made from it.
@@ -71,6 +80,12 @@ for f in template.html kingpin.jpg DESIGN.md; do
   [ -s "$TPL/$f" ] && pass "$f ships with the template" || fail "$f is missing or empty"
 done
 [ -s "$TPL/kingpin.jpg" ] && cmp -s "$TPL/kingpin.jpg" "$KP_ROOT/assets/kingpin.jpg" && pass "banner is the repo image, copied beside the page" || fail "banner is not a copy of assets/kingpin.jpg"
+for tok in --pass --warn --fail; do
+  grep -q -- "$tok:" "$TPL/template.html" && pass "template.html defines $tok" || fail "template.html does not define $tok"
+done
+for status in pass warn fail; do
+  grep -q "\.chip\.$status" "$TPL/template.html" && pass "template.html defines .chip.$status" || fail "template.html does not define .chip.$status"
+done
 out=$(check_dir "$TPL" 2>&1) && pass "the template is complete, relative and gate-clean" || fail "the template does not check out: $out"
 
 echo "=== the check fails on a broken copy ==="
@@ -81,6 +96,11 @@ cp -a "$TPL" "$T/no-design"
 rm "$T/no-design/DESIGN.md"
 out=$(check_dir "$T/no-design" 2>&1) && fail "a copy without DESIGN.md passed" || pass "a missing DESIGN.md fails"
 echo "$out" | grep -q 'missing or empty: DESIGN.md' && pass "the failure names the missing file" || fail "unclear reason: $out"
+
+cp -a "$TPL" "$T/no-token"
+sed -i '/--warn:/d' "$T/no-token/template.html"
+out=$(check_dir "$T/no-token" 2>&1) && fail "a copy without the warn token passed" || pass "a missing status token fails"
+echo "$out" | grep -q 'status token missing: --warn' && pass "the failure names the missing token" || fail "unclear reason: $out"
 
 cp -a "$TPL" "$T/no-banner"
 rm "$T/no-banner/kingpin.jpg"
