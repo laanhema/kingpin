@@ -64,11 +64,19 @@ t62_working opencode '$ ls -la' 1
 # the word, directly above the model footer. The idle footer carries no "Working".
 t62_working pi $'tool output\n── ⠏ Working ─────────────────────────\n…/project (main)\n↑10 ↓157 … anthropic/claude-sonnet-4.5 • medium' 0
 t62_working pi $'$ make test\nok\n…/project (main)\n↑10 ↓157 … claude-sonnet-4.5 • medium' 1
+# codex-cli 0.166.0's bottom rows (issue #106, Phase 0 check 8): "• Working (3s • esc to
+# interrupt)", sometimes with "· 1 background terminal running". The idle footer reads
+# "Worked for 3s" above the input line "› Ask Codex to do anything".
+t62_working codex $'• Working (4s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close' 0
+t62_working codex $'• Working (3s • esc to interrupt)' 0
+t62_working codex $'Worked for 3s • 10:54 PM\n\n› Ask Codex to do anything' 1
 t62_working unknown 'Waiting for 1 background agent' 1
 
 # The fleet's wire command per harness: pi exposes skills only as /skill:<name>, so a
 # send that used the plain name would reach the model as ordinary text (spike.md,
-# Check 3). An empty harness reads as claude; an unknown one keeps the plain form.
+# Check 3), and codex has no slash command for a skill at all, so a mention is
+# $<name> (issue #106, Phase 0 check 5). An empty harness reads as claude; an unknown
+# one keeps the plain form.
 t62_skill() { # <harness> <expected> [skill args...]
   local harness=$1 want=$2 got
   shift 2
@@ -79,6 +87,9 @@ t62_skill claude "/review --issue 7" review --issue 7
 t62_skill agy "/review --issue 7" review --issue 7
 t62_skill opencode "/review --issue 7" review --issue 7
 t62_skill pi "/skill:review --issue 7" review --issue 7
+t62_skill codex "\$issue-flow 106" issue-flow 106
+t62_skill codex "\$review --issue 7" review --issue 7
+t62_skill codex "\$create-pr-merge" create-pr-merge
 t62_skill "" "/review" review
 t62_skill pi "/skill:create-pr-merge" create-pr-merge
 t62_skill bogus "/review" review

@@ -498,7 +498,7 @@ for id in ${ids[@]+"${ids[@]}"}; do
     session_dry_note=$session_ok_note
   elif [ "$sessions_known" -eq 0 ]; then
     case $harness in
-      agy|pi) session_ok_note="started a new session ($harness cannot report an existing session)" ;;
+      agy|codex|pi) session_ok_note="started a new session ($harness cannot report an existing session)" ;;
       *) session_ok_note="started a new session ($harness did not report its sessions)" ;;
     esac
     session_dry_note=$session_ok_note

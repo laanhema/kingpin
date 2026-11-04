@@ -6,7 +6,7 @@
 
 Kingpin is a multi-worker fleet orchestrator for AI coding agents. It runs tasks in parallel git worktrees, isolates dependencies, prevents git pollution, serializes landing queues, and hands each task to you as a visual review dossier.
 
-Kingpin supports **Claude Code**, **Antigravity CLI (agy)**, **OpenCode**, and **Pi**.
+Kingpin supports **Claude Code**, **Antigravity CLI (agy)**, **OpenCode**, **Pi**, and **Codex** (OpenAI Codex CLI).
 
 ## The Ranks
 
@@ -27,8 +27,9 @@ Ensure the following tools are installed on your host:
   - `agy` (Google Antigravity CLI)
   - `opencode` (OpenCode CLI)
   - `pi` (Pi coding agent: `npm i -g @earendil-works/pi-coding-agent`)
+  - `codex` (OpenAI Codex CLI, 0.166.0)
 
-A Pi worker needs a model login done by hand: run `pi`, then `/login`, then `/model`. Kingpin does not provision credentials; it passes `PI_PROVIDER` and `PI_MODEL` from the project env only when they are set.
+A Pi worker needs a model login done by hand: run `pi`, then `/login`, then `/model`. Kingpin does not provision credentials; it passes `PI_PROVIDER` and `PI_MODEL` from the project env only when they are set. A codex worker needs `codex login` done by hand for the same reason: Kingpin stores no credentials and pins no provider or model, so the worker runs on whatever account your own `codex` is logged into. `kingpin scope doctor --harness codex` prints the binary, what `codex login status` reports, the config store and the skills directory before you spawn.
 
 Optional:
 - **`lavish-axi` (HIGHLY RECOMMENDED):** per-task review dossiers and their interactive actions. Kingpin hands every task back as a visual dossier, and this is what renders it.
@@ -73,7 +74,7 @@ Without `--harness`, no `HARNESS` is written and the project follows the default
 4. `DEFAULT_HARNESS` in `~/.kingpin/config.env`
 5. `claude`
 
-`kingpin lock acquire` finds the harness in this order: `--harness <name>` on `acquire`, the `KINGPIN_HARNESS` environment variable, the command name or argv of the session process (`claude`, `agy`, `opencode`, `pi`, including the `@earendil-works/pi-coding-agent` npm path), then the calling agent's own marker (`CLAUDECODE=1`, `OPENCODE=1`). A session that matches none records nothing. `acquire` and `release` are serialized by a sibling `orchestrator.lock.mutex`, so sessions that start together get one `lock: acquired` and the rest exit 1 naming the holder, and the lock file is renamed into place whole, so `status`, `check` and `harness` never read a half-written file. `kingpin lock release` drops only the calling session's record and refuses, naming the holder, while another live session holds the lock; the record is ignored once the holder process is gone. Project files written by older versions of `kingpin init` contain `HARNESS=claude`, which counts as set; delete that line to let the lock holder decide.
+`kingpin lock acquire` finds the harness in this order: `--harness <name>` on `acquire`, the `KINGPIN_HARNESS` environment variable, the command name or argv of the session process (`claude`, `agy`, `opencode`, `pi`, `codex`, including the `@earendil-works/pi-coding-agent` npm path), then the calling agent's own marker (`CLAUDECODE=1`, `OPENCODE=1`). A session that matches none records nothing. `acquire` and `release` are serialized by a sibling `orchestrator.lock.mutex`, so sessions that start together get one `lock: acquired` and the rest exit 1 naming the holder, and the lock file is renamed into place whole, so `status`, `check` and `harness` never read a half-written file. `kingpin lock release` drops only the calling session's record and refuses, naming the holder, while another live session holds the lock; the record is ignored once the holder process is gone. Project files written by older versions of `kingpin init` contain `HARNESS=claude`, which counts as set; delete that line to let the lock holder decide.
 
 ### 2. Run a task to completion in one command
 

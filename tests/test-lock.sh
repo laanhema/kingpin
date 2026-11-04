@@ -182,6 +182,34 @@ KINGPIN_LOCK_PID=$npm_pid "$KP_BIN/kingpin" lock release >/dev/null
 kill "$npm_pid" 2>/dev/null || true
 wait "$npm_pid" 2>/dev/null || true
 
+# --harness codex, the env override, and a session process named codex (issue #106)
+"$KP_BIN/kingpin" lock release >/dev/null
+start_holder "A=1" --harness codex
+[ "$("$KP_BIN/kingpin" lock status)" = "lock: held by pid $holder_pid (codex)" ] && pass "--harness codex recorded and shown in status" || fail "status: $("$KP_BIN/kingpin" lock status)"
+[ "$("$KP_BIN/kingpin" lock harness)" = "codex" ] && pass "lock harness prints codex for a live holder" || fail "harness: $("$KP_BIN/kingpin" lock harness)"
+stop_holder
+
+"$KP_BIN/kingpin" lock release >/dev/null
+start_holder "KINGPIN_HARNESS=codex"
+[ "$("$KP_BIN/kingpin" lock harness)" = "codex" ] && pass "KINGPIN_HARNESS=codex recorded" || fail "env override: $("$KP_BIN/kingpin" lock harness)"
+stop_holder
+
+mkdir -p "$T/codex-holder"
+cat > "$T/codex-holder/codex" << F
+#!/usr/bin/env bash
+"$KP_BIN/kingpin" lock acquire >/dev/null 2>&1
+sleep 30
+F
+chmod +x "$T/codex-holder/codex"
+"$T/codex-holder/codex" &
+holder_pid=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ "$(head -n 1 "$lock_file" 2>/dev/null)" = "$holder_pid" ] && break
+  sleep 0.1
+done
+[ "$("$KP_BIN/kingpin" lock harness)" = "codex" ] && pass "session process named codex detected as codex" || fail "process detection: $("$KP_BIN/kingpin" lock harness)"
+stop_holder
+
 # Test 7c: parallel acquire attempts race for the lock; exactly one wins
 echo "=== Test 7c: parallel acquire race ==="
 "$KP_BIN/kingpin" lock release >/dev/null
