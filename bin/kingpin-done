@@ -21,6 +21,8 @@ KP_BIN=$(cd "$(dirname "$0")" && pwd)
 . "$KP_BIN/../lib/curator.sh"
 # shellcheck source=../lib/tmux.sh
 . "$KP_BIN/../lib/tmux.sh"
+# shellcheck source=../lib/mux.sh
+. "$KP_BIN/../lib/mux.sh"
 # shellcheck source=../lib/browser.sh
 . "$KP_BIN/../lib/browser.sh"
 GH_CMD=${KINGPIN_GH:-gh}
@@ -338,12 +340,14 @@ if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ] && [ "$SKIP_MERGE_CHECK" != "1" ]; t
   fi
 fi
 
-# 1. Close tmux window. The resolver (lib/tmux.sh) finds this task's own window by name
-# first and only then by the recorded id, on the socket the record names (issue #142),
-# so a stale id that names another window after a tmux server restart is not killed as
-# if it were this task's. `|| true`: a task whose window is already gone still cleans up.
-if kp_window_find "$task_dir" >/dev/null 2>&1; then
-  kp_tmux "$KP_WINDOW_SOCKET" kill-window -t "$KP_WINDOW_ID" 2>/dev/null || true
+# 1. Close the task's terminal. The resolver (lib/mux.sh, from the mux the record
+# names) finds this task's own terminal by name first and only then by the recorded
+# id, on the socket the record names (issue #142), so a stale id that names another
+# window after a tmux server restart is not killed as if it were this task's; a
+# Herdr record closes its pane instead (issue #144). `|| true`: a task whose
+# terminal is already gone still cleans up.
+if kp_mux_find "$task_dir" >/dev/null 2>&1; then
+  kp_mux_kill "$KP_WINDOW_ID" 2>/dev/null || true
 fi
 # No status ack here. The refusal paths exit above and the success path archives
 # the task directory below, so this ack bought nothing; a plain `kingpin-ack`

@@ -15,8 +15,8 @@ KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$KP_ROOT/lib/status.sh"
-# shellcheck source=../lib/tmux.sh
-. "$KP_ROOT/lib/tmux.sh"
+# shellcheck source=../lib/mux.sh
+. "$KP_ROOT/lib/mux.sh"
 GH_CMD=${KINGPIN_GH:-gh}
 # kingpin-wait calls this synchronously: a hung gh call must not block fleet events.
 GH_TIMEOUT=; ! command -v timeout >/dev/null || GH_TIMEOUT="timeout 10"
@@ -48,16 +48,28 @@ slug=$(node "$KP_ROOT/lib/slug.mjs" "$title" 2>/dev/null || true)
 new=kp-$n${slug:+-$slug}
 [[ $new =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 0
 
-# Resolve the window first (lib/tmux.sh): the task's name, then the recorded id, on
-# the socket the record names (issue #142). A rename keeps the window id, so nothing
-# else has to be rewritten.
-if kp_window_find "$task_dir" >/dev/null 2>&1; then
-  kp_tmux "$KP_WINDOW_SOCKET" rename-window -t "$KP_WINDOW_ID" "$new"
+# Resolve the terminal through lib/mux.sh first: the task's name, then the recorded
+# id, on the socket the record names for tmux (issue #142), or the pane label then
+# the recorded pane id for Herdr (issue #144). A rename keeps the target id, so
+# nothing else has to be rewritten.
+mux=''
+if ! mux=$(kp_mux_record "$task_dir"); then
+  # An unreadable mux (an unknown MUX= value) is refused, never guessed.
+  exit 1
+fi
+KP_MUX=$mux
+if kp_mux_find "$task_dir" >/dev/null 2>&1; then
+  kp_mux_rename "$KP_WINDOW_ID" "$new"
 fi
 
-session=${target%%:*}
-tmp=$env_file.rename.$$
-sed "s|^TMUX_TARGET=.*|TMUX_TARGET=$session:$new|" "$env_file" > "$tmp"
-mv "$tmp" "$env_file"
+if [ "$mux" = herdr ]; then
+  # A Herdr record's re-resolution key is the pane label, not TMUX_TARGET.
+  kp_mux_record_label "$task_dir" "$new"
+else
+  session=${target%%:*}
+  tmp=$env_file.rename.$$
+  sed "s|^TMUX_TARGET=.*|TMUX_TARGET=$session:$new|" "$env_file" > "$tmp"
+  mv "$tmp" "$env_file"
+fi
 printf '%s\n' "$new" > "$task_dir/renamed"
 echo "kingpin-rename: $id window renamed to $new"

@@ -13,6 +13,10 @@ Each supported harness uses native configuration and hook mechanisms without dir
 
 `bin/kingpin-scope` (`kingpin scope files`) lists the instruction files a harness really loads for a worktree, and `kingpin scope check` exits 1 naming the file when one of them carries the contract; `kingpin spawn` runs it before it opens a window. `kingpin scope doctor --harness pi` adds the Pi readiness probe: binary, credentials, skills directory and extension; `kingpin scope doctor --harness codex` adds the Codex one: binary, what `codex login status` reports, the config store and the skills directory.
 
+### Multiplexer
+
+The harness is unchanged by where the worker's terminal lives: the same preamble, hooks and launch flags run in a tmux window or a Herdr pane, and the harness layer never names the multiplexer. That choice is a separate layer, `lib/mux.sh`: `KINGPIN_MUX=auto` (the default) uses Herdr only when the command itself runs inside a Herdr pane and tmux everywhere else, `tmux` and `herdr` force one, and any other value is refused by name. The task record decides for an existing task (`MUX=herdr`, or no `MUX=` line for tmux), so one fleet can hold both. Herdr panes are addressed by label first, because Herdr renumbers a pane that moves across workspaces, and its `pane read` returns plain text rather than JSON. The fleet's Herdr session is `KINGPIN_HERDR_SESSION` (default `kingpin`) and must already be running: `herdr server` is a foreground process, so nothing in Kingpin starts or supervises it. `kingpin spawn` still creates tmux workers; `docs/cli.md` records what that means for a Herdr-only fleet.
+
 ### Fleet skills on Pi: support matrix
 
 Pi has no subagent tool, so a skill that delegates runs its steps inline in the worker and loses the

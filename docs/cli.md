@@ -82,6 +82,10 @@ It claims `~/.kingpin/supervisor.pid`, refuses a second copy with the running pi
 
 Workers run on a tmux server Kingpin owns, not on yours. `kingpin spawn` and `kingpin curate` talk to the socket `kingpin` (`tmux -L kingpin`) and create their windows in a session there (`kingpin` unless the session is named), so nothing they do reaches your own session or the default server: closing your last session, or restarting your tmux server, leaves a running worker alone. The task record carries both facts, `TMUX_SOCKET` for the socket and `TMUX_TARGET` for `<session>:<task-id>`, and every command that reads a worker window takes both from the same record. `KINGPIN_TMUX_SOCKET` names another socket, and `KINGPIN_TMUX_SOCKET=default` is the deliberate way back onto your own server. A `task.env` written before the split carries no `TMUX_SOCKET`: its window really is on the default server, so the readers resolve it there.
 
+A worker's terminal can also be a Herdr pane. The backend is chosen per fleet by `KINGPIN_MUX`: `tmux` (or unset outside a Herdr pane) keeps the tmux server above, `herdr` uses Herdr, and `auto` picks Herdr only when the command itself runs inside a Herdr pane (`HERDR_ENV=1`). A value other than `auto`, `tmux` or `herdr` is refused by name. `KINGPIN_HERDR_SESSION` names the fleet's Herdr session (default `kingpin`, the same name the tmux socket uses); that session must already be running, because `herdr server` is a foreground process the operator owns, and Kingpin neither starts nor supervises it. Inside a Herdr pane the inherited `HERDR_SESSION` is used instead.
+
+The mux belongs to the task record, not to the process, so one fleet can hold a tmux worker and a Herdr worker at once. A record with `MUX=tmux` or no `MUX=` line at all is a tmux task, forever, and a record with `MUX=herdr` names `MUX_SESSION`, `MUX_TARGET` (the pane id) and `MUX_LABEL` (the re-resolution key, because Herdr renumbers a pane that moves across workspaces). There is no migration step: `kingpin send`, `peek`, `done`, `ack`, `curate` and the `stop`, `launch-check` and `rename` helpers read the record and reach the right backend, and so does the curator's window check. An orchestrator running inside a Herdr pane that wants tmux workers sets `KINGPIN_MUX=tmux`. `kingpin spawn` still creates tmux workers in this change, so no task record can name Herdr yet: the commands not migrated with it (`kingpin list`, `wait`, `restore`) never meet a Herdr record, and `kingpin curate` under `KINGPIN_MUX=herdr` refuses with two lines that name the mux and the way back (`KINGPIN_MUX=tmux`): the backend's `herdr: creating a terminal for a task is not wired up yet (issue #144 phase E); run with KINGPIN_MUX=tmux`, then `kingpin-curate: could not launch the curator in herdr --session <name> curator`.
+
 To look at the fleet server by hand, attach from a shell outside tmux with `tmux -L kingpin attach -t kingpin`; from inside your own session, `TMUX= tmux -L kingpin attach -t kingpin` attaches to it instead of switching your client's server. `kingpin list` prints the attach command for each socket the live records name under the task rows, and `kingpin peek <task-id>` reads one pane without attaching.
 
 ### Who owns the server
@@ -157,9 +161,9 @@ A live row whose task holds a browser daemon also gets `↳ Browser: 1 daemon, 4
 
 **Usage:** `kingpin send <task-id> "<text>"`
 
-**Environment:** `KINGPIN_HOME`, `KINGPIN_SEND_DELAY`
+**Environment:** `KINGPIN_HOME`, `KINGPIN_SEND_DELAY`, `KINGPIN_MUX`, `KINGPIN_HERDR_SESSION`
 
-The window is resolved by `lib/tmux.sh`: the task's own window name first, then a recorded window ID that still names this task's window, on the socket the record names (`TMUX_SOCKET`). A send after a tmux server restart therefore reaches the task's own window instead of whichever window inherited the stale id, and an id that names another task's window is refused with `tmux window <label> is not alive`.
+The terminal is resolved by `lib/mux.sh`, from the mux the task record names. For a tmux task it is the task's own window name first, then a recorded window ID that still names this task's window, on the socket the record names (`TMUX_SOCKET`): a send after a tmux server restart therefore reaches the task's own window instead of whichever window inherited the stale id, and an id that names another task's window is refused with `tmux window <label> is not alive`. A Herdr task resolves its pane by `MUX_LABEL` first and by the recorded pane id second.
 
 ## kingpin peek
 
@@ -167,11 +171,11 @@ The window is resolved by `lib/tmux.sh`: the task's own window name first, then 
 
 **Flags:** `--lines N`
 
-**Environment:** `KINGPIN_HOME`
+**Environment:** `KINGPIN_HOME`, `KINGPIN_MUX`, `KINGPIN_HERDR_SESSION`
 
 ### Finding the pane
 
-It looks for the task's own window name in the task's session first (`TMUX_TARGET`), because the name is the one key that survives a tmux server restart, where window ids restart at `@0` and a recorded id can name a different task's window. When the name is gone it falls back to the recorded window ID (`TMUX_WINDOW_ID`), which is what keeps a hand-renamed window reachable; an id that names another window is refused rather than typed into. The socket comes from the same record (`TMUX_SOCKET`), so the window is resolved on the server that holds it. The same rule, in `lib/tmux.sh`, is what `send`, `wait`, `ack`, `launch-check`, `stop`, `rename`, `done` and `list` use, and it is why `peek` only needs `list-panes` and `capture-pane`.
+It looks for the task's own window name in the task's session first (`TMUX_TARGET`), because the name is the one key that survives a tmux server restart, where window ids restart at `@0` and a recorded id can name a different task's window. When the name is gone it falls back to the recorded window ID (`TMUX_WINDOW_ID`), which is what keeps a hand-renamed window reachable; an id that names another window is refused rather than typed into. The socket comes from the same record (`TMUX_SOCKET`), so the window is resolved on the server that holds it. The same rule, in `lib/tmux.sh`, is what `send`, `wait`, `ack`, `launch-check`, `stop`, `rename`, `done` and `list` use, and it is why `peek` only needs `list-panes` and `capture-pane`. `send`, `peek`, `ack`, `launch-check`, `stop`, `rename` and `curate` reach it through `lib/mux.sh`, so a task whose record says `MUX=herdr` resolves its pane by `MUX_LABEL` first and its recorded pane id second instead.
 
 ### Read-only
 
@@ -279,7 +283,7 @@ See [Fleet Overview](fleet-overview.md#fleet-overview--visual-review-dossiers).
 
 **Flags:** `--all`, `--through <line>`
 
-**Environment:** `KINGPIN_HOME`
+**Environment:** `KINGPIN_HOME`, `KINGPIN_MUX`, `KINGPIN_HERDR_SESSION`
 
 The cursor never moves backwards and is clamped to the file. An archived task is a no-op that exits 0 with a note, and no cursor is written into the archive.
 
@@ -542,7 +546,7 @@ The worker preamble and `AGENTS.md` require both the pass and the check before `
 
 **Flags:** `--dry-run`, `--auto`, `--mark-applied <pr-url>`, `--land`
 
-**Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_CURATOR_CMD`, `KINGPIN_SKILLS_DIR`, `KINGPIN_CURATOR_AUTO`, `KINGPIN_GH`
+**Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_CURATOR_CMD`, `KINGPIN_SKILLS_DIR`, `KINGPIN_CURATOR_AUTO`, `KINGPIN_GH`, `KINGPIN_MUX`, `KINGPIN_HERDR_SESSION`
 
 `curate` is not harness-neutral. It needs a skills checkout, `KINGPIN_SKILLS_DIR` or the default `~/.claude/skills`, and a missing one dies with `kingpin-curate: skills directory <dir> not found` on a manual run; `--auto` reports one line and exits 0 instead, because a missing checkout must never fail a fleet tick. The curator runs through `KINGPIN_CURATOR_CMD`, then `KINGPIN_CLAUDE`, then `claude`, so a host whose only harness is agy or OpenCode has to set both the directory and the command.
 
@@ -594,14 +598,16 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 | `KINGPIN_CODEX` | `lib/launch.sh`, `bin/kingpin-scope` | Command `spawn` and `restore` launch for the `codex` harness (default `codex`); `kingpin scope doctor --harness codex` probes the same command. |
 | `KINGPIN_GH` | `bin/kingpin-spawn:54`, `bin/kingpin-curate`, `bin/kingpin-done:26` | `gh` command `spawn` uses to read an issue title for the task slug, `curate` uses to create, view and merge the curator's PR, and `done` uses to read and close the issue a finished task names (default `gh`).
 | `KINGPIN_TMUX_SESSION` | `bin/kingpin-spawn:224` | tmux session on the fleet's own server that `spawn` places the worker window in when `--tmux-session` is not given. The session must already exist; an unknown name is refused. Unset, the spawn uses the one attached session on the fleet server, then the only one it holds, and refuses when several are unattached or more than one is attached. |
-| `KINGPIN_SEND_DELAY` | `bin/kingpin-send:60` | Seconds between the literal text and the Enter key (default `0.2`). |
+| `KINGPIN_SEND_DELAY` | `bin/kingpin-send:53` | Seconds between the literal text and the Enter key (default `0.2`). |
+| `KINGPIN_MUX` | `lib/mux.sh` | Multiplexer the fleet creates and reads workers with: `tmux`, `herdr`, or `auto` (default). `auto` selects Herdr only inside a Herdr pane (`HERDR_ENV=1`) and tmux everywhere else; any other value is refused by name. A task record's `MUX=` line, not this variable, decides where an existing task lives. |
+| `KINGPIN_HERDR_SESSION` | `lib/mux-herdr.sh` | Name of the fleet's Herdr session (default `kingpin`, the same name the tmux socket uses). The session must already be running: `herdr server` is a foreground process the operator owns, and nothing in Kingpin starts it. Inside a Herdr pane the inherited `HERDR_SESSION` is used instead. |
 | `KINGPIN_TMUX_SOCKET` | `lib/tmux.sh:20` | Name of the tmux server the fleet uses (default `kingpin`, that is `tmux -L kingpin`), so worker windows are not on your own server; `default` puts them back on it. `kingpin spawn` records the name in `task.env` as `TMUX_SOCKET`, and every window reader resolves the record's socket. The test suites point it at their own socket. |
 | `KINGPIN_CURATOR_CMD` | `bin/kingpin-curate` | Command `curate` launches the curator with; falls back to `KINGPIN_CLAUDE`, then `claude`. |
 | `KINGPIN_CURATOR_AUTO` | `lib/curator.sh` | `0` disables the automatic curator trigger, so `kingpin watch` and `kingpin done` never launch one; unset or any other value leaves it on. The test suites set `0`. |
 | `KINGPIN_SKIP_MERGE_CHECK` | `bin/kingpin-done` | `1` skips the merge verification (the ancestor check and its `git fetch`); the curator's automatic reconcile sets it, because `kingpin land curator` already verified the PR state. Not for hand-setting. |
 | `KINGPIN_SKILLS_DIR` | `bin/kingpin-curate`, `bin/kingpin-scope`, `lib/pi-harness.mjs:55` | Skills directory the curator works in (default `~/.claude/skills`); `kingpin scope` counts its `SKILL.md` files and checks them for the contract, and the Pi extension bridges it into Pi's skill discovery. |
 | `KINGPIN_LAVISH` | `bin/kingpin-listen:58` | `lavish-axi` command the listener drives (default `lavish-axi`). |
-| `KINGPIN_STATUS_GRACE` | `bin/kingpin-launch-check:44` | Seconds a worker may stay silent before `wait`/`watch`/`run` record `failed: no status:` (default `30`). |
+| `KINGPIN_STATUS_GRACE` | `bin/kingpin-launch-check:49` | Seconds a worker may stay silent before `wait`/`watch`/`run` record `failed: no status:` (default `30`). |
 | `KINGPIN_ALLOW_GLOBAL_CONTRACT` | `bin/kingpin-scope` | `1` downgrades a contract found in a global instruction file to a warning instead of a refusal. |
 | `KINGPIN_SKIP_GUARD` | `bin/kingpin-guard:54`, `bin/kingpin-init:82` | `1` silences `kingpin guard warn`, which `kingpin list` and `kingpin wait` call, and the install `kingpin init` runs; it does not silence `kingpin lock acquire`, which runs `kingpin guard check` directly, or a hand-run `kingpin guard install`/`check`. Set by the test suites and scripted setups. |
 | `KINGPIN_SKIP_SOCKET_WARN` | `lib/tmux.sh` | `1` silences the warning `kingpin list` and `kingpin wait` print when a live task record names a tmux server that is not running. Set by scripted setups and the suites. |
@@ -614,5 +620,7 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 
 Two scripts in `bin/` are not `kingpin` subcommands. `kingpin wait` calls them as it scans tasks (`kingpin-launch-check` for a task with an empty `status`, `kingpin-rename` when a task has new status lines); run them by hand only to debug.
 
-- `bin/kingpin-launch-check <task-dir>`: finds a worker that died at launch (its `status` file is still empty). Once the task is older than the grace period (`KINGPIN_STATUS_GRACE`, 30 seconds, counted from the last stop or from launch) and its tmux window or pane is gone, or the Stop hook fired and the window stayed silent without a working marker, it appends and prints `failed: no status: ...`. Exits 0 when it recorded that line, 1 when it recorded nothing, 2 for a bad argument.
-- `bin/kingpin-rename <task-id>`: renames the tmux window and `TMUX_TARGET` of a `--text` task to `kp-<n>-<slug>` once the worker has reported `issue: #<n>`. The task ID, folder, branch and worktree keep their first name. It is idempotent (a `renamed` marker in the task folder) and a no-op for tasks that already have an issue or no `issue:` line.
+- `bin/kingpin-launch-check <task-dir>`: finds a worker that died at launch (its `status` file is still empty). Once the task is older than the grace period (`KINGPIN_STATUS_GRACE`, 30 seconds, counted from the last stop or from launch) and its terminal is gone, or the Stop hook fired and the terminal stayed silent without a working marker, it appends and prints `failed: no status: ...`. Exits 0 when it recorded that line, 1 when it recorded nothing, 2 for a bad argument.
+- `bin/kingpin-rename <task-id>`: renames the terminal and the record's name of a `--text` task to `kp-<n>-<slug>` once the worker has reported `issue: #<n>` (`TMUX_TARGET` for a tmux task, `MUX_LABEL` for a Herdr one). The task ID, folder, branch and worktree keep their first name. It is idempotent (a `renamed` marker in the task folder) and a no-op for tasks that already have an issue or no `issue:` line.
+
+`bin/kingpin-launch-check`, `bin/kingpin-rename` and the `kingpin-stop` hook read the task's mux with `KINGPIN_MUX` and `KINGPIN_HERDR_SESSION`, like the commands that call them.
