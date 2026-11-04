@@ -33,6 +33,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_ROOT/lib/supervisor.sh"
 # shellcheck source=../lib/afk.sh
 . "$KP_ROOT/lib/afk.sh"
+# shellcheck source=../lib/curator.sh
+. "$KP_ROOT/lib/curator.sh"
 KP_BIN="$KP_ROOT/bin"
 
 ONCE=0
@@ -507,6 +509,8 @@ if [ "$ONCE" -eq 1 ]; then
   retry_pending_cleanups
   advance_landing_queues
   rearm_listeners
+  # issue #88: one non-blocking auto-curate chance per idle sweep.
+  kp_curate_maybe "$KP_HOME" "$KP_BIN"
   exit 0
 fi
 
@@ -576,4 +580,6 @@ while true; do
   retry_pending_cleanups
   advance_landing_queues
   rearm_listeners
+  # issue #88: one non-blocking auto-curate chance per idle sweep.
+  kp_curate_maybe "$KP_HOME" "$KP_BIN"
 done

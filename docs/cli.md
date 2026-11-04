@@ -232,6 +232,10 @@ The cursor never moves backwards and is clamped to the file. An archived task is
 
 `kingpin land <task-id>` on a task that already landed resolves its archive, prints `OK: task <task-id> is already finished; nothing to land` and exits 0, so a stale queue entry or a paste of an old id says why instead of claiming the id is unknown. A queued entry for such a task is dropped by the lane with the reason `archived`.
 
+### A curator task
+
+A task whose `task.env` carries `CURATOR=1` is dispatched to `kingpin curate --land` before the review-verdict gate is read. Its work is a PR in the skills checkout, and the human approval that reached `kingpin land curator` is its review gate, so there is no `review=` line to parse.
+
 ### The review gate
 
 The review gate fails closed: it reads `review=` from the worker's last `ready:` line whatever the field order, and only `APPROVE` lands.
@@ -262,7 +266,7 @@ A queued landing is skipped when the task is gone, archived, finished or already
 
 **Flags:** `--force`
 
-**Environment:** `KINGPIN_HOME`, `KINGPIN_LAVISH`
+**Environment:** `KINGPIN_HOME`, `KINGPIN_LAVISH`, `KINGPIN_SKIP_MERGE_CHECK`
 
 ### Single-flight cleanup
 
@@ -278,7 +282,7 @@ The supervisor still retries a refused cleanup, but a task whose lease was lost 
 
 ### Default-branch resolution and the merge check
 
-The merge check resolves the default branch from the remote's `HEAD` (a read-only `git ls-remote --symref`, when the remote is reachable), then `origin/HEAD`, then `origin/master`, then `origin/main`, then the checkout's own `HEAD`, and a failed `git fetch` is reported on stderr rather than read as an unmerged commit: cleanup still succeeds when the last-known refs prove the merge, and the refusal names the fetch failure when they cannot.
+The merge check resolves the default branch from the remote's `HEAD` (a read-only `git ls-remote --symref`, when the remote is reachable), then `origin/HEAD`, then `origin/master`, then `origin/main`, then the checkout's own `HEAD`, and a failed `git fetch` is reported on stderr rather than read as an unmerged commit: cleanup still succeeds when the last-known refs prove the merge, and the refusal names the fetch failure when they cannot. `KINGPIN_SKIP_MERGE_CHECK=1` skips the whole check, for a caller that verified the merge itself; the curator's automatic reconcile sets it.
 
 ### Queue handoff
 
@@ -299,6 +303,10 @@ After a successful archive, `done` leaves a symlink at `~/.kingpin/tasks/<task-i
 ### What cleanup deletes
 
 The tmux window, and the task's Lavish listener with its pid file. The worktree goes back to the treehouse pool as a clean slot, with the spawn's injected files and exclude file cleared. The worker's branches go: the branch it was on and the one recorded in `task.env`, never the default branch. The branch on `origin` is deleted only when the merge check passed, so a `--force` cleanup leaves it in place. The task record moves to `~/.kingpin/archive/<task-id>`, and a taken name gets the next free suffix (`<task-id>.2`, `<task-id>.3`, ...); nothing ever deletes the archive.
+
+### A curator task and the last-task trigger
+
+A curator task carries `NO_LEASE=1`: its worktree is the shared skills checkout, not a leased slot, so cleanup skips the `treehouse return` and the exclude clear (and needs no `--force`) while it keeps the clean-worktree check, the merge verification, branch deletion, the archive and the dossier link. The automatic curator reconcile skips only the merge verification, because `kingpin land curator` already checked the PR state and a `git fetch` in the operator's live skills checkout does not belong in a fleet tick; a hand-run `kingpin done curator` keeps it. After the archive, cleanup gives the auto-curate trigger one chance, so the last task leaving an idle fleet can start the day's curation the same way a supervisor sweep does. That check is non-blocking and cannot fail the cleanup.
 
 ## kingpin lock
 
@@ -404,33 +412,48 @@ The worker preamble and `AGENTS.md` require both the pass and the check before `
 
 ## kingpin curate
 
-**Usage:** `kingpin curate [--dry-run]`
+**Usage:** `kingpin curate [--dry-run] [--auto] [--mark-applied <pr-url>] [--land]`
 
-**Flags:** `--dry-run`
+**Flags:** `--dry-run`, `--auto`, `--mark-applied <pr-url>`, `--land`
 
-**Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_CURATOR_CMD`, `KINGPIN_SKILLS_DIR`
+**Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_CURATOR_CMD`, `KINGPIN_SKILLS_DIR`, `KINGPIN_CURATOR_AUTO`, `KINGPIN_GH`
 
-`curate` is not harness-neutral. It needs a skills directory, `KINGPIN_SKILLS_DIR` or the default `~/.claude/skills`, and a missing one dies with `kingpin-curate: skills directory <dir> not found`. The curator runs through `KINGPIN_CURATOR_CMD`, then `KINGPIN_CLAUDE`, then `claude`, so a host whose only harness is agy or OpenCode has to set both the directory and the command.
+`curate` is not harness-neutral. It needs a skills checkout, `KINGPIN_SKILLS_DIR` or the default `~/.claude/skills`, and a missing one dies with `kingpin-curate: skills directory <dir> not found` on a manual run; `--auto` reports one line and exits 0 instead, because a missing checkout must never fail a fleet tick. The curator runs through `KINGPIN_CURATOR_CMD`, then `KINGPIN_CLAUDE`, then `claude`, so a host whose only harness is agy or OpenCode has to set both the directory and the command.
 
-### Trust and `--help`
+### The branch and the PR
 
-It records trust for that directory with the same helper `kingpin spawn` uses, so the first run on an untrusted host shows no folder-trust dialog; `--help` prints usage without launching anything, and an unknown flag exits 2.
+Curation is a pull request, never a write to the default branch of the skills checkout. The curator creates `curator/<YYYY-MM-DD>` from `origin/<default>`, commits only the skill files the batch justifies, pushes, and opens a PR. The applied marker is written at PR-open time, so a pending PR is not applied twice and a merged one stays auditable.
 
-### Reaping a dead curator
+### The curator task record
 
-A curator window whose panes have all exited is reaped instead of reported as `already active`, so a failed launch cannot block the next run.
+A real run creates `~/.kingpin/tasks/curator` with `MODE=review`, `CURATOR=1` and `NO_LEASE=1`, and launches the curator into the existing `kingpin:curator` window. The curator reports through the worker protocol: `ready: branch=<branch> review=PENDING report=<task>/report.html pr=<url>` starts a dossier listener, and `kingpin list` shows the row. `PENDING` is deliberate, so a curator can never auto-land: the review dossier's Approve & Land button runs `kingpin land curator`, and its Request Changes button queues the note for the orchestrator, which sends it to the curator window while it is alive (`kingpin send curator "..."`). Otherwise close the PR and run `kingpin curate` again. The task id `curator` is reserved; a `task.env` there without `CURATOR=1` makes the run refuse rather than overwrite a user's task.
 
-### Consumed critiques
+### The automatic trigger
 
-A critique applied by a successful run is stamped beside the file (`critique.consumed`) and is not collected again, including after `kingpin done` archives the task; a critique rewritten while the curator is running is left pending, so the next run collects the new bytes. A failed, reaped or non-zero run leaves every critique pending.
+`kingpin watch` runs one check as the last step of every sweep, and `kingpin done` runs it after archiving the last task, so no daemon or timer is involved. `--auto` starts a curator only when all of these hold: `KINGPIN_CURATOR_AUTO` is not `0`; the skills directory is a git checkout; no run has been stamped today; no `kingpin:curator` window is alive; at least three critiques are pending; and the fleet is idle (no live task, no live `landing_in_progress` task, an empty `projects/*.landing_queue`, and no live `projects/*.landing` holder). The daily stamp is `$KINGPIN_HOME/curator/last-run`: line 1 the epoch, line 2 the local calendar day. It is written when the window exists, so a failed run still consumes the day and the next calendar day retries; a launch that failed before the window is retried on the next tick.
 
-### `--dry-run`
+The trigger never waits: it takes the curator mutex with a single non-blocking attempt and skips when someone else holds it, reads local files only, and always exits 0. A landing in flight is therefore never delayed. An existing live window makes it a no-op that prints one line and claims the day; a dead pane is reaped and replaced. A live curator task whose last status is terminal is reconciled through `kingpin done curator` first, and a finished curator record's symlink at `tasks/curator` is dropped so the new record is a real directory. A live record that is not terminal, such as a curator waiting for review, holds the idle gate back and is named on stderr with its last status line and PR, so the fleet log says why the day started nothing.
 
-`--dry-run` writes no file and leaves the previous run's `curator-input.txt`, `batch-critiques.txt` and `launch.sh` byte-identical.
+### Consumed critiques and the applied marker
 
-### Serialized runs
+A critique applied by a successful run is stamped beside the file (`critique.consumed`) and is not collected again, including after `kingpin done` archives the task; a critique rewritten while the curator is running is left pending, so the next run collects the new bytes. When the PR opens, the critique is renamed to `critique.applied.<epoch>` and the URL is written beside it as `critique.applied.<epoch>.pr`. A closed-unmerged PR therefore leaves its critiques consumed but auditable by URL: to re-apply them, delete the task's `critique.consumed` and `critique.applied.*` files and run `kingpin curate` again. A failed, reaped or non-zero run before the PR opens leaves every critique pending.
 
-Concurrent runs are serialized, so one curator is published and launched at a time.
+### `--mark-applied <pr-url>`
+
+Marks the published batch applied with the PR URL and exits with the helper's status. It refuses a PR whose base repository is not the skills checkout's origin, or whose head is not the branch the record opened. The curator calls it itself when the PR opens, and the launch wrapper calls it again after the child returns only as a fallback for a harness that exited before that step. It takes no mutex and writes no launch state. Calling it on an already-marked batch prints `OK: marked 0 critique(s)`.
+
+### `--land`
+
+Merges the curator's PR and finishes its record: it resolves `$KINGPIN_HOME/curator/pr`, refuses unless gh reports that PR's base repository as the skills checkout's origin and its head as the branch the record opened, refuses when the skills checkout is on its default branch, merges with `KINGPIN_GH`, verifies the state is `MERGED`, appends `merged: pr=<url>` to the task status, and runs `kingpin done curator`. `--delete-branch` is omitted in a linked worktree, which cannot switch its checkout. `kingpin land curator` dispatches here before its review-verdict gate, because the human approval that reached it is the review gate. A failed merge removes the `landing_sent` marker and leaves the PR open.
+
+### `--dry-run` and serialized runs
+
+`--dry-run` writes no file and leaves the previous run's `curator-input.txt`, `batch-critiques.txt` and `launch.sh` byte-identical. Manual runs are serialized, so one curator is published and launched at a time.
+
+### Trust
+
+It records trust for the skills directory with the same helper `kingpin spawn` uses, so the first run on an untrusted host shows no folder-trust dialog; `--help` prints usage without launching anything, and an unknown flag exits 2.
+
 
 ## Environment variables
 
@@ -442,10 +465,12 @@ Concurrent runs are serialized, so one curator is published and launched at a ti
 | `KINGPIN_AGY` | `bin/kingpin-spawn:37` | Command `spawn` launches for the `agy` harness (default `agy`). |
 | `KINGPIN_OPENCODE` | `bin/kingpin-spawn:38` | Command `spawn` launches for the `opencode` harness (default `opencode`). |
 | `KINGPIN_PI` | `bin/kingpin-spawn:39`, `bin/kingpin-scope` | Command `spawn` launches for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
-| `KINGPIN_GH` | `bin/kingpin-spawn:40` | `gh` command `spawn` uses to read an issue title for the task slug (default `gh`). |
+| `KINGPIN_GH` | `bin/kingpin-spawn:40`, `bin/kingpin-curate` | `gh` command `spawn` uses to read an issue title for the task slug, and `curate` uses to create, view and merge the curator's PR (default `gh`). |
 | `KINGPIN_SEND_DELAY` | `bin/kingpin-send:60` | Seconds between the literal text and the Enter key (default `0.2`). |
-| `KINGPIN_CURATOR_CMD` | `bin/kingpin-curate:14` | Command `curate` launches the curator with; falls back to `KINGPIN_CLAUDE`, then `claude`. |
-| `KINGPIN_SKILLS_DIR` | `bin/kingpin-curate:13`, `bin/kingpin-scope`, `lib/pi-harness.mjs:55` | Skills directory the curator works in (default `~/.claude/skills`); `kingpin scope` counts its `SKILL.md` files and checks them for the contract, and the Pi extension bridges it into Pi's skill discovery. |
+| `KINGPIN_CURATOR_CMD` | `bin/kingpin-curate` | Command `curate` launches the curator with; falls back to `KINGPIN_CLAUDE`, then `claude`. |
+| `KINGPIN_CURATOR_AUTO` | `lib/curator.sh` | `0` disables the automatic curator trigger, so `kingpin watch` and `kingpin done` never launch one; unset or any other value leaves it on. The test suites set `0`. |
+| `KINGPIN_SKIP_MERGE_CHECK` | `bin/kingpin-done` | `1` skips the merge verification (the ancestor check and its `git fetch`); the curator's automatic reconcile sets it, because `kingpin land curator` already verified the PR state. Not for hand-setting. |
+| `KINGPIN_SKILLS_DIR` | `bin/kingpin-curate`, `bin/kingpin-scope`, `lib/pi-harness.mjs:55` | Skills directory the curator works in (default `~/.claude/skills`); `kingpin scope` counts its `SKILL.md` files and checks them for the contract, and the Pi extension bridges it into Pi's skill discovery. |
 | `KINGPIN_LAVISH` | `bin/kingpin-listen:58` | `lavish-axi` command the listener drives (default `lavish-axi`). |
 | `KINGPIN_STATUS_GRACE` | `bin/kingpin-launch-check:44` | Seconds a worker may stay silent before `wait`/`watch`/`run` record `failed: no status:` (default `30`). |
 | `KINGPIN_ALLOW_GLOBAL_CONTRACT` | `bin/kingpin-scope` | `1` downgrades a contract found in a global instruction file to a warning instead of a refusal. |
