@@ -52,6 +52,14 @@ seen_count() {
   tr -d ' \n' < "$file"
 }
 
+# shellcheck disable=SC2329 # invoked indirectly by wait_until
+# seen_is <task> <count>: the predicate wait_until needs, because `seen_count` itself
+# always succeeds. The supervisor logs a dispatch and then acks it, so a read taken the
+# instant the log line appears can still see the previous cursor.
+seen_is() {
+  [ "$(seen_count "$1")" = "$2" ]
+}
+
 # seen_is <task-id> <lines>: the cursor reached that line. The supervisor logs a
 # handled line before it advances the cursor (a crash in between replays the line,
 # never loses it), so a test that reads the cursor the instant a log line appears
@@ -280,7 +288,9 @@ wait_until 75 log_has "[kingpin-watch] t-restart is waiting: restart-second" \
 log_has "[kingpin-watch] t-restart needs input" \
   && fail "the restart re-dispatched a line the earlier supervisor had handled" \
   || pass "the restart did not repeat a handled line"
-[ "$(seen_count t-restart)" = "4" ] && pass "the restart left the cursor at the end" || fail "t-restart seen=$(seen_count t-restart)"
+wait_until 75 seen_is t-restart 4 \
+  && pass "the restart left the cursor at the end" \
+  || fail "t-restart seen=$(seen_count t-restart)"
 
 # Test 7g: a cursor moved through one line leaves later appends pending (the race)
 echo "=== Test 7g: --through leaves later lines pending ==="

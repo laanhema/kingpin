@@ -125,6 +125,8 @@ The `SESSION` column names the tmux session the worker's window lives in. It is 
 
 A finished task is shown from `archive/` (with `--all`), never from the dossier link `kingpin done` leaves at its old `tasks/` path: that path resolves a review page, it is not a live task. An archived row has no live window left to read, so its `SESSION` shows the session recorded at spawn, or `-` when none was recorded.
 
+The `STATE` column marks `WAITING` (blocked on a human), `SILENT` (a Stop without a report) and `DEAD`: a live task whose window is gone, or whose recorded harness pid (`harness.pid`) is no longer the pane's. A tmux server that died therefore reads as a dead fleet instead of a healthy one, and one `Fleet: <n> live task(s) have no live window; run kingpin restore` line follows the table. `DEAD` combines with `Unseen: N` the way the other states do.
+
 Every live task whose folder holds a `report.html` gets its dossier line printed below its row, whatever the task's mode or status: the Lavish session URL the listener recorded in the task's `dossier.url` when it opened the page, or the `lavish-axi <path>` command when no URL is recorded yet. Hand the URL over instead of running the command, which opens a second tab on the session the listener already opened (issue #146). The line is followed by `(listening: pid <n>)` while that task's listener runs; a finished or archived row gets no dossier line.
 
 Every live row whose window is still alive also gets a `↳ Window:` line naming the socket, session and window that hold the worker, for example `↳ Window: tmux -L kingpin kingpin (@3)`, and the footer prints the command that attaches to the fleet server: `Workers live on the tmux server 'kingpin': tmux -L kingpin attach -t kingpin (kingpin peek <task-id> reads one pane)`. A worker whose pane is gone gets no line, so the line never points at a session that is empty. A task record from before the split has no socket, so its line reads `tmux kingpin (@n)`: that window is on the default server.
@@ -135,7 +137,7 @@ Every live row whose window is still alive also gets a `↳ Window:` line naming
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_SEND_DELAY`
 
-It resolves the worker's window the same way `kingpin peek` does, from `TMUX_WINDOW_ID` (or `TMUX_TARGET`) and the record's `TMUX_SOCKET`, so it types into the fleet server that holds the window rather than into the default server.
+The window is resolved by `lib/tmux.sh`: the task's own window name first, then a recorded window ID that still names this task's window, on the socket the record names (`TMUX_SOCKET`). A send after a tmux server restart therefore reaches the task's own window instead of whichever window inherited the stale id, and an id that names another task's window is refused with `tmux window <label> is not alive`.
 
 ## kingpin peek
 
@@ -147,7 +149,7 @@ It resolves the worker's window the same way `kingpin peek` does, from `TMUX_WIN
 
 ### Finding the pane
 
-It finds the pane from the recorded window ID (`TMUX_WINDOW_ID`), so it works after the window is renamed or moved, and falls back to `TMUX_TARGET` for older `task.env` files. It reads the socket from the same record (`TMUX_SOCKET`), so the window ID is resolved on the server that holds it: window IDs are unique per server, not across servers, and a record without the key resolves on the default server, where its window is.
+It looks for the task's own window name in the task's session first (`TMUX_TARGET`), because the name is the one key that survives a tmux server restart, where window ids restart at `@0` and a recorded id can name a different task's window. When the name is gone it falls back to the recorded window ID (`TMUX_WINDOW_ID`), which is what keeps a hand-renamed window reachable; an id that names another window is refused rather than typed into. The socket comes from the same record (`TMUX_SOCKET`), so the window is resolved on the server that holds it. The same rule, in `lib/tmux.sh`, is what `send`, `wait`, `ack`, `launch-check`, `stop`, `rename`, `done` and `list` use, and it is why `peek` only needs `list-panes` and `capture-pane`.
 
 ### Read-only
 
@@ -335,11 +337,62 @@ After a successful archive, `done` leaves a symlink at `~/.kingpin/tasks/<task-i
 
 ### What cleanup deletes
 
-The tmux window, on the socket the task record names (`TMUX_SOCKET`; a record from before the split names none, and its window is on the default server), and the task's Lavish listener with its pid file. The worktree goes back to the treehouse pool as a clean slot, with the spawn's injected files and exclude file cleared. The worker's branches go: the branch it was on and the one recorded in `task.env`, never the default branch. The branch on `origin` is deleted only when the merge check passed, so a `--force` cleanup leaves it in place. The task record moves to `~/.kingpin/archive/<task-id>`, and a taken name gets the next free suffix (`<task-id>.2`, `<task-id>.3`, ...); nothing ever deletes the archive.
+The tmux window, on the socket the task record names (`TMUX_SOCKET`; a record from before the split names none, and its window is on the default server), and the task's Lavish listener with its pid file. The window is resolved the way `peek` resolves it (name first, then a recorded id that still names this task's window), so a stale id after a server restart never kills a stranger's window. The worktree goes back to the treehouse pool as a clean slot, with the spawn's injected files and exclude file cleared. The worker's branches go: the branch it was on and the one recorded in `task.env`, never the default branch. The branch on `origin` is deleted only when the merge check passed, so a `--force` cleanup leaves it in place. The task record moves to `~/.kingpin/archive/<task-id>`, and a taken name gets the next free suffix (`<task-id>.2`, `<task-id>.3`, ...); nothing ever deletes the archive.
 
 ### A curator task and the last-task trigger
 
 A curator task carries `NO_LEASE=1`: its worktree is the shared skills checkout, not a leased slot, so cleanup skips the `treehouse return` and the exclude clear (and needs no `--force`) while it keeps the clean-worktree check, the merge verification, branch deletion, the archive and the dossier link. The automatic curator reconcile skips only the merge verification, because `kingpin land curator` already checked the PR state and a `git fetch` in the operator's live skills checkout does not belong in a fleet tick; a hand-run `kingpin done curator` keeps it. After the archive, cleanup gives the auto-curate trigger one chance, so the last task leaving an idle fleet can start the day's curation the same way a supervisor sweep does. That check is non-blocking and cannot fail the cleanup.
+
+## kingpin restore
+
+**Usage:** `kingpin restore [<task-id> ...] [--harness <name>] [--dry-run] [--force]`
+
+**Flags:** `--harness <name>`, `--dry-run`, `--force`
+
+**Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_AGY`, `KINGPIN_OPENCODE`, `KINGPIN_PI`
+
+Bring live tasks back after the tmux server dies. A window that is gone is created again, a window that came back as a plain shell under the task's name is respawned in place, and either way the window runs in the task's own worktree and on the branch the worktree has checked out. A name that another live task record also resolves to is never respawned: restore refuses it and names the conflict, because the window belongs to that other task. With no task ids it restores every live task under `$KINGPIN_HOME/tasks`, in sorted order.
+
+The recorded harness is relaunched through the same `lib/launch.sh` a spawn uses, so the preamble, the harness wiring and the injected worktree files are the ones this task had. A record that carries a project's `PI_PROVIDER` and `PI_MODEL` (both written at spawn when the project sets them) relaunches `pi` with the same `--provider` and `--model`, so a restored pi worker comes back on its model. `--harness` launches another harness for this run and records it in `task.env` before the preamble is written, so the pi preamble sentence is there too.
+
+### The resume brief
+
+The harness restarts with no conversational memory, so `<task-dir>/resume-prompt.txt` names the task, project, worktree, branch, mode and harness, repeats the last *worker* status line (an `approved:` or `feedback:` note never decides it), and maps that line to one next step: a `ready:` task is told the review stands and not to land, a `fixed:` task checks the PR state for the merge, an open question waits for its answer, and a task whose landing was already sent is told to check whether the merge happened and never to run `kingpin land` again. The brief also repeats the house rules: one literal status line per event, questions through `question.md` and `needs-input:`, and never `kingpin spawn`, `lock`, `land`, `done`, `listen` or `send`. The window's launch script reads that file instead of the original `prompt.txt`, which stays in the task folder for reference.
+
+### Refusals
+
+A task that cannot be brought back is named on stderr as `kingpin-restore: refused <id>: <reason>`, nothing is deleted, and the run exits 1. Refused are:
+
+- a finished task, named with its archive path;
+- a missing task record or a `task.env` without `TASK_ID`, `PROJECT`, `WORKTREE` or `TMUX_TARGET`;
+- a curator task (`NO_LEASE=1`), which `kingpin curate` owns;
+- a task whose last worker event is `merged:`, `cleanup-refused:` or `failed:`, each with the command that finishes or replaces it;
+- a missing worktree, a directory that is not a linked worktree, or a detached HEAD;
+- a worktree that treehouse no longer reports as `leased`, or one whose lease cannot be verified;
+- a window name that another live task record also resolves to, which restore will not reclaim;
+- a harness command that is not installed.
+
+The refusal changes nothing, so the record, the worktree and the branch survive for a later run.
+
+### `--force`
+
+`--force` covers the two advisory refusals only: a harness that still looks alive in its window, and a lease that cannot be verified. It never overrides a missing worktree, an archived task or a terminal status line, so no flag turns `restore` into a destructive command.
+
+### `--dry-run`
+
+`--dry-run` prints one `would restore ...` line per task and touches nothing: no window, no launch file, no `task.env` change, and no restore mutex. A task the real run refuses before it writes is refused here too, with the same line, so the plan shows those conflicts as well as the work. It is the way to see what a fleet-wide restore would do.
+
+### One restore at a time
+
+A restore takes `$KINGPIN_HOME/locks/restore.mutex` for the whole run, so two operators cannot both start a harness for one task. A second run names the holder and exits 1. A second restore over a healthy fleet prints `OK: <id> is already live (<session>:<name> (@N))` per task and starts nothing.
+
+### Starting the supervisor again
+
+The supervisor's pidfile died with the tmux server, so start `kingpin watch` again after a restore. Restore does not re-arm a review dossier's listener: that is the supervisor's job.
+
+### Exit codes
+
+Exits 0 when every named task was restored or was already live; 1 when any task was refused or another restore holds the mutex; 2 for a bad argument, including an unknown flag, an invalid task id or an unknown harness name.
 
 ## kingpin lock
 
@@ -465,7 +518,7 @@ A real run creates `~/.kingpin/tasks/curator` with `MODE=review`, `CURATOR=1`, `
 
 `kingpin watch` runs one check as the last step of every sweep, and `kingpin done` runs it after archiving the last task, so no daemon or timer is involved. `--auto` starts a curator only when all of these hold: `KINGPIN_CURATOR_AUTO` is not `0`; the skills directory is a git checkout; no run has been stamped today; no `kingpin:curator` window is alive; at least three critiques are pending; and the fleet is idle (no live task, no live `landing_in_progress` task, an empty `projects/*.landing_queue`, and no live `projects/*.landing` holder). The daily stamp is `$KINGPIN_HOME/curator/last-run`: line 1 the epoch, line 2 the local calendar day. It is written when the window exists, so a failed run still consumes the day and the next calendar day retries; a launch that failed before the window is retried on the next tick.
 
-The trigger never waits: it takes the curator mutex with a single non-blocking attempt and skips when someone else holds it, reads local files only, and always exits 0. A landing in flight is therefore never delayed. An existing live window makes it a no-op that prints one line and claims the day; a dead pane is reaped and replaced. A live curator task whose last status is terminal is reconciled through `kingpin done curator` first, and a finished curator record's symlink at `tasks/curator` is dropped so the new record is a real directory. A live record that is not terminal, such as a curator waiting for review, holds the idle gate back and is named on stderr with its last status line and PR, so the fleet log says why the day started nothing.
+The trigger never waits: it takes the curator mutex with a single non-blocking attempt and skips when someone else holds it, reads local files only, and always exits 0. A landing in flight is therefore never delayed. The `kingpin:curator` window is settled before any record is reconciled, because `kingpin done` closes a window by its name: an existing live window makes it a no-op that prints one line and claims the day, and a dead pane is reaped and replaced. A live curator task whose last status is terminal is then reconciled through `kingpin done curator`, and a finished curator record's symlink at `tasks/curator` is dropped so the new record is a real directory. A live record that is not terminal, such as a curator waiting for review, holds the idle gate back and is named on stderr with its last status line and PR, so the fleet log says why the day started nothing.
 
 ### Consumed critiques and the applied marker
 
@@ -494,10 +547,10 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 |---|---|---|
 | `KINGPIN_HOME` | every fleet command | Fleet state directory (default `~/.kingpin`): `tasks/`, `archive/`, `projects/`, `locks/`, `supervisor.pid` and `config.env`. |
 | `KINGPIN_HARNESS` | `bin/kingpin-lock:112` | Harness recorded by `lock acquire` when `--harness` is omitted (before the command-name and agent-marker detection). |
-| `KINGPIN_CLAUDE` | `bin/kingpin-spawn:48` | Command `spawn` launches for the `claude` harness (default `claude`). |
-| `KINGPIN_AGY` | `bin/kingpin-spawn:49` | Command `spawn` launches for the `agy` harness (default `agy`). |
-| `KINGPIN_OPENCODE` | `bin/kingpin-spawn:50` | Command `spawn` launches for the `opencode` harness (default `opencode`). |
-| `KINGPIN_PI` | `bin/kingpin-spawn:51`, `bin/kingpin-scope` | Command `spawn` launches for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
+| `KINGPIN_CLAUDE` | `lib/launch.sh` | Command `spawn` and `restore` launch for the `claude` harness (default `claude`). |
+| `KINGPIN_AGY` | `lib/launch.sh` | Command `spawn` and `restore` launch for the `agy` harness (default `agy`). |
+| `KINGPIN_OPENCODE` | `lib/launch.sh` | Command `spawn` and `restore` launch for the `opencode` harness (default `opencode`). |
+| `KINGPIN_PI` | `lib/launch.sh`, `bin/kingpin-scope` | Command `spawn` and `restore` launch for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
 | `KINGPIN_GH` | `bin/kingpin-spawn:52`, `bin/kingpin-curate` | `gh` command `spawn` uses to read an issue title for the task slug, and `curate` uses to create, view and merge the curator's PR (default `gh`). |
 | `KINGPIN_TMUX_SESSION` | `bin/kingpin-spawn:227` | tmux session on the fleet's own server that `spawn` places the worker window in when `--tmux-session` is not given. The session must already exist; an unknown name is refused. Unset, the spawn uses the one attached session on the fleet server, then the only session it holds, and refuses when several are unattached or more than one is attached. |
 | `KINGPIN_SEND_DELAY` | `bin/kingpin-send:60` | Seconds between the literal text and the Enter key (default `0.2`). |

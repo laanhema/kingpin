@@ -38,8 +38,6 @@ n=$(printf '%s\n' "$line" | sed -E 's/^issue: #([0-9]+).*/\1/')
 
 project_path=$(kp_env_get "$env_file" PROJECT_PATH)
 target=$(kp_env_get "$env_file" TMUX_TARGET)
-window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
-tmux_socket=$(kp_tmux_socket_from_env "$env_file")
 [ -n "$target" ] || target=kingpin:$id
 
 title=''
@@ -50,9 +48,11 @@ slug=$(node "$KP_ROOT/lib/slug.mjs" "$title" 2>/dev/null || true)
 new=kp-$n${slug:+-$slug}
 [[ $new =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 0
 
-window=${window_id:-$target}
-if kp_tmux "$tmux_socket" list-panes -t "$window" >/dev/null 2>&1; then
-  kp_tmux "$tmux_socket" rename-window -t "$window" "$new"
+# Resolve the window first (lib/tmux.sh): the task's name, then the recorded id, on
+# the socket the record names (issue #142). A rename keeps the window id, so nothing
+# else has to be rewritten.
+if kp_window_find "$task_dir" >/dev/null 2>&1; then
+  kp_tmux "$KP_WINDOW_SOCKET" rename-window -t "$KP_WINDOW_ID" "$new"
 fi
 
 session=${target%%:*}
