@@ -274,7 +274,7 @@ grep -qF 'session from --tmux-session' <<< "$t20_flag" && pass "t20: the spawn o
 # to be the name tmux resolved it to, not the prefix that was typed.
 t20_prefix=$(TMUX='' "$KP_BIN/kingpin" spawn demo-auto --issue 500 --id t20-prefix --mode review --tmux-session S 2>&1 || true)
 [ "$(t20_target t20-prefix)" = "S1" ] && t20_window_in S1 t20-prefix && pass "t20: a session-name prefix records the real session name" || fail "t20: prefix target is $(t20_target t20-prefix)"
-grep -qF 'tmux S1:t20-prefix' <<< "$t20_prefix" && pass "t20: the OK line names the resolved session" || fail "t20: OK line does not name the resolved session: $t20_prefix"
+grep -qF "tmux -L $KINGPIN_TMUX_SOCKET S1:t20-prefix" <<< "$t20_prefix" && pass "t20: the OK line names the resolved session" || fail "t20: OK line does not name the resolved session: $t20_prefix"
 "$KP_BIN/kingpin" "done" t20-prefix --force >/dev/null || true
 
 # Branch 5: the one attached session wins, even with two other sessions on the server.
