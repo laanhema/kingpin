@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Acquire or inspect the kingpin orchestrator session lock.
-# Usage: kingpin-lock [status|check|acquire|release|harness] [--harness claude|agy|opencode|pi] [pid]
+# Usage: kingpin-lock [status|check|acquire|release|harness] [--harness claude|agy|opencode|pi|codex] [pid]
 #
 # The lock file holds the session pid on line 1 and, when known, the agent
-# harness of the session (claude, agy, opencode or pi) on line 2. `kingpin spawn`
+# harness of the session (claude, agy, opencode, pi or codex) on line 2. `kingpin spawn`
 # uses that harness as the default worker harness (`kingpin-lock harness`).
 #
 # `acquire` and `release` are serialized by a sibling mutex,
@@ -23,10 +23,10 @@
 #   1. --harness <name> on `acquire`
 #   2. the KINGPIN_HARNESS environment variable
 #   3. the command name (or argv) of the session pid: claude*, agy*, opencode*,
-#      pi*, or the npm package path @earendil-works/pi-coding-agent
+#      pi*, codex*, or the npm package path @earendil-works/pi-coding-agent
 #   4. the calling agent's own environment marker: CLAUDECODE=1 -> claude,
 #      OPENCODE=1 -> opencode
-# Nothing matched (e.g. a codex session): no harness is recorded. The record
+# Nothing matched (e.g. a gemini session): no harness is recorded. The record
 # goes away with `release` and is ignored once the holder pid is dead; the next
 # `acquire` over a stale lock rewrites the whole file.
 set -euo pipefail
@@ -53,7 +53,7 @@ usage: kingpin-lock [status|check|acquire [--harness <name>]|release|harness] [p
   check     exit 0 when this session holds the lock, 1 when it does not
   acquire   take the lock for this session (default command)
   release   drop this session's lock; refuses while another live session holds it
-  harness   print the harness recorded for the holder (claude, agy, opencode, pi)
+  harness   print the harness recorded for the holder (claude, agy, opencode, pi, codex)
 
 --harness records the session's harness on `acquire`. A numeric [pid] overrides
 the detected session pid; KINGPIN_LOCK_PID does the same.
@@ -61,7 +61,7 @@ HELP
 }
 
 valid_harness() {
-  case "$1" in claude|agy|opencode|pi) return 0 ;; *) return 1 ;; esac
+  case "$1" in claude|agy|opencode|pi|codex) return 0 ;; *) return 1 ;; esac
 }
 
 # Harness name for a process, from its command name or argv. Empty if unknown.
@@ -81,8 +81,9 @@ harness_of_pid() {
     agy|agy-*) echo agy; return 0 ;;
     opencode|opencode-*) echo opencode; return 0 ;;
     pi|pi-*) echo pi; return 0 ;;
+    codex|codex-*) echo codex; return 0 ;;
   esac
-  local pattern='(^|[ /])(claude|agy|opencode|pi)(-[^ ]*)?([ ]|$)'
+  local pattern='(^|[ /])(claude|agy|opencode|pi|codex)(-[^ ]*)?([ ]|$)'
   if [[ "$args" =~ $pattern ]]; then
     echo "${BASH_REMATCH[2]}"
   fi
@@ -97,7 +98,7 @@ detect_harness() {
     h=$KINGPIN_HARNESS
   fi
   if [ -n "$h" ]; then
-    valid_harness "$h" || { echo "error: unsupported harness: $h (must be claude, agy, opencode, or pi)" >&2; return 1; }
+    valid_harness "$h" || { echo "error: unsupported harness: $h (must be claude, agy, opencode, pi, or codex)" >&2; return 1; }
     echo "$h"
     return 0
   fi

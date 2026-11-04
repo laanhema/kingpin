@@ -10,7 +10,7 @@
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_SKIP_GUARD`
 
-`--harness` accepts `claude`, `agy`, `opencode` and `pi`; it writes the project's `HARNESS`, which `kingpin spawn` follows. `--setup` records the project's `SETUP_CMD`, which `kingpin spawn` runs in each new worktree before the harness launches (its output goes to the task's `setup.log`), and is the mechanism behind the "isolates dependencies" claim in the [README](../README.md).
+`--harness` accepts `claude`, `agy`, `opencode`, `pi` and `codex`; it writes the project's `HARNESS`, which `kingpin spawn` follows. `--setup` records the project's `SETUP_CMD`, which `kingpin spawn` runs in each new worktree before the harness launches (its output goes to the task's `setup.log`), and is the mechanism behind the "isolates dependencies" claim in the [README](../README.md).
 
 ## kingpin run
 
@@ -22,7 +22,7 @@
 - `--text`: a free-text request: the worker runs /create-issue first, then the same
 - `--mode`: review (default) stops at a ready branch for the review; auto merges when green
 - `--id`: task id; defaults to kp-<n>-<slug> (issue title) or kp-<slug> (request)
-- `--harness`: worker harness: claude, agy, opencode, or pi (overrides the project and the lock)
+- `--harness`: worker harness: claude, agy, opencode, pi, or codex (overrides the project and the lock)
 - `--tmux-session`: tmux session to place the worker window in when the caller has no tmux client context; `run` forwards it to the `kingpin spawn` it starts (see [Choosing the session](#choosing-the-session))
 
 **Environment:** `KINGPIN_HOME` (its own); the `kingpin spawn` it runs reads the rest, listed under [kingpin spawn](#kingpin-spawn).
@@ -69,10 +69,10 @@ It claims `~/.kingpin/supervisor.pid`, refuses a second copy with the running pi
 - `--text`: a free-text request: the worker runs /create-issue first, then the same
 - `--mode`: review (default) stops at a ready branch for the review; auto merges when green
 - `--id`: task id; defaults to kp-<n>-<slug> (issue title) or kp-<slug> (request)
-- `--harness`: worker harness: claude, agy, opencode, or pi (overrides the project and the lock)
+- `--harness`: worker harness: claude, agy, opencode, pi, or codex (overrides the project and the lock)
 - `--tmux-session`: tmux session on the fleet's own server to place the worker window in; it must already exist (see [Choosing the session](#choosing-the-session))
 
-**Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_AGY`, `KINGPIN_OPENCODE`, `KINGPIN_PI`, `KINGPIN_GH`, `KINGPIN_TMUX_SOCKET`, `KINGPIN_TMUX_SESSION`; the `kingpin scope check` it runs reads `KINGPIN_ALLOW_GLOBAL_CONTRACT`.
+**Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_AGY`, `KINGPIN_OPENCODE`, `KINGPIN_PI`, `KINGPIN_CODEX`, `KINGPIN_GH`, `KINGPIN_TMUX_SOCKET`, `KINGPIN_TMUX_SESSION`; the `kingpin scope check` it runs reads `KINGPIN_ALLOW_GLOBAL_CONTRACT`, and a codex spawn also reads `KINGPIN_SKILLS_DIR` and `CODEX_HOME`.
 
 ### Where the window lives
 
@@ -110,6 +110,10 @@ For `--text`, `kingpin-wait` renames the window and `TMUX_TARGET` to `kp-<n>-<sl
 ### Pi launch
 
 A `pi` spawn writes nothing into the worktree. The launch runs `pi --append-system-prompt <task>/preamble.md -e <checkout>/worker/pi/kingpin-harness.ts` plus the job prompt, so no injected path is recorded and no worktree exclude file is created. The job prompt is the bare `/skill:<name> <args>` line, because Pi expands a skill only when the message starts with its command; the pi worker's preamble carries the sentence that tells it to run every skill step inline, since Pi has no subagent tool. `PI_PROVIDER` and `PI_MODEL` in the project env are passed as `--provider` and `--model`; each flag is passed only when its own key is set, so a host that logged in with the vendor `/login` keeps Pi's default model, and Kingpin runs no auth preflight. Use `kingpin scope doctor --harness pi` for that check. Fleet sends use `/skill:<name>` on pi through `bin/kingpin-spawn` and `bin/kingpin-land`.
+
+### Codex launch
+
+A `codex` spawn writes only per-skill links at `<worktree>/.codex/skills/<name>` and hides them through the task's exclude file; the preamble arrives through `-c model_instructions_file <task>/preamble.md`, so no tracked file is rewritten. The launch runs `codex -C <worktree> -a never -s workspace-write` with `sandbox_workspace_write.exclude_slash_tmp=true`, `sandbox_workspace_write.exclude_tmpdir_env_var=true` and `sandbox_workspace_write.network_access=true`. Its writable roots are the task folder and the worktree's git dir and common git dir: a linked worktree keeps its index and refs in those git dirs, so without them the sandbox leaves the worker unable to stage or commit. The shared common dir is the main checkout's `.git`, so a worker can also write its `config` and `hooks/`; that is the price of a shared object store, stated in `docs/worker-permissions.md`. `TMPDIR` moves to `<task>/tmp` because `/tmp` is denied. When your `$CODEX_HOME` carries a hook set (`[features] hooks = true`, or a `hooks.json` with hooks), the launch adds `--dangerously-bypass-hook-trust`, Codex's own flag, so the "Hooks need review" dialog cannot stall an unattended worker; a host with no hook set is not given the bypass. The job prompt is the bare `$<name> <args>` line, because Codex 0.166 has no slash command for the fleet's skills. `kingpin done` removes the folder-trust entry the spawn seeded, and only what that spawn wrote.
 
 ## kingpin list
 
@@ -349,7 +353,7 @@ A curator task carries `NO_LEASE=1`: its worktree is the shared skills checkout,
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_HARNESS`, `KINGPIN_LOCK_PID`
 
-`--harness` records `claude`, `agy`, `opencode` or `pi`; without it, `acquire` detects the harness from the session process (including the `@earendil-works/pi-coding-agent` npm path) or from the calling agent's environment marker. `acquire` also warns on stderr when no fleet supervisor is running, and when the guard or the contract is missing or stale, even with `KINGPIN_SKIP_GUARD=1`, because it calls `kingpin guard check` directly. A numeric `[pid]` overrides the detected session pid, as does `KINGPIN_LOCK_PID`.
+`--harness` records `claude`, `agy`, `opencode`, `pi` or `codex`; without it, `acquire` detects the harness from the session process (including the `@earendil-works/pi-coding-agent` npm path) or from the calling agent's environment marker. `acquire` also warns on stderr when no fleet supervisor is running, and when the guard or the contract is missing or stale, even with `KINGPIN_SKIP_GUARD=1`, because it calls `kingpin guard check` directly. A numeric `[pid]` overrides the detected session pid, as does `KINGPIN_LOCK_PID`.
 
 ## kingpin afk
 
@@ -389,17 +393,17 @@ The dossier listener's `landing_sent` and `approve_pending` markers are checked 
 
 ## kingpin scope
 
-**Usage:** `kingpin scope files|check --harness <claude|agy|opencode|pi> --worktree <dir> [--preamble <file>]`, and `kingpin scope doctor --harness pi [--worktree <dir>] [--provider <name>] [--model <id>]`
+**Usage:** `kingpin scope files|check --harness <claude|agy|opencode|pi|codex> --worktree <dir> [--preamble <file>]`, `kingpin scope doctor --harness pi [--worktree <dir>] [--provider <name>] [--model <id>]`, and `kingpin scope doctor --harness codex [--worktree <dir>]`
 
-**Flags:** `--harness <claude|agy|opencode|pi>`, `--worktree <dir>`, `--preamble <file>`, `--provider <name>`, `--model <id>`
+**Flags:** `--harness <claude|agy|opencode|pi|codex>`, `--worktree <dir>`, `--preamble <file>`, `--provider <name>` and `--model <id>` (pi only)
 
-**Environment:** `KINGPIN_PI`, `KINGPIN_SKILLS_DIR`, `PI_CODING_AGENT_DIR`, `PI_PROVIDER`, `PI_MODEL`, `KINGPIN_WORKTREE` (the Pi extension), `KINGPIN_ALLOW_GLOBAL_CONTRACT`
+**Environment:** `KINGPIN_PI`, `KINGPIN_CODEX`, `KINGPIN_SKILLS_DIR`, `CODEX_HOME`, `PI_CODING_AGENT_DIR`, `PI_PROVIDER`, `PI_MODEL`, `KINGPIN_WORKTREE` (the Pi extension), `KINGPIN_ALLOW_GLOBAL_CONTRACT`
 
 `files` prints one `<kind>	<path>` line per instruction source that exists: `discovery` (a file the harness finds itself), `configured` (an entry of the worktree's harness config), `ignored` (a rules file the harness skips), `global` (loaded from your config directory in every session).
 
 ### `check`
 
-`check` exits 1 naming the file when any source carries the orchestrator contract, including a global file in your own config directory (`KINGPIN_ALLOW_GLOBAL_CONTRACT=1` downgrades that one to a warning), and, for OpenCode and agy, when the preamble is not among the sources the harness loads (Claude Code gets it through `--append-system-prompt-file`, and Pi through `--append-system-prompt`, so `check` does not verify either); nothing is edited.
+`check` exits 1 naming the file when any source carries the orchestrator contract, including a global file in your own config directory (`KINGPIN_ALLOW_GLOBAL_CONTRACT=1` downgrades that one to a warning), and, for OpenCode and agy, when the preamble is not among the sources the harness loads (Claude Code gets it through `--append-system-prompt-file`, Pi through `--append-system-prompt`, and codex through `-c model_instructions_file`, so `check` does not verify those three). A codex worktree's sources are its `AGENTS.override.md` and `AGENTS.md`, every `<worktree>/.codex/skills/*/SKILL.md`, and, from the user's `${CODEX_HOME:-~/.codex}`, `AGENTS.override.md`, `AGENTS.md`, `hooks.json`, `skills/*/SKILL.md` and `config.toml`; nothing is edited.
 
 ### `doctor`
 
@@ -407,7 +411,9 @@ The dossier listener's `landing_sent` and `approve_pending` markers are checked 
 
 The provider and model come from `--provider`/`--model`, or from `PI_PROVIDER`/`PI_MODEL` when the flag is absent (the same keys a pi spawn reads), and are passed to `pi auth check --no-refresh --json`, so the probe is local and offline. The credential line has three states: `ready (<provider>, <authType>)`, `not_ready (<reason>)`, and `unverified`. With no provider named the state is genuinely undetermined, so the line also reports what the agent directory holds: `holds credentials` when `<PI_CODING_AGENT_DIR>/auth.json` carries at least one entry, and `holds no credentials` plus the `pi` + `/login` action when it does not (Pi writes an empty `{}` before the first login). `--worktree` defaults to the current directory, and no subcommand with a harness or provider flag reads as `doctor`, so `kingpin scope --harness pi` is the short form.
 
-Exit codes: 0 when the binary, credentials and extension are usable, or the credential state is `unverified`; 1 when the binary is missing, the extension is missing, or `pi auth check` reports `not_ready`; 2 for a bad argument, including `doctor` on a harness other than `pi`.
+Exit codes: 0 when the binary, credentials and extension are usable, or the credential state is `unverified`; 1 when the binary is missing, the extension is missing, or `pi auth check` reports `not_ready`; 2 for a bad argument, including `doctor` on a harness other than `pi` or `codex` and `--provider`/`--model` on the codex probe.
+
+For codex, `doctor` prints `codex: <path>`, `credentials: <state>`, `config: <CODEX_HOME>/config.toml (<n> trusted project entries)` when the file exists, `skills: <dir> (<n> skills)`, then the same source list. The command comes from `KINGPIN_CODEX` (default `codex`), the config store from `CODEX_HOME` (default `~/.codex`), and the skills directory from `KINGPIN_SKILLS_DIR` (default `~/.claude/skills`). The credential state is read from the exit status of `codex login status`, never from its wording: exit 0 reads `credentials: ready (codex login status: <line>)`, and a non-zero exit reads `credentials: unverified (codex login status exited <n>: <line>; a provider configured through env keys or a custom provider is not visible here, so this is not proof the worker will fail)`. A logged-out host therefore exits 0; only a missing binary exits 1. The codex probe takes no `--provider` or `--model`: those flags belong to the pi probe, and passing either one with `--harness codex` is refused instead of silently ignored.
 
 ### Before a spawn
 
@@ -493,13 +499,14 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 | Variable | Read by | Effect |
 |---|---|---|
 | `KINGPIN_HOME` | every fleet command | Fleet state directory (default `~/.kingpin`): `tasks/`, `archive/`, `projects/`, `locks/`, `supervisor.pid` and `config.env`. |
-| `KINGPIN_HARNESS` | `bin/kingpin-lock:112` | Harness recorded by `lock acquire` when `--harness` is omitted (before the command-name and agent-marker detection). |
-| `KINGPIN_CLAUDE` | `bin/kingpin-spawn:48` | Command `spawn` launches for the `claude` harness (default `claude`). |
-| `KINGPIN_AGY` | `bin/kingpin-spawn:49` | Command `spawn` launches for the `agy` harness (default `agy`). |
-| `KINGPIN_OPENCODE` | `bin/kingpin-spawn:50` | Command `spawn` launches for the `opencode` harness (default `opencode`). |
-| `KINGPIN_PI` | `bin/kingpin-spawn:51`, `bin/kingpin-scope` | Command `spawn` launches for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
-| `KINGPIN_GH` | `bin/kingpin-spawn:52`, `bin/kingpin-curate` | `gh` command `spawn` uses to read an issue title for the task slug, and `curate` uses to create, view and merge the curator's PR (default `gh`). |
-| `KINGPIN_TMUX_SESSION` | `bin/kingpin-spawn:227` | tmux session on the fleet's own server that `spawn` places the worker window in when `--tmux-session` is not given. The session must already exist; an unknown name is refused. Unset, the spawn uses the one attached session on the fleet server, then the only session it holds, and refuses when several are unattached or more than one is attached. |
+| `KINGPIN_HARNESS` | `bin/kingpin-lock:97` | Harness recorded by `lock acquire` when `--harness` is omitted (before the command-name and agent-marker detection). |
+| `KINGPIN_CLAUDE` | `bin/kingpin-spawn:50` | Command `spawn` launches for the `claude` harness (default `claude`). |
+| `KINGPIN_AGY` | `bin/kingpin-spawn:51` | Command `spawn` launches for the `agy` harness (default `agy`). |
+| `KINGPIN_OPENCODE` | `bin/kingpin-spawn:52` | Command `spawn` launches for the `opencode` harness (default `opencode`). |
+| `KINGPIN_PI` | `bin/kingpin-spawn:53`, `bin/kingpin-scope` | Command `spawn` launches for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
+| `KINGPIN_CODEX` | `bin/kingpin-spawn:54`, `bin/kingpin-scope` | Command `spawn` launches for the `codex` harness (default `codex`); `kingpin scope doctor --harness codex` probes the same command. |
+| `KINGPIN_GH` | `bin/kingpin-spawn:55`, `bin/kingpin-curate` | `gh` command `spawn` uses to read an issue title for the task slug, and `curate` uses to create, view and merge the curator's PR (default `gh`). |
+| `KINGPIN_TMUX_SESSION` | `bin/kingpin-spawn:261` | tmux session on the fleet's own server that `spawn` places the worker window in when `--tmux-session` is not given. The session must already exist; an unknown name is refused. Unset, the spawn uses the one attached session on the fleet server, then the only session it holds, and refuses when several are unattached or more than one is attached. |
 | `KINGPIN_SEND_DELAY` | `bin/kingpin-send:60` | Seconds between the literal text and the Enter key (default `0.2`). |
 | `KINGPIN_TMUX_SOCKET` | `lib/tmux.sh:20` | Name of the tmux server the fleet uses (default `kingpin`, that is `tmux -L kingpin`), so worker windows are not on your own server; `default` puts them back on it. `kingpin spawn` records the name in `task.env` as `TMUX_SOCKET`, and every window reader resolves the record's socket. The test suites point it at their own socket. |
 | `KINGPIN_CURATOR_CMD` | `bin/kingpin-curate` | Command `curate` launches the curator with; falls back to `KINGPIN_CLAUDE`, then `claude`. |
@@ -510,9 +517,9 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 | `KINGPIN_STATUS_GRACE` | `bin/kingpin-launch-check:44` | Seconds a worker may stay silent before `wait`/`watch`/`run` record `failed: no status:` (default `30`). |
 | `KINGPIN_ALLOW_GLOBAL_CONTRACT` | `bin/kingpin-scope` | `1` downgrades a contract found in a global instruction file to a warning instead of a refusal. |
 | `KINGPIN_SKIP_GUARD` | `bin/kingpin-guard:54`, `bin/kingpin-init:82` | `1` silences `kingpin guard warn`, which `kingpin list` and `kingpin wait` call, and the install `kingpin init` runs; it does not silence `kingpin lock acquire`, which runs `kingpin guard check` directly, or a hand-run `kingpin guard install`/`check`. Set by the test suites and scripted setups. |
-| `KINGPIN_LOCK_PID` | `bin/kingpin-lock:169` | A whole-number pid `lock acquire` records as the session pid instead of detecting one; the test suites use it. |
-| `KINGPIN_TASK_DIR` | `bin/kingpin-stop:31`, `worker/hooks.json:19` | Set by `kingpin spawn` to the task folder (`~/.kingpin/tasks/<id>`) so the Stop hook can write `status`. Not for hand-setting. |
-| `KINGPIN_ROOT` | `worker/hooks.json:9-19`, `bin/kingpin-spawn:403` | Set by `kingpin spawn` to the Kingpin checkout, so a hook finds `bin/kingpin-stop` even after the worker `cd`s elsewhere. Not for hand-setting. |
+| `KINGPIN_LOCK_PID` | `bin/kingpin-lock:156` | A whole-number pid `lock acquire` records as the session pid instead of detecting one; the test suites use it. |
+| `KINGPIN_TASK_DIR` | `bin/kingpin-stop:39`, `worker/hooks.json:19` | Set by `kingpin spawn` to the task folder (`~/.kingpin/tasks/<id>`) so the Stop hook can write `status`. Not for hand-setting. |
+| `KINGPIN_ROOT` | `worker/hooks.json:9-19`, `bin/kingpin-spawn:463` | Set by `kingpin spawn` to the Kingpin checkout, so a hook finds `bin/kingpin-stop` even after the worker `cd`s elsewhere. Not for hand-setting. |
 | `KINGPIN_WORKTREE` | `lib/guard-hook.mjs:109,153`, `lib/pi-harness.mjs:54` | Set by `kingpin spawn` to the leased worktree; the worker's `PreToolUse` hook allows edits only inside it and the task folder, and the Pi extension's `project_trust` answer covers only it. Not for hand-setting. |
 
 ## Internal helpers

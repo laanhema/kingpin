@@ -9,7 +9,7 @@ each task back as a visual review dossier. This file describes the repository.
 | Path | What it holds |
 |---|---|
 | `bin/` | One executable per command (`kingpin-spawn`, `kingpin-guard`, `kingpin-wait`, ...), plus `bin/kingpin`, the dispatcher that maps `kingpin <cmd>` to them |
-| `lib/` | Shared helpers: `status.sh` (the status-file protocol and the live-versus-archived task path readers, sourced by the scripts), `tmux.sh` (the fleet's tmux socket and the one `kp_tmux` helper every command reaches tmux through, sourced by every window reader), `landing.sh`, `mutex.sh` (the mutex sequence shared by the landing lane and `kingpin-lock`, plus the non-blocking `kp_mutex_try` the auto-curate gate uses), `curator.sh` (the automatic daily curator gate, applied-critique marker and trigger, sourced by `kingpin-curate`, `kingpin-watch` and `kingpin-done`), `supervisor.sh` (the fleet supervisor's pidfile, sourced by `kingpin-watch`, `kingpin-lock` and `kingpin list`), `afk.sh` (the session-scoped AFK state, sourced by `kingpin-afk`, `kingpin-watch`, `kingpin-lock` and `kingpin list`), `session.sh` (the session-pid detection `kingpin-lock` and `kingpin-afk` share), `exclude.sh` (the per-worktree exclude file a spawn points at, and the guard-owned block of the main checkout's exclude file, sourced by `kingpin-spawn`, `kingpin-done` and `kingpin-guard`), `portable.sh` (the GNU-then-BSD clock and file-mtime readers), `gitdir.sh` (the git-dir, common-dir and git-path readers the linked-worktree checks use, which read the plain `git rev-parse` form so they work on git 2.30, sourced by `kingpin-spawn`, `kingpin-sync`, `kingpin-guard` and the suites), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, ...) |
+| `lib/` | Shared helpers: `status.sh` (the status-file protocol and the live-versus-archived task path readers, sourced by the scripts), `tmux.sh` (the fleet's tmux socket and the one `kp_tmux` helper every command reaches tmux through, sourced by every window reader), `landing.sh`, `mutex.sh` (the mutex sequence shared by the landing lane and `kingpin-lock`, plus the non-blocking `kp_mutex_try` the auto-curate gate uses), `curator.sh` (the automatic daily curator gate, applied-critique marker and trigger, sourced by `kingpin-curate`, `kingpin-watch` and `kingpin-done`), `supervisor.sh` (the fleet supervisor's pidfile, sourced by `kingpin-watch`, `kingpin-lock` and `kingpin list`), `afk.sh` (the session-scoped AFK state, sourced by `kingpin-afk`, `kingpin-watch`, `kingpin-lock` and `kingpin list`), `session.sh` (the session-pid detection `kingpin-lock` and `kingpin-afk` share), `exclude.sh` (the per-worktree exclude file a spawn points at, and the guard-owned block of the main checkout's exclude file, sourced by `kingpin-spawn`, `kingpin-done` and `kingpin-guard`), `portable.sh` (the GNU-then-BSD clock and file-mtime readers), `gitdir.sh` (the git-dir, common-dir and git-path readers the linked-worktree checks use, which read the plain `git rev-parse` form so they work on git 2.30, sourced by `kingpin-spawn`, `kingpin-sync`, `kingpin-guard` and the suites), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, `codex-trust`, ...) |
 | `worker/` | `preamble.md`, the text a spawned worker receives, `curator-preamble.md`, the contract the curator worker receives, `hooks.json`, its Claude Code settings, and `pi/kingpin-harness.ts`, the Pi extension a spawn loads with `-e` |
 | `orchestrator/contract.md` | The orchestrator contract. `kingpin guard install` copies it into the main checkout's untracked instruction sources; no harness loads this tracked file directly |
 | `tests/` | One shell suite per feature, with shared setup in `tests/lib.sh` |
@@ -88,8 +88,10 @@ does not match, and the scan always reads the repository's own `bin/` and `lib/`
   Kingpin wrote them (`lib/leftover.mjs`), and leaves and names anything else, because the
   slot is the user's checkout (issue #127). Pi is the exception:
   its extension loads from the checkout by absolute path and it writes no worktree file,
-  so a pi spawn records no injected path and needs no exclude file. A config the project
-  already tracks
+  so a pi spawn records no injected path and needs no exclude file. A codex spawn injects
+  one path per fleet skill, a link at `<worktree>/.codex/skills/<name>`, and nothing at
+  `.codex/` as a whole: a project's own skill at that name is left in place and named. A
+  config the project already tracks
   (`.opencode/opencode.json`) cannot be excluded, so the spawn refuses it instead of
   rewriting it.
 
@@ -101,6 +103,7 @@ does not match, and the scan always reads the repository's own `bin/` and `lib/`
 | agy | `<worktree>/.agents/rules/kingpin.md`, which needs `trigger: always_on` frontmatter | `<worktree>/.agents/hooks.json` |
 | OpenCode | `instructions` entry in `<worktree>/.opencode/opencode.json` | `<worktree>/.opencode/plugins/kingpin-stop.js` |
 | Pi | `--append-system-prompt <task>/preamble.md` | `-e <checkout>/worker/pi/kingpin-harness.ts`, which runs `bin/kingpin-stop` on `agent_settled` |
+| Codex | `-c model_instructions_file <task>/preamble.md`, and one link per fleet skill at `<worktree>/.codex/skills/<name>` so `$<skill>` expands | the `notify` program `<task>/notify.sh`, which runs `bin/kingpin-stop` |
 
 An instruction file a harness silently ignores is a bug, not a preference:
 `bin/kingpin-scope` exists to name the files a harness really loads.

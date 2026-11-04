@@ -344,6 +344,21 @@ if [ "$NO_LEASE" != "1" ]; then
   kp_exclude_clear "$WORKTREE" "$task_dir" || true
 fi
 
+# A codex spawn seeds a trusted-project entry in the user's own $CODEX_HOME/config.toml,
+# because a -c override does not suppress Codex's folder-trust dialog (issue #106, check 7).
+# The freed slot must not leave that entry behind, and the removal never fails the
+# teardown: the file is the user's. The spawn recorded what it wrote, so only that comes
+# out: the whole section it created, the trust_level line it added to your own section, or
+# the line it overwrote, which goes back as it was (issue #106 review, M2). A task whose
+# entry predates the spawn has no marker, and its config is left untouched.
+if [ "${HARNESS:-}" = codex ] && [ -f "$task_dir/codex-trust" ]; then
+  case $(cat "$task_dir/codex-trust") in
+    section) node "$KP_BIN/../lib/codex-trust.mjs" --remove "$WORKTREE" >/dev/null 2>&1 || true ;;
+    key) node "$KP_BIN/../lib/codex-trust.mjs" --remove-key "$WORKTREE" >/dev/null 2>&1 || true ;;
+    replaced) node "$KP_BIN/../lib/codex-trust.mjs" --restore-key "$task_dir/codex-trust-prev" "$WORKTREE" >/dev/null 2>&1 || true ;;
+  esac
+fi
+
 # 2. Return treehouse slot. A nonzero return means the pool no longer holds this
 # worktree (it was already returned, destroyed, or a spawn leased the path again).
 # Archiving anyway would lose the slot with no record, and a later spawn would fail

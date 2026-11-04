@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Record a worker's turn end and make its outcome explicit (issue #102).
 #
-# One Stop hook for all four harnesses: Claude Code's worker/hooks.json, agy's
-# .agents/hooks.json, OpenCode's .opencode/plugins/kingpin-stop.js, and Pi's
-# worker/pi/kingpin-harness.ts extension, which runs this script on agent_settled.
+# One Stop hook for all five harnesses: Claude Code's worker/hooks.json, agy's
+# .agents/hooks.json, OpenCode's .opencode/plugins/kingpin-stop.js, Pi's
+# worker/pi/kingpin-harness.ts extension, which runs this script on agent_settled, and
+# Codex's `notify` program (<task>/notify.sh), which runs it on every completed turn.
 # It writes the `stopped` timestamp exactly as the old one-line hook did, then fills
 # the one hole the status protocol allows: a worker that ended a turn without reporting.
 #

@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Start one worker for one task: lease a worktree, open a tmux window there,
-# and launch the chosen harness (claude, agy, opencode, pi) with the worker
+# and launch the chosen harness (claude, agy, opencode, pi, codex) with the worker
 # preamble and the turn-end Stop hook.
 #
-# Usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi] [--tmux-session <name>]
+# Usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi|codex] [--tmux-session <name>]
 #   --issue    an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
 #   --text     a free-text request: the worker runs /create-issue first, then the same
 #   --mode     review (default) stops at a ready branch for the Lavish review; auto merges when green
 #   --id       task id; defaults to kp-<n>-<slug> (slug from the issue title) or kp-<slug>
 #              (slug from the request). The id is also the branch (kingpin/<id>) and the
 #              tmux window name. An explicit --id skips slug generation.
-#   --harness  worker harness: claude, agy, opencode, or pi (overrides everything below)
+#   --harness  worker harness: claude, agy, opencode, pi, or codex (overrides everything below)
 #   --tmux-session  tmux session for the worker window on the fleet's own server
 #
 # Workers run on the fleet's own tmux server (issue #142), socket `kingpin` unless
@@ -26,12 +26,13 @@
 # orchestrator session > DEFAULT_HARNESS in $KINGPIN_HOME/config.env > claude.
 #
 # Project config: $KINGPIN_HOME/projects/<project>.env sets PROJECT_PATH (a git
-# clone), optionally HARNESS (claude|agy|opencode|pi), optionally SETUP_CMD
+# clone), optionally HARNESS (claude|agy|opencode|pi|codex), optionally SETUP_CMD
 # (run in the worktree before launch), and for the pi harness optionally
 # PI_PROVIDER and PI_MODEL (passed to pi only when set, so a vendor `/login`
 # user keeps Pi's own default model).
 # KINGPIN_HOME defaults to ~/.kingpin.
-# Command overrides: KINGPIN_CLAUDE, KINGPIN_AGY, KINGPIN_OPENCODE, KINGPIN_PI, KINGPIN_GH.
+# Command overrides: KINGPIN_CLAUDE, KINGPIN_AGY, KINGPIN_OPENCODE, KINGPIN_PI,
+# KINGPIN_CODEX, KINGPIN_GH.
 set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -50,11 +51,47 @@ CLAUDE_CMD=${KINGPIN_CLAUDE:-claude}
 AGY_CMD=${KINGPIN_AGY:-agy}
 OPENCODE_CMD=${KINGPIN_OPENCODE:-opencode}
 PI_CMD=${KINGPIN_PI:-pi}
+CODEX_CMD=${KINGPIN_CODEX:-codex}
 GH_CMD=${KINGPIN_GH:-gh}
 # A hung gh call must degrade to the kp-<n> fallback, not stall the spawn.
 GH_TIMEOUT=; ! command -v timeout >/dev/null || GH_TIMEOUT="timeout 10"
 
 die() { echo "kingpin-spawn: $*" >&2; exit 1; }
+
+# A TOML basic string for a path. `codex -c key=value` parses the value as TOML, so a
+# KINGPIN_HOME holding a space or a quote still produces a value Codex reads whole.
+toml_quote() {
+  local v=${1:?}
+  v=${v//\\/\\\\}
+  v=${v//\"/\\\"}
+  printf '"%s"' "$v"
+}
+
+# True when this host carries a Codex hook set, which raises Codex's second review dialog
+# ("Hooks need review") that `-a never` does not cover and no `-c` value suppresses
+# (issue #106, Phase 0 check 7). A hook set is `features.hooks = true` in the config
+# store, or a `hooks.json` beside it whose `hooks` object is not empty.
+codex_hook_set() {
+  local dir=${CODEX_HOME:-$HOME/.codex} cfg hooks
+  cfg=$dir/config.toml
+  if [ -f "$cfg" ] && awk '
+    /^[[:space:]]*\[/ { inside = ($0 ~ /^[[:space:]]*\[features\][[:space:]]*$/) }
+    inside && /^[[:space:]]*hooks[[:space:]]*=[[:space:]]*true[[:space:]]*$/ { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' "$cfg"; then
+    return 0
+  fi
+  hooks=$dir/hooks.json
+  [ -f "$hooks" ] || return 1
+  # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
+  node -e '
+    const fs = require("fs");
+    let o = {};
+    try { o = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(1); }
+    const h = o && typeof o === "object" ? o.hooks : undefined;
+    process.exit(h && typeof h === "object" && !Array.isArray(h) && Object.keys(h).length > 0 ? 0 : 1);
+  ' "$hooks" 2>/dev/null
+}
 
 # Workers live on the fleet's own tmux server (issue #142). Window creation, renames
 # and probes all go through kp_tmux on `fleet_socket`, so an operator session kill, or
@@ -127,13 +164,13 @@ resolve_tmux_session() {
 
 usage() {
   cat <<'HELP'
-usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi] [--tmux-session <name>]
+usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi|codex] [--tmux-session <name>]
 
   --issue    an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
   --text     a free-text request: the worker runs /create-issue first, then the same
   --mode     review (default) stops at a ready branch for the review; auto merges when green
   --id       task id; defaults to kp-<n>-<slug> (issue title) or kp-<slug> (request)
-  --harness  worker harness: claude, agy, opencode, or pi (overrides the project and the lock)
+  --harness  worker harness: claude, agy, opencode, pi, or codex (overrides the project and the lock)
   --tmux-session  tmux session for the worker window on the fleet's own server
              (also read from KINGPIN_TMUX_SESSION); it must already exist. Without
              either, the one attached session or the only session on the fleet server
@@ -145,7 +182,7 @@ HELP
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
 esac
-[ $# -ge 1 ] || die "usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi] [--tmux-session <name>]"
+[ $# -ge 1 ] || die "usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi|codex] [--tmux-session <name>]"
 project=$1; shift
 issue='' text='' mode=review id='' harness_cli='' session_cli=''
 while [ $# -gt 0 ]; do
@@ -180,8 +217,8 @@ DEFAULT_HARNESS=''
 lock_harness=$("$KP_ROOT/bin/kingpin-lock" harness 2>/dev/null || true)
 harness=${harness_cli:-${HARNESS:-${lock_harness:-${DEFAULT_HARNESS:-claude}}}}
 case $harness in
-  claude|agy|opencode|pi) ;;
-  *) die "unsupported harness: $harness (must be claude, agy, opencode, or pi)" ;;
+  claude|agy|opencode|pi|codex) ;;
+  *) die "unsupported harness: $harness (must be claude, agy, opencode, pi, or codex)" ;;
 esac
 
 case $harness in
@@ -189,6 +226,7 @@ case $harness in
   agy) harness_bin=${AGY_CMD%% *} ;;
   opencode) harness_bin=${OPENCODE_CMD%% *} ;;
   pi) harness_bin=${PI_CMD%% *} ;;
+  codex) harness_bin=${CODEX_CMD%% *} ;;
 esac
 
 for tool in git tmux treehouse node "$harness_bin"; do
@@ -243,6 +281,18 @@ worktree=''
 launched=0
 cleanup() {
   [ "$launched" = 1 ] && return
+  # A codex spawn that seeded a folder-trust entry undoes exactly what it wrote before the
+  # task folder goes away (issue #106 review, M1): a refusal the spawn itself produces
+  # would otherwise leave the entry in the user's config for every failed attempt. The
+  # marker names whether the spawn created the whole section or only added the
+  # trust_level line, so a section the user already had is never deleted (review, M2).
+  if [ -n "$worktree" ] && [ -f "$task_dir/codex-trust" ]; then
+    case $(cat "$task_dir/codex-trust") in
+      section) node "$KP_ROOT/lib/codex-trust.mjs" --remove "$worktree" >/dev/null 2>&1 || true ;;
+      key) node "$KP_ROOT/lib/codex-trust.mjs" --remove-key "$worktree" >/dev/null 2>&1 || true ;;
+      replaced) node "$KP_ROOT/lib/codex-trust.mjs" --restore-key "$task_dir/codex-trust-prev" "$worktree" >/dev/null 2>&1 || true ;;
+    esac
+  fi
   if [ -n "$worktree" ]; then
     # A failed spawn must not leave its harness files or ignore pointer for the next
     # task that leases the slot (issue #77).
@@ -333,10 +383,14 @@ if [ -n "$issue" ]; then
     review) prompt=$(kp_skill_command "$harness" issue-flow "$issue") ;;
     auto) prompt=$(kp_skill_command "$harness" "do" "$issue") ;;
   esac
-  # Pi expands a skill only when the message starts with its command, so a pi job
-  # prompt is the bare `/skill:<name> <args>` line. The other harnesses keep the
-  # prose form they have always accepted (`Run /issue-flow 93.`).
-  [ "$harness" = pi ] || prompt="Run $prompt."
+  # Pi expands a skill only when the message starts with its command, and Codex 0.166
+  # has no slash command for a skill at all, so those two job prompts are the bare
+  # `/skill:<name> <args>` or `$<name> <args>` line. The other harnesses keep the prose
+  # form they have always accepted (`Run /issue-flow 93.`).
+  case $harness in
+    pi|codex) ;;
+    *) prompt="Run $prompt." ;;
+  esac
 else
   printf '%s\n' "$text" > "$task_dir/brief.md"
   case $mode in
@@ -344,27 +398,33 @@ else
     auto) next=$(kp_skill_command "$harness" "do") ;;
   esac
   first=$(kp_skill_command "$harness" create-issue)
-  if [ "$harness" = pi ]; then
-    # The bare command comes first so Pi expands it; the follow-up follows in a
-    # second paragraph, because dropping it would lose the brief entirely.
-    # shellcheck disable=SC2016 # the apostrophe is literal text, not shell quoting
-    prompt=$(printf "%s\n\nWhen the issue exists, run %s on it. The request is in %s (read it first; it is the user's own words)." \
-      "$first" "$next" "$task_dir/brief.md")
-  else
-    prompt="Run $first on the request in $task_dir/brief.md (read it first; it is the user's own words). When the issue exists, run $next on it."
-  fi
+  case $harness in
+    pi|codex)
+      # The bare command comes first so the harness expands it; the follow-up follows in a
+      # second paragraph, because dropping it would lose the brief entirely.
+      # shellcheck disable=SC2016 # the apostrophe is literal text, not shell quoting
+      prompt=$(printf "%s\n\nWhen the issue exists, run %s on it. The request is in %s (read it first; it is the user's own words)." \
+        "$first" "$next" "$task_dir/brief.md")
+      ;;
+    *)
+      prompt="Run $first on the request in $task_dir/brief.md (read it first; it is the user's own words). When the issue exists, run $next on it."
+      ;;
+  esac
 fi
 printf '%s\n' "$prompt" > "$task_dir/prompt.txt"
 
 sed -e "s|{{TASK_ID}}|$id|g" -e "s|{{TASK_DIR}}|$task_dir|g" -e "s|{{MODE}}|$mode|g" -e "s|{{WORKTREE}}|$worktree|g" -e "s|{{KP_ROOT}}|$KP_ROOT|g" \
   "$KP_ROOT/worker/preamble.md" > "$task_dir/preamble.md"
-# Pi ships no subagent tool (spike.md, Check 2): a delegating skill's steps run
-# inline, and /do's no-subagent branch otherwise stops to ask whether to continue.
-# The sentence lives in the pi preamble, not the job prompt, so the prompt can start
-# with the skill command Pi needs to see (issue #93 review, M2).
-if [ "$harness" = pi ]; then
-  printf '%s\n' '' 'This harness has no subagent tool: run every step of the skill inline in this session, and continue rather than asking whether to continue without subagents.' >> "$task_dir/preamble.md"
-fi
+# Pi ships no subagent tool (spike.md, Check 2), and no Codex session was observed to
+# have one either: a delegating skill's steps run inline, and /do's no-subagent branch
+# otherwise stops to ask whether to continue. The sentence lives in that harness's
+# preamble, not the job prompt, so the prompt can start with the skill command it needs
+# to see (issue #93 review, M2; issue #106).
+case $harness in
+  pi|codex)
+    printf '%s\n' '' 'This harness has no subagent tool: run every step of the skill inline in this session, and continue rather than asking whether to continue without subagents.' >> "$task_dir/preamble.md"
+    ;;
+esac
 : > "$task_dir/status"
 
 kp_tmux "$fleet_socket" has-session -t "$target_session" 2>/dev/null \
@@ -562,6 +622,143 @@ EOF
       printf 'export KINGPIN_ROOT=%q\n' "$KP_ROOT"
       printf 'exec %s' "$PI_CMD"
       printf ' %q' "${pi_args[@]}"
+      # shellcheck disable=SC2016 # the program text belongs to the generated launch script
+      printf ' "$(cat %q)"\n' "$task_dir/prompt.txt"
+    } > "$task_dir/launch.sh"
+    ;;
+  codex)
+    # Codex 0.166 has no slash command for the fleet's skills: `$<name>` expands only
+    # when the skill is discovered under $CODEX_HOME/skills or <worktree>/.codex/skills
+    # (issue #106, Phase 0 check 5), so each fleet skill is linked in by name. A worker
+    # with no skills cannot do the fleet's job, so a missing skills directory is a
+    # refusal, not a warning.
+    skills_root=${KINGPIN_SKILLS_DIR:-$HOME/.claude/skills}
+    [ -d "$skills_root" ] \
+      || die "refusing to launch a codex worker: $skills_root is missing (set KINGPIN_SKILLS_DIR); a codex worker gets /issue-flow, /do and /review from skills, and Codex 0.166 has no such slash command"
+    # Codex stops at a folder-trust dialog unless its own config.toml trusts the
+    # directory, and a `-c` override does not suppress it (check 7). The entry is seeded
+    # here and removed again by `kingpin done` or by the failure trap above. What the
+    # seed wrote is recorded in `codex-trust`, so the removal never deletes a section or
+    # a key the user already had (issue #106 review, M2): `section` means this spawn
+    # created the whole section, `key` means it added only the trust_level line to the
+    # user's own section, and `replaced` also restores the line it overwrote.
+    trust_out=$(node "$KP_ROOT/lib/codex-trust.mjs" --previous-out "$task_dir/codex-trust-prev" "$worktree") \
+      || die "refusing to launch: cannot record Codex folder trust for $worktree"
+    case $trust_out in
+      trusted:*) printf 'section\n' > "$task_dir/codex-trust" ;;
+      trusted-key:*)
+        if [ -s "$task_dir/codex-trust-prev" ]; then
+          printf 'replaced\n' > "$task_dir/codex-trust"
+        else
+          printf 'key\n' > "$task_dir/codex-trust"
+          rm -f "$task_dir/codex-trust-prev"
+        fi
+        printf 'kingpin-spawn: %s already carried a Codex project section; this spawn adds only the trust_level line, and only that line is removed again\n' \
+          "$worktree" >&2
+        ;;
+      already-trusted:*)
+        printf 'kingpin-spawn: Codex already trusts %s; the entry predates this task and is left in place\n' "$worktree" >&2
+        ;;
+      *) die "refusing to launch: cannot record Codex folder trust for $worktree" ;;
+    esac
+    mkdir -p "$worktree/.codex/skills"
+    # One link per skill, so a project's own skill at the same name is left alone (and
+    # named) instead of replaced, and a tracked path is refused instead of shadowed.
+    # The names are checked in one pass and linked in a second: a refusal at any name
+    # must not leave the links an earlier name already created in the pooled slot. A
+    # second-pass `die` (a failed `ln -s`) is covered too, because each link is recorded
+    # in `<task-dir>/injected` before the next one is made, and the failure trap's
+    # cleanup removes exactly what that file names (issue #106 review, M4).
+    codex_skill_names=()
+    for skill_md in "$skills_root"/*/SKILL.md; do
+      [ -f "$skill_md" ] || continue
+      skill_dir=$(dirname "$skill_md")
+      skill_name=$(basename "$skill_dir")
+      link=$worktree/.codex/skills/$skill_name
+      if git -C "$worktree" ls-files --error-unmatch -- ".codex/skills/$skill_name" >/dev/null 2>&1; then
+        die "refusing to launch: $worktree/.codex/skills/$skill_name is tracked by the project; Kingpin must link its own skill there, so untrack that path (add it to .gitignore) and respawn"
+      fi
+      if [ -L "$link" ]; then
+        # An earlier task's link into the skills checkout is Kingpin's to replace; a link
+        # pointing anywhere else is not.
+        case $(readlink "$link") in
+          "$skills_root"/*) codex_skill_names+=("$skill_name") ;;
+          *)
+            printf 'kingpin-spawn: leaving %s in %s: it links somewhere other than %s, so it is not Kingpin'"'"'s to replace\n' \
+              ".codex/skills/$skill_name" "$worktree" "$skills_root" >&2
+            continue
+            ;;
+        esac
+      elif [ -e "$link" ]; then
+        printf 'kingpin-spawn: leaving %s in %s: the project already carries a skill there, so Kingpin does not replace it\n' \
+          ".codex/skills/$skill_name" "$worktree" >&2
+        continue
+      else
+        codex_skill_names+=("$skill_name")
+      fi
+    done
+    if [ "${#codex_skill_names[@]}" -gt 0 ]; then
+      for skill_name in "${codex_skill_names[@]}"; do
+        link=$worktree/.codex/skills/$skill_name
+        # An earlier task's link into the skills checkout is Kingpin's to replace.
+        [ ! -L "$link" ] || rm -f "$link"
+        # Record the path before the link exists: cleanup removes only a path that is
+        # there, so a recorded-but-uncreated one is harmless, while a created-but-
+        # unrecorded one would outlive the task folder.
+        task_exclude_paths+=(".codex/skills/$skill_name")
+        printf '%s\n' "${task_exclude_paths[@]}" > "$task_dir/injected"
+        ln -s "$skills_root/$skill_name" "$link" \
+          || die "cannot link the $skill_name skill into $worktree/.codex/skills"
+      done
+    fi
+    # The turn end. Codex runs this on every completed turn, including its background
+    # title-generation one; bin/kingpin-stop is idempotent per state, so that second event
+    # rewrites `stopped` and appends no duplicate line. Codex appends its JSON payload as
+    # argv, which is dropped: the wrapper exports what the hook needs instead of trusting
+    # the environment Codex hands a notify program.
+    {
+      printf '#!/usr/bin/env bash\n'
+      printf 'export KINGPIN_TASK_DIR=%q\n' "$task_dir"
+      printf 'export KINGPIN_ROOT=%q\n' "$KP_ROOT"
+      printf 'exec %q\n' "$KP_ROOT/bin/kingpin-stop"
+    } > "$task_dir/notify.sh"
+    chmod +x "$task_dir/notify.sh"
+    {
+      printf '#!/usr/bin/env bash\n'
+      printf 'export KINGPIN_TASK_DIR=%q\n' "$task_dir"
+      printf 'export KINGPIN_WORKTREE=%q\n' "$worktree"
+      printf 'export KINGPIN_ROOT=%q\n' "$KP_ROOT"
+      # The sandbox denies /tmp, and every suite in this repository keeps its scratch root
+      # in `mktemp -d`, which resolves through $TMPDIR (tests/lib.sh). The task folder is
+      # already a writable root, so the worker's scratch space lives inside it.
+      printf 'export TMPDIR=%q\n' "$task_dir/tmp"
+      printf 'mkdir -p -- %q\n' "$task_dir/tmp"
+      printf 'exec %s' "$CODEX_CMD"
+      # -C: the worktree is the working root. -a never: no per-command approval prompt.
+      # -s workspace-write: the Linux sandbox is the containment mechanism (Decision 3);
+      # the task folder is one extra writable root, because status, stopped and
+      # question.md live there. Every -c value is TOML.
+      printf ' %q' -C "$worktree" -a never -s workspace-write
+      # Codex asks a second, separate question when the host has a hook set that is new or
+      # changed ("Hooks need review"), and `-a never` does not answer it (check 7). The
+      # measured answer is this bypass, and it is passed only when there is a hook set to
+      # review, so a host with none keeps Codex's protection (issue #106 review, M3).
+      if codex_hook_set; then printf ' %q' --dangerously-bypass-hook-trust; fi
+      # The preamble arrives through model_instructions_file, so the tracked AGENTS.md is
+      # never rewritten. Network stays on: the fleet's job is `gh` and `git push` (Decision
+      # 5), while the filesystem stays confined. /tmp is denied and $TMPDIR is left out of
+      # the sandbox's view because it already sits inside a writable root (Decision 6).
+      printf ' %q' -c "model_instructions_file=$(toml_quote "$task_dir/preamble.md")"
+      printf ' %q' -c sandbox_workspace_write.exclude_slash_tmp=true
+      printf ' %q' -c sandbox_workspace_write.exclude_tmpdir_env_var=true
+      # A linked worktree keeps its index and refs in the git dirs, outside the worktree
+      # root, and the sandbox mounts those read-only over a writable root that contains
+      # them: without both roots a worker can edit files but never stage or commit (issue
+      # #106 review, H1). The common dir is shared, so one worker can reach another task's
+      # git state; docs/worker-permissions.md states that price.
+      printf ' %q' -c "sandbox_workspace_write.writable_roots=[$(toml_quote "$task_dir"),$(toml_quote "$git_dir"),$(toml_quote "$common_dir")]"
+      printf ' %q' -c sandbox_workspace_write.network_access=true
+      printf ' %q' -c "notify=[$(toml_quote "$task_dir/notify.sh")]"
       # shellcheck disable=SC2016 # the program text belongs to the generated launch script
       printf ' "$(cat %q)"\n' "$task_dir/prompt.txt"
     } > "$task_dir/launch.sh"

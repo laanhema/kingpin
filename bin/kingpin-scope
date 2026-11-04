@@ -8,9 +8,10 @@
 # the harnesses silently ignored the preamble file the spawn pointed at), and the
 # orchestrator contract must not be one of those files.
 #
-# Usage: kingpin-scope files --harness <claude|agy|opencode|pi> --worktree <dir>
-#        kingpin-scope check --harness <claude|agy|opencode|pi> --worktree <dir> --preamble <file>
+# Usage: kingpin-scope files --harness <claude|agy|opencode|pi|codex> --worktree <dir>
+#        kingpin-scope check --harness <claude|agy|opencode|pi|codex> --worktree <dir> --preamble <file>
 #        kingpin-scope doctor --harness pi [--worktree <dir>] [--provider <name>] [--model <id>]
+#        kingpin-scope doctor --harness codex [--worktree <dir>]
 #
 # `files` prints one "<kind>\t<path>" line per source that exists:
 #   discovery   the harness loads it by discovery (AGENTS.md, CLAUDE.md, rules/)
@@ -26,13 +27,15 @@
 # loads; for Claude Code it arrives through --append-system-prompt-file, so it is
 # never a discovered source and is not checked. `check` never edits anything.
 #
-# `doctor` is the readiness view of the pi harness: the binary, its credential state,
-# the skills directory and the extension in one command, then the same source list
-# `files` prints. It reads `--provider`/`--model`, or `PI_PROVIDER`/`PI_MODEL` when the
-# flag is absent, and runs `pi auth check --no-refresh --json`, so it is local and
-# offline. With no provider named it reports whether the Pi agent directory holds
-# credentials in `auth.json` (default `$HOME/.pi/agent`, override `PI_CODING_AGENT_DIR`),
-# so a host with no login reads differently from a logged-in one. Exit 0 when the binary,
+# `doctor` is the readiness view of a harness that has one, pi or codex: the binary, its
+# credential state and the skills directory (pi also reports its extension) in one
+# command, then the same source list `files` prints. For pi it reads `--provider`/`--model`,
+# or `PI_PROVIDER`/`PI_MODEL` when the flag is absent, and runs
+# `pi auth check --no-refresh --json`, so it is local and offline. With no provider named
+# it reports whether the Pi agent directory holds credentials in `auth.json` (default
+# `$HOME/.pi/agent`, override `PI_CODING_AGENT_DIR`), so a host with no login reads
+# differently from a logged-in one. The codex probe reads `codex login status` and the
+# config store instead, so it takes no provider or model. Exit 0 when the binary,
 # credentials and extension are usable (or the credential state is unverified because no
 # provider was named), 1 when the binary or extension is missing or the credentials
 # report not_ready.
@@ -61,8 +64,9 @@ while [ $# -gt 0 ]; do
     --provider) provider=${2:?--provider needs a value}; shift 2 ;;
     --model) model=${2:?--model needs a value}; shift 2 ;;
     -h|--help)
-      echo "usage: kingpin-scope files|check --harness <claude|agy|opencode|pi> --worktree <dir> [--preamble <file>]"
+      echo "usage: kingpin-scope files|check --harness <claude|agy|opencode|pi|codex> --worktree <dir> [--preamble <file>]"
       echo "       kingpin-scope doctor --harness pi [--worktree <dir>] [--provider <name>] [--model <id>]"
+      echo "       kingpin-scope doctor --harness codex [--worktree <dir>]"
       exit 0
       ;;
     *) die "unknown argument: $1" ;;
@@ -75,9 +79,19 @@ if [ -z "$cmd" ]; then
   [ -n "$harness$provider$model" ] || die "give files, check, or doctor"
   cmd=doctor
 fi
-case $harness in claude|agy|opencode|pi) ;; *) die "--harness must be claude, agy, opencode, or pi" ;; esac
+case $harness in claude|agy|opencode|pi|codex) ;; *) die "--harness must be claude, agy, opencode, pi, or codex" ;; esac
 case $cmd in
-  doctor) [ "$harness" = pi ] || die "doctor supports --harness pi (the other harnesses have no readiness probe)" ;;
+  doctor)
+    case $harness in
+      pi|codex) ;;
+      *) die "doctor supports --harness pi or codex (the other harnesses have no readiness probe)" ;;
+    esac
+    # The codex probe reads the binary's own login status and its config store, so a
+    # provider or model flag would look like it tuned the check while doing nothing
+    # (issue #106 review, L2).
+    [ "$harness" != codex ] || [ -z "$provider$model" ] \
+      || die "--provider and --model belong to --harness pi (the codex probe reads codex login status and needs neither)"
+    ;;
   *) [ -z "$provider$model" ] || die "--provider and --model belong to doctor" ;;
 esac
 # doctor defaults to the current directory; files and check need an explicit one.
@@ -265,6 +279,28 @@ scope_files() {
           < <(find "$d" -name SKILL.md -type f -print 2>/dev/null || true)
       done
       ;;
+    codex)
+      # Codex reads `AGENTS.override.md` ahead of `AGENTS.md` in the worktree (the
+      # installed binary's agents_md.rs names that precedence), so both are discovery
+      # sources: a contract in the override file would otherwise ride in unseen (issue
+      # #106 review, H2).
+      emit discovery "$worktree/AGENTS.override.md"
+      emit discovery "$worktree/AGENTS.md"
+      # Every skill Codex discovers is listed to the model by name and description
+      # before it is asked for. Kingpin's own links under .codex/skills are what makes
+      # `$<skill>` expand, so they are walked as `configured`, and the project's own
+      # skills sit at the same path.
+      for f in "$worktree"/.codex/skills/*/SKILL.md; do emit configured "$f"; done
+      local codex_dir=${CODEX_HOME:-$HOME/.codex}
+      # The global instruction chain Codex loads in every session: the same pair under its
+      # config directory, and its hook program (Codex hashes `hooks.json`, so a contract
+      # there runs as part of every session). config.toml follows: it can carry
+      # developer_instructions or its own model_instructions_file.
+      for f in AGENTS.override.md AGENTS.md hooks.json; do emit global "$codex_dir/$f"; done
+      # The user-level skills directory.
+      for f in "$codex_dir"/skills/*/SKILL.md; do emit global "$f"; done
+      emit global "$codex_dir/config.toml"
+      ;;
   esac
 }
 
@@ -284,8 +320,69 @@ auth_json_has_credentials() {
   ' "$file" 2>/dev/null
 }
 
+# The Codex readiness view: the binary, the credential state `codex login status`
+# reports, the config store and the skills directory. Exit 1 only for a missing
+# binary: a logged-out host is `unverified`, because a provider configured through
+# env keys or a custom provider is invisible to `login status` (issue #106, the
+# "Readiness check" comment). The exit status is the contract, never the wording.
+doctor_codex() {
+  local bin=${KINGPIN_CODEX:-codex} bin_path='' rc=0 login_rc=0 line='' cfg='' n=0 skills=''
+  bin_path=$(command -v "$bin" 2>/dev/null || true)
+  if [ -n "$bin_path" ]; then
+    printf 'codex: %s\n' "$bin_path"
+  else
+    printf 'codex: MISSING (%s is not on PATH)\n' "$bin"
+    rc=1
+  fi
+
+  if [ -z "$bin_path" ]; then
+    printf 'credentials: unverified (%s is missing)\n' "$bin"
+  else
+    # `codex login status` prints one line and sets the exit status; both are kept as
+    # they are, so a host that is logged out reads differently from one that is not
+    # without Kingpin parsing the wording.
+    line=$("$bin_path" login status 2>&1) || login_rc=$?
+    line=${line%%$'\n'*}
+    if [ "$login_rc" -eq 0 ]; then
+      printf 'credentials: ready (codex login status: %s)\n' "${line:-no output}"
+    else
+      printf 'credentials: unverified (codex login status exited %s: %s; a provider configured through env keys or a custom provider is not visible here, so this is not proof the worker will fail)\n' \
+        "$login_rc" "${line:-no output}"
+    fi
+  fi
+
+  cfg=${CODEX_HOME:-$HOME/.codex}/config.toml
+  if [ -f "$cfg" ]; then
+    # Only the entries that really say trusted: a [projects."…"] section without the
+    # key is a folder Codex still asks about.
+    n=$(awk '/^\[projects\."/{inside=1; next} /^\[/{inside=0} inside && /^[ \t]*trust_level[ \t]*=[ \t]*"trusted"/{count++} END{print count+0}' "$cfg")
+    printf 'config: %s (%s trusted project entries)\n' "$cfg" "$n"
+  fi
+
+  skills=${KINGPIN_SKILLS_DIR:-$HOME/.claude/skills}
+  if [ -d "$skills" ]; then
+    # The fleet's skills are linked into .codex/skills per skill, and Codex discovers a
+    # skill by its SKILL.md; count them the same recursive way the pi branch does.
+    n=$(find "$skills" -name SKILL.md -type f 2>/dev/null | wc -l | tr -d ' ')
+    printf 'skills: %s (%s skills)\n' "$skills" "$n"
+  else
+    printf 'skills: MISSING (%s)\n' "$skills"
+  fi
+
+  scope_files
+  return "$rc"
+}
+
 # One readiness line per check, then the same source list `files` prints.
 doctor() {
+  # Codex has its own probe; everything below is the pi one.
+  if [ "$harness" = codex ]; then
+    # `doctor_codex` already returns its status (1 for a missing binary); return it
+    # rather than discarding it, so the contract holds even if the caller stops
+    # running under `set -e` (issue #106 review, L6).
+    doctor_codex || return $?
+    return 0
+  fi
   local bin=${KINGPIN_PI:-pi} bin_path='' rc=0 json='' parsed=''
   local status='' got_provider='' auth='' reason=''
   local skills='' n=0 pi_dir='' auth_json=''
@@ -406,6 +503,8 @@ done < "$list"
 # wrote somewhere. For Claude Code it arrives through --append-system-prompt-file,
 # which the launch script passes, so it is not part of discovery. Pi is the same
 # shape: --append-system-prompt reads the file, so there is nothing to verify here.
+# Codex is the third: `-c model_instructions_file` reads the file at launch, so it is
+# a launch flag like the other two rather than a discovered source.
 case $harness in
   opencode)
     grep -qxF "configured	$preamble" "$list" \
