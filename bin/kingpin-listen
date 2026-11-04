@@ -115,10 +115,38 @@ cleanup() {
 trap cleanup EXIT
 trap 'cleanup; exit 0' INT TERM
 
+# open_dossier [reopen]: open the review page and record the Lavish session URL the
+# operator is handed (issue #146). One open is enough: running the command again puts a
+# second browser tab on the same session, so a recorded URL means the page is open. A
+# `reopen` argument is for a session the server lost: it drops the stale URL first.
+open_dossier() {
+  local force=${1:-} out url
+  if [ "$force" != "reopen" ] && [ -s "$task_dir/dossier.url" ]; then
+    return 0
+  fi
+  if [ "$force" = "reopen" ]; then
+    # The recorded URL names the session that is gone, not a fresh one beside it.
+    rm -f "$task_dir/dossier.url"
+  fi
+  out=$("$LAVISH_CMD" "$task_dir/report.html" 2>/dev/null || true)
+  url=$(printf '%s\n' "$out" \
+    | grep -oE 'https?://[^[:space:]"]+/session/[A-Za-z0-9._-]+' | head -n 1 || true)
+  [ -n "$url" ] || return 0
+  printf '%s\n' "$url" > "$task_dir/dossier.url"
+}
+
 # Open review dossier in browser if not already opened
 if [ ! -f "$task_dir/lavish_opened" ]; then
-  "$LAVISH_CMD" "$task_dir/report.html" >/dev/null 2>&1 || true
+  open_dossier
   touch "$task_dir/lavish_opened"
+fi
+
+# One line for a foreground start, so `kingpin listen <task-id>` hands over the same URL
+# `kingpin list` prints. In background mode this line lands in listener.log.
+if [ -s "$task_dir/dossier.url" ]; then
+  echo "OK: listening on $id; dossier $(head -n 1 "$task_dir/dossier.url")"
+else
+  echo "OK: listening on $id; dossier lavish-axi $task_dir/report.html"
 fi
 
 LAVISH_PATH=$(command -v "$LAVISH_CMD")
@@ -210,9 +238,10 @@ while true; do
       echo "kingpin-listen: poll failed $fails times in a row; giving up" >&2
       break
     fi
-    # Session lost (e.g. server restart): open it again, unless the user ended it.
+    # Session lost (e.g. server restart): open it again, unless the user ended it. The
+    # recorded URL died with the session, so a reopen replaces it.
     if printf '%s' "$poll_out" | grep -q 'NOT_FOUND' && [ ! -f "$task_dir/lavish_ended" ]; then
-      "$LAVISH_CMD" "$task_dir/report.html" >/dev/null 2>&1 || true
+      open_dossier reopen
     fi
     [ "$ONCE" -eq 1 ] && break
     sleep 2

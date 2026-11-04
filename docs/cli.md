@@ -28,7 +28,7 @@
 
 ### Review mode
 
-In `review` mode it exits 0 when the worker reports `ready:` and prints the dossier path. A worker blocked on a human (`needs-input:`, or the Stop hook's `waiting:` line) ends it with exit 0 too, printing where the question is.
+In `review` mode it exits 0 when the worker reports `ready:` and prints the dossier line: the Lavish session URL the listener recorded when it opened the page, or the `lavish-axi <path>` command when no URL is recorded yet. A worker blocked on a human (`needs-input:`, or the Stop hook's `waiting:` line) ends it with exit 0 too, printing where the question is.
 
 ### A window gone before a terminal line
 
@@ -102,7 +102,7 @@ A `pi` spawn writes nothing into the worktree. The launch runs `pi --append-syst
 
 A finished task is shown from `archive/` (with `--all`), never from the dossier link `kingpin done` leaves at its old `tasks/` path: that path resolves a review page, it is not a live task.
 
-Every live task whose folder holds a `report.html` gets its dossier command printed below its row, whatever the task's mode or status, followed by `(listening: pid <n>)` while that task's listener runs; a finished or archived row gets no dossier line.
+Every live task whose folder holds a `report.html` gets its dossier line printed below its row, whatever the task's mode or status: the Lavish session URL the listener recorded in the task's `dossier.url` when it opened the page, or the `lavish-axi <path>` command when no URL is recorded yet. Hand the URL over instead of running the command, which opens a second tab on the session the listener already opened (issue #146). The line is followed by `(listening: pid <n>)` while that task's listener runs; a finished or archived row gets no dossier line.
 
 ## kingpin send
 
@@ -183,6 +183,8 @@ A poll whose prompts the parser cannot read is parked as `unparsed-poll-*.txt` i
 ### Background and one-shot listeners
 
 `--background` starts one detached listener per task (concurrent launches start only one; pid in `listener.pid`, output in `listener.log`) and returns at once; `kingpin watch` starts it when a review-mode worker reports `ready:`. `--once` stops after one poll.
+
+The first open of the dossier records the Lavish session URL in `dossier.url` and the listener prints it in its `OK: listening on <task-id>; dossier <url>` line, so a foreground start hands over the same URL `kingpin list` does. The file is never rewritten while it holds a URL, so it survives a listener restart; a session the server lost is reopened once and the replacement URL is recorded in its place.
 
 ### Without Lavish
 

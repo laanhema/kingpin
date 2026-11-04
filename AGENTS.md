@@ -103,6 +103,9 @@ An instruction file a harness silently ignores is a bug, not a preference:
 
 `bin/kingpin-watch` is the fleet's one supervisor. It dispatches each unprocessed status
 line once, runs the cleanup on `merged:`, and re-arms a dossier listener that died.
+The listener opens a review dossier once and records its Lavish session URL in the task's
+`dossier.url`; `kingpin list` prints that URL, and the orchestrator hands it over instead of
+running `lavish-axi` on the page again.
 
 `kingpin afk on [--ttl <duration>]` arms session-scoped auto-landing. The state is
 `$KINGPIN_HOME/afk` (holder pid, arm epoch, expiry epoch), the default TTL is 8 hours, and

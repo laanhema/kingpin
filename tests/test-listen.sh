@@ -22,7 +22,12 @@ case "\$cmd" in
     resp="$T/mock-lavish-response-\$task.txt"
     if [ -f "\$resp" ]; then
       cat "\$resp"
+      # A queued NOT_FOUND answer is a failed poll, the way a session the server
+      # lost answers: the listener answers that by opening the page again.
+      lost=0
+      grep -q 'NOT_FOUND' "\$resp" && lost=1
       rm -f "\$resp"
+      [ "\$lost" -eq 0 ] || exit 1
     else
       sleep 0.2
     fi
@@ -34,7 +39,10 @@ case "\$cmd" in
     echo "OK: session ended"
     ;;
   *)
-    echo "OK: opened"
+    # An open answers the way lavish-axi does, with the session URL the listener
+    # records for the handover (issue #146).
+    task=\$(basename "\$(dirname "\${1:-}")")
+    printf 'session:\n  file: %s\n  url: "http://127.0.0.1:4387/session/%s"\n  status: opened\n' "\${1:-}" "\$task"
     ;;
 esac
 EOF
@@ -85,6 +93,14 @@ echo "ready: branch=b review=APPROVE report=$t11_task/report.html" >> "$t11_task
 sleep 0.3
 grep -q "$t11_task/report.html" "$T/mock-lavish.log" 2>/dev/null && pass "mock-lavish opened review dossier" || fail "mock-lavish did not open review dossier"
 
+# One open for one ready task, and the session URL it printed is recorded for the
+# handover, so the orchestrator has no reason to run the command on the page again.
+open_count=$(grep -cxF "$t11_task/report.html" "$T/mock-lavish.log" 2>/dev/null || true)
+[ "$open_count" = "1" ] && pass "mock-lavish opened the review dossier exactly once" || fail "mock-lavish recorded $open_count opens of the review dossier"
+t11_url="http://127.0.0.1:4387/session/task-lavish-1"
+listed_url=$(cat "$t11_task/dossier.url" 2>/dev/null || true)
+[ "$listed_url" = "$t11_url" ] && pass "listener recorded the session URL in dossier.url" || fail "dossier.url holds '$listed_url'"
+
 # Assert listener.pid was created and process is running
 [ -f "$t11_task/listener.pid" ] && pass "listener.pid created" || fail "listener.pid missing"
 lpid=$(cat "$t11_task/listener.pid" 2>/dev/null || true)
@@ -93,6 +109,14 @@ lpid=$(cat "$t11_task/listener.pid" 2>/dev/null || true)
 # Assert kingpin list displays listener status
 list_out=$("$KP_BIN/kingpin" list)
 echo "$list_out" | grep -q "listening: pid $lpid" && pass "kingpin list displays listener pid" || fail "kingpin list missing listener pid: $list_out"
+
+# kingpin list prints the recorded URL, not the command that would open the page again
+if printf '%s\n' "$list_out" | grep -F '↳ Review:' | grep -Fq "$t11_url"; then
+  pass "kingpin list prints the recorded dossier URL"
+else
+  fail "kingpin list missing the dossier URL: $list_out"
+fi
+! printf '%s\n' "$list_out" | grep -Fq "lavish-axi $t11_task/report.html" && pass "kingpin list does not print the opening command for a recorded URL" || fail "kingpin list still prints the opening command: $list_out"
 
 # kingpin list shows the orchestrator lock holder and its harness
 KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin" lock acquire --harness agy >/dev/null
@@ -140,6 +164,12 @@ EOF
 tmux new-window -d -t kingpin: -n task-lavish-2 cat
 echo "ready: branch=b review=APPROVE report=$t11_task2/report.html" >> "$t11_task2/status"
 
+# No listener has opened this dossier yet, so its list line keeps the command as the
+# fallback (issue #146).
+list_out=$("$KP_BIN/kingpin" list)
+fallback_line=$(printf '%s\n' "$list_out" | grep -F '↳ Review:' | grep -F "$t11_task2/report.html" || true)
+[ -n "$fallback_line" ] && printf '%s\n' "$fallback_line" | grep -Fq "lavish-axi $t11_task2/report.html" && pass "kingpin list keeps the opening command when no URL is recorded" || fail "kingpin list lost the fallback command: $list_out"
+
 cat > "$(resp_file "$t11_task2")" << 'RESP'
 session:
   status: feedback
@@ -148,12 +178,33 @@ prompts[1]:
     tag: action
 RESP
 
-"$KP_BIN/kingpin" listen task-lavish-2 --once >/dev/null
+listen_out=$("$KP_BIN/kingpin" listen task-lavish-2 --once)
+t11_url2="http://127.0.0.1:4387/session/task-lavish-2"
+printf '%s\n' "$listen_out" | grep -Fq "OK: listening on task-lavish-2; dossier $t11_url2" && pass "foreground listen prints the dossier URL" || fail "foreground listen status missing the URL: $listen_out"
 
 [ -f "$t11_task2/feedback.md" ] && pass "feedback.md created" || fail "feedback.md missing"
 grep -q "Request Changes: please fix line 42 in foo.sh" "$t11_task2/feedback.md" && pass "feedback text written correctly" || fail "feedback text incorrect"
 grep -q "feedback: Request Changes: please fix line 42 in foo.sh" "$t11_task2/status" && pass "feedback status logged" || fail "feedback status missing"
 grep -q "reply $t11_task2/report.html --agent-reply Feedback received" "$T/mock-lavish.log" && pass "feedback receipt reply sent to lavish" || fail "feedback reply missing"
+
+# A listener restart keeps the recorded URL and opens nothing new: the marker and the
+# URL file survive, and the page is not put back in the browser.
+"$KP_BIN/kingpin" listen task-lavish-2 --once >/dev/null
+restart_url=$(cat "$t11_task2/dossier.url" 2>/dev/null || true)
+[ "$restart_url" = "$t11_url2" ] && pass "dossier.url survives a listener restart" || fail "dossier.url changed on restart: '$restart_url'"
+restart_opens=$(grep -cxF "$t11_task2/report.html" "$T/mock-lavish.log" 2>/dev/null || true)
+[ "$restart_opens" = "1" ] && pass "listener restart did not reopen the dossier" || fail "listener restart recorded $restart_opens opens"
+
+# A session the server lost is reopened once: the dead URL is dropped, the page is
+# opened again, and the URL that open printed replaces it, so `kingpin list` never
+# hands over a session that is gone.
+printf '%s\n' "http://127.0.0.1:4387/session/task-lavish-2-gone" > "$t11_task2/dossier.url"
+printf '%s\n' "NOT_FOUND: no session for $t11_task2/report.html" > "$(resp_file "$t11_task2")"
+"$KP_BIN/kingpin" listen task-lavish-2 --once >/dev/null
+reopened_url=$(cat "$t11_task2/dossier.url" 2>/dev/null || true)
+[ "$reopened_url" = "$t11_url2" ] && pass "listener replaced a lost session URL" || fail "dossier.url still holds '$reopened_url' after a lost session"
+reopen_opens=$(grep -cxF "$t11_task2/report.html" "$T/mock-lavish.log" 2>/dev/null || true)
+[ "$reopen_opens" = "2" ] && pass "listener reopened a lost session exactly once" || fail "listener recorded $reopen_opens opens after a lost session"
 
 # Negative feedback that mentions "approve" is feedback, not an approval
 t11_task3="$KINGPIN_HOME/tasks/task-lavish-3"
