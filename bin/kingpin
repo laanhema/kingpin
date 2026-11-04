@@ -185,35 +185,42 @@ case "$cmd" in
       status_file="$d/status"
       st="(pending)"
       state="-"
+      # DEAD is a live task whose window is gone, or whose recorded harness is no
+      # longer in the window that carries its name, whether or not the record has a
+      # status file or a `harness.pid`: an older record (or a curator record) has
+      # neither, and `kp_window_harness_live` falls back to the pane's command for it.
+      # WAITING and SILENT still describe a pane that is really there. Nothing here
+      # trusts a raw recorded id, which after a restart may name another task's window
+      # (issue #149).
+      if [ -n "$suffix" ]; then
+        # An archived row is finished: its window was killed by `kingpin done`, and a
+        # window check on a record that no longer runs would only say "DEAD" for good.
+        dead=0
+      elif [ "$window_alive" -eq 0 ]; then
+        dead=1
+      elif ! kp_window_harness_live "$d"; then
+        dead=1
+      fi
       if [ -f "$status_file" ] && [ -s "$status_file" ]; then
         st=$(kp_status_newest "$status_file")
         last=$(kp_status_last "$status_file")
-        # DEAD is a live task whose window is gone, or whose recorded harness is no
-        # longer in the window that carries its name. WAITING and SILENT still describe
-        # a pane that is really there. Nothing here trusts a raw recorded id, which after
-        # a restart may name another task's window (issue #149).
-        if [ -n "$suffix" ]; then
-          # An archived row is finished: its window was killed by `kingpin done`, and a
-          # window check on a record that no longer runs would only say "DEAD" for good.
-          dead=0
-        elif [ "$window_alive" -eq 0 ]; then
-          dead=1
-        elif [ -f "$d/harness.pid" ] && ! kp_window_harness_live "$d"; then
-          dead=1
-        fi
+        # A terminal line means the job is over: there is nothing to restore, so the
+        # row keeps its status instead of showing DEAD forever.
         if [ "$dead" -eq 1 ] && kp_status_is_terminal "$last"; then
           dead=0
         fi
-        if [ "$dead" -eq 1 ]; then
-          state="DEAD"
-          [ -n "$suffix" ] || dead_count=$((dead_count + 1))
-        elif [ "$window_alive" -eq 1 ]; then
-          if kp_status_is_waiting "$st"; then
-            state="WAITING"
-          elif kp_status_is_silent "$last"; then
-            state="SILENT"
-          fi
+      fi
+      if [ "$dead" -eq 1 ]; then
+        state="DEAD"
+        [ -n "$suffix" ] || dead_count=$((dead_count + 1))
+      elif [ "$window_alive" -eq 1 ] && [ -f "$status_file" ] && [ -s "$status_file" ]; then
+        if kp_status_is_waiting "$st"; then
+          state="WAITING"
+        elif kp_status_is_silent "$last"; then
+          state="SILENT"
         fi
+      fi
+      if [ -f "$status_file" ] && [ -s "$status_file" ]; then
         # Events appended since the last `kingpin ack` (the supervisor acks what
         # it dispatches), so an event nobody has looked at stays visible.
         lines=$(wc -l < "$status_file" | tr -d ' ')

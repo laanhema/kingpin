@@ -387,6 +387,13 @@ TMUX_TARGET=$target_session:$id
 CREATED=$created
 EOF
 
+# A pi launch takes its provider and model from the project env, so a restore after
+# the tmux server dies could not relaunch the same model unless the record carries the
+# pair (issue #149). Only a key the project sets is written: an unset one leaves Pi on
+# its own default, the same rule `kp_harness_launch_script` applies to the flags.
+[ -z "$PI_PROVIDER" ] || printf 'PI_PROVIDER=%s\n' "$PI_PROVIDER" >> "$task_dir/task.env"
+[ -z "$PI_MODEL" ] || printf 'PI_MODEL=%s\n' "$PI_MODEL" >> "$task_dir/task.env"
+
 # The preamble and the launch script come from lib/launch.sh, so a restored worker gets
 # exactly what a freshly spawned one does, and one writer owns `<task-dir>/injected`.
 kp_worker_preamble "$task_dir" "$worktree" "$mode" \

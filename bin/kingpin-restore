@@ -328,6 +328,14 @@ for id in ${ids[@]+"${ids[@]}"}; do
   IFS=$'\t' read -r session name < <(kp_window_parts "$env_file")
   [ -n "$session" ] || session=kingpin
   [ -n "$name" ] || name=$id
+  # A window name is not a unique claim: two --text tasks can rename to the same issue
+  # title, and an operator window can carry a task's name. Reclaiming such a window
+  # would kill the other task's pane, so the conflict is refused before this command
+  # writes anything.
+  if claimed_by=$(kp_window_name_claimed "$task_dir" "$session" "$name"); then
+    refuse "$id" "window $session:$name is also named by the live task $claimed_by; name one of the two tasks' windows differently, then restore again"
+    continue
+  fi
   next=$(next_step "$task_dir" "$id" "$project" "$last")
 
   if [ "$dry_run" -eq 1 ]; then
@@ -337,8 +345,15 @@ for id in ${ids[@]+"${ids[@]}"}; do
     continue
   fi
 
-  # Past this point the command writes: the resume brief, the preamble, the launch
-  # script, the worktree exclude and the window. Everything above refused first.
+  # Past this point the command writes: the harness override, the resume brief, the
+  # preamble, the launch script, the worktree exclude and the window. Everything above
+  # refused first. HARNESS is recorded before the preamble because the preamble's pi
+  # sentence is chosen by that record (lib/launch.sh): a --harness override has to be
+  # visible there, not only after the window has started.
+  if [ -n "$harness_cli" ] && ! set_env_key "$env_file" HARNESS "$harness"; then
+    refuse "$id" "cannot record HARNESS=$harness in $env_file"
+    continue
+  fi
   if ! write_resume_prompt "$task_dir" "$id" "$project" "$worktree" "$branch" \
        "$(kp_env_get "$env_file" MODE)" "$harness" "$last" "$next"; then
     refuse "$id" "cannot write the resume brief"
@@ -348,6 +363,12 @@ for id in ${ids[@]+"${ids[@]}"}; do
     refuse "$id" "cannot write the worker preamble"
     continue
   fi
+  # lib/launch.sh reads the pi provider and model from the environment; a restore
+  # exports the pair the spawn recorded, so a pi worker comes back on the model it had.
+  # An unset key stays empty and Pi keeps its own default, as at spawn.
+  KP_PI_PROVIDER=$(kp_env_get "$env_file" PI_PROVIDER)
+  KP_PI_MODEL=$(kp_env_get "$env_file" PI_MODEL)
+  export KP_PI_PROVIDER KP_PI_MODEL
   if ! kp_harness_launch_script "$task_dir" "$worktree" "$harness" "$task_dir/resume-prompt.txt"; then
     refuse "$id" "cannot prepare the $harness launch (reason above)"
     continue
@@ -375,7 +396,9 @@ for id in ${ids[@]+"${ids[@]}"}; do
 
   # The recorded session died with the server; recreate it under the same name, as a
   # spawn's resolve_tmux_session does for `kingpin`, so the record needs no other change.
-  if ! tmux has-session -t "$session" 2>/dev/null; then
+  # `=name` is an exact match: a session called `kingpin-workers` is not `kingpin`, and
+  # prefix matching here would put the window in a session the record never names.
+  if ! tmux has-session -t "=$session" 2>/dev/null; then
     if ! tmux new-session -d -s "$session" -n home 2>/dev/null; then
       refuse "$id" "cannot create the tmux session $session"
       continue
@@ -396,10 +419,6 @@ for id in ${ids[@]+"${ids[@]}"}; do
     continue
   fi
   rm -f "$task_dir/launching"
-  if [ -n "$harness_cli" ] && ! set_env_key "$env_file" HARNESS "$harness"; then
-    refuse "$id" "cannot record HARNESS=$harness in $env_file"
-    continue
-  fi
 
   printf 'OK: restored %s (%s) in %s:%s (%s) on %s; last status: %s; next: %s\n' \
     "$id" "$harness" "$session" "$name" "$new_id" "$branch" "${last:-none}" "$next"

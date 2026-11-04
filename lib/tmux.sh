@@ -194,12 +194,39 @@ kp_window_record_id() {
 }
 
 # _kp_window_same_name <session> <name>: prints the id of a window in <session>
-# whose name is exactly <name>, or nothing.
+# whose name is exactly <name>, or nothing. `=session` is exact: a session called
+# `kingpin-workers` must not answer for `kingpin` (issue #149).
 _kp_window_same_name() {
   local session=${1:?} name=${2:?} ids
-  ids=$(tmux list-panes -t "$session:=$name" -F '#{window_id}' 2>/dev/null | sort -u || true)
+  ids=$(tmux list-panes -t "=$session:=$name" -F '#{window_id}' 2>/dev/null | sort -u || true)
   [ "$(printf '%s\n' "$ids" | grep -c . || true)" = "1" ] || return 0
   printf '%s\n' "$ids"
+}
+
+# kp_window_name_claimed <task-dir> <session> <name>
+# Prints the id of another *live* task record that resolves to the same session and
+# window name, and exits 0; prints nothing and exits 1 when the name is this task's
+# alone. A name is not a unique claim (two `--text` tasks can rename to the same issue
+# title, and an operator window can carry a task's name), so a caller that would
+# respawn a same-named window asks first: `respawn-pane -k` on another task's pane
+# destroys that task (issue #149).
+kp_window_name_claimed() {
+  local task_dir=${1:?kp_window_name_claimed needs a task dir} session=${2:?} name=${3:?}
+  task_dir=${task_dir%/}
+  local home env other s n
+  home=$(dirname "$(dirname "$task_dir")")
+  for env in "$home"/tasks/*/task.env; do
+    [ -f "$env" ] || continue
+    other=$(dirname "$env")
+    [ "$other" = "$task_dir" ] && continue
+    kp_task_is_live "$other" || continue
+    IFS=$'\t' read -r s n < <(kp_window_parts "$env")
+    if [ "$s" = "$session" ] && [ "$n" = "$name" ]; then
+      basename "$other"
+      return 0
+    fi
+  done
+  return 1
 }
 
 # kp_window_start <task-dir> <session> <name> <worktree> <launch-script> [--fresh]
@@ -207,8 +234,9 @@ _kp_window_same_name() {
 # window in <session> is refused on stderr (a spawn must never take over another
 # task's window). Without it, a same-named window is respawned in place with
 # `respawn-pane -k`, so its id and name survive and its old pane process is replaced;
-# otherwise a window is created. The name is pinned, the pane pid is written to
-# `<task-dir>/harness.pid`, and the window id is printed.
+# otherwise a window is created. A caller refuses a name another live task record also
+# resolves to (`kp_window_name_claimed`) before it gets here. The name is pinned, the
+# pane pid is written to `<task-dir>/harness.pid`, and the window id is printed.
 kp_window_start() {
   local task_dir=${1:?kp_window_start needs a task dir} session=${2:?} name=${3:?}
   local worktree=${4:?} launch=${5:?} fresh=0 existing id panes_pid
@@ -232,7 +260,7 @@ kp_window_start() {
       || { echo "cannot respawn the pane of $session:$name ($existing)" >&2; return 1; }
     id=$existing
   else
-    id=$(tmux new-window -d -P -F '#{window_id}' -t "$session:" -n "$name" -c "$worktree" "$launch") \
+    id=$(tmux new-window -d -P -F '#{window_id}' -t "=$session:" -n "$name" -c "$worktree" "$launch") \
       || { echo "cannot create a window in $session" >&2; return 1; }
     [ -n "$id" ] || { echo "cannot create a window in $session" >&2; return 1; }
   fi

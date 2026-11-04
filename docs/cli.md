@@ -343,9 +343,9 @@ A curator task carries `NO_LEASE=1`: its worktree is the shared skills checkout,
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_AGY`, `KINGPIN_OPENCODE`, `KINGPIN_PI`
 
-Bring live tasks back after the tmux server dies. A window that is gone is created again, a window that came back as a plain shell under the task's name is respawned in place, and either way the window runs in the task's own worktree and on the branch the worktree has checked out. With no task ids it restores every live task under `$KINGPIN_HOME/tasks`, in sorted order.
+Bring live tasks back after the tmux server dies. A window that is gone is created again, a window that came back as a plain shell under the task's name is respawned in place, and either way the window runs in the task's own worktree and on the branch the worktree has checked out. A name that another live task record also resolves to is never respawned: restore refuses it and names the conflict, because the window belongs to that other task. With no task ids it restores every live task under `$KINGPIN_HOME/tasks`, in sorted order.
 
-The recorded harness is relaunched through the same `lib/launch.sh` a spawn uses, so the preamble, the harness wiring and the injected worktree files are the ones this task had. `--harness` launches another harness for this run and records it in `task.env`.
+The recorded harness is relaunched through the same `lib/launch.sh` a spawn uses, so the preamble, the harness wiring and the injected worktree files are the ones this task had. A record that carries a project's `PI_PROVIDER` and `PI_MODEL` (both written at spawn when the project sets them) relaunches `pi` with the same `--provider` and `--model`, so a restored pi worker comes back on its model. `--harness` launches another harness for this run and records it in `task.env` before the preamble is written, so the pi preamble sentence is there too.
 
 ### The resume brief
 
@@ -361,6 +361,7 @@ A task that cannot be brought back is named on stderr as `kingpin-restore: refus
 - a task whose last worker event is `merged:`, `cleanup-refused:` or `failed:`, each with the command that finishes or replaces it;
 - a missing worktree, a directory that is not a linked worktree, or a detached HEAD;
 - a worktree that treehouse no longer reports as `leased`, or one whose lease cannot be verified;
+- a window name that another live task record also resolves to, which restore will not reclaim;
 - a harness command that is not installed.
 
 The refusal changes nothing, so the record, the worktree and the branch survive for a later run.
@@ -371,7 +372,7 @@ The refusal changes nothing, so the record, the worktree and the branch survive 
 
 ### `--dry-run`
 
-`--dry-run` prints one `would restore ...` line per task and touches nothing: no window, no launch file, no `task.env` change, and no restore mutex. It is the way to see what a fleet-wide restore would do.
+`--dry-run` prints one `would restore ...` line per task and touches nothing: no window, no launch file, no `task.env` change, and no restore mutex. A task the real run refuses before it writes is refused here too, with the same line, so the plan shows those conflicts as well as the work. It is the way to see what a fleet-wide restore would do.
 
 ### One restore at a time
 

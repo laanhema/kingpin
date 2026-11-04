@@ -45,6 +45,10 @@ TMUX_WINDOW_ID=$win
 CREATED=$(date -Iseconds)
 ENV
   : > "$d/status"
+  # A real window records its pane pid as the harness identity (lib/tmux.sh), and
+  # `kingpin list` reads a window that runs only a shell as DEAD (issue #149). The
+  # stand-in records the pid too, so a task this suite calls live really looks live.
+  tmux list-panes -t "$win" -F '#{pane_pid}' 2>/dev/null | head -n 1 > "$d/harness.pid"
   printf '%s\n' "$d"
 }
 

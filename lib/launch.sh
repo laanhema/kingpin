@@ -123,7 +123,7 @@ EOF
       # cannot be hidden by .git/info/exclude: rewriting it would start the worker on a
       # dirty tree and a worker could commit the change, so the launch is refused.
       if git -C "$worktree" ls-files --error-unmatch .opencode/opencode.json >/dev/null 2>&1; then
-        echo "refusing to launch: $worktree/.opencode/opencode.json is tracked by the project; Kingpin must add the preamble to its instructions, so untrack that file (add it to .gitignore) and respawn" >&2
+        echo "refusing to launch: $worktree/.opencode/opencode.json is tracked by the project; Kingpin must add the preamble to its instructions, so untrack that file (add it to .gitignore) and launch again" >&2
         return 1
       fi
       # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
@@ -133,13 +133,13 @@ EOF
         let cfg = {};
         if (fs.existsSync(file)) {
           try { cfg = JSON.parse(fs.readFileSync(file, "utf8")); }
-          catch (e) { console.error(`kingpin-spawn: ${file} is not valid JSON; fix it before spawning`); process.exit(1); }
+          catch (e) { console.error(`kingpin: ${file} is not valid JSON; fix it and launch again`); process.exit(1); }
         }
         if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
-          console.error(`kingpin-spawn: ${file} must contain a JSON object`); process.exit(1);
+          console.error(`kingpin: ${file} must contain a JSON object`); process.exit(1);
         }
         if (cfg.instructions !== undefined && !Array.isArray(cfg.instructions)) {
-          console.error(`kingpin-spawn: "instructions" in ${file} must be a JSON array`); process.exit(1);
+          console.error(`kingpin: "instructions" in ${file} must be a JSON array`); process.exit(1);
         }
         cfg.$schema = cfg.$schema || "https://opencode.ai/config.json";
         cfg.instructions = (cfg.instructions || []).filter((e) => e !== entry).concat(entry);

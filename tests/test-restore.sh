@@ -32,6 +32,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 F
 chmod +x "$T/fake-harness"
 export KINGPIN_AGY=$T/fake-harness
+# The pi harness stand-in for the provider/model case: the launch script the restore
+# generates is the assertion, and no real pi binary is needed.
+export KINGPIN_PI=$T/fake-harness
 
 env_get() { sed -n "s/^$2=//p" "$1" | tail -n 1; }
 
@@ -68,6 +71,18 @@ waited_line() { # <file> <wanted line>: poll a file for one exact line
   for _ in $(seq 1 50); do
     grep -qxF -- "$want" "$1" 2>/dev/null && return 0
     sleep 0.1
+  done
+  return 1
+}
+
+# wait_for_pane_command <window-id> <command>: a fresh pane reports `tmux` for a moment
+# before its command settles, and the shell-name fallback in lib/tmux.sh reads that
+# value, so a case about a plain-shell window waits for the shell first.
+wait_for_pane_command() {
+  local win=$1 want=$2
+  for _ in $(seq 1 50); do
+    [ "$(tmux list-panes -t "$win" -F '#{pane_current_command}' 2>/dev/null | head -n 1)" = "$want" ] && return 0
+    sleep 0.05
   done
   return 1
 }
@@ -223,16 +238,20 @@ grep -qF "resume-prompt.txt" "$r6/launch.sh" && ! grep -qF "/prompt.txt" "$r6/la
 echo "=== Test 7: restore refuses by name and changes nothing ==="
 # A controlled pool: the stub answers `status --json` (and anything else) with the JSON
 # in KP_TEST_TREEHOUSE_STATUS. The real binary is needed for the spawns above and is put
-# back by the cleanup, so this stub only lives for the refusal and --force cases.
-cat > "$T/bin/treehouse" << 'TREESTUB'
+# back by the cleanup, so this stub only lives for the refusal and --force cases. A later
+# case that installs it again calls treehouse_stub (test 10 removes it).
+export KP_TEST_TREEHOUSE_STATUS=$T/treehouse-status.json
+treehouse_stub() {
+  cat > "$T/bin/treehouse" << 'TREESTUB'
 #!/usr/bin/env bash
 case "${1:-}" in
   status) cat "${KP_TEST_TREEHOUSE_STATUS:?}" 2>/dev/null; exit 0 ;;
   *) exit 0 ;;
 esac
 TREESTUB
-chmod +x "$T/bin/treehouse"
-export KP_TEST_TREEHOUSE_STATUS=$T/treehouse-status.json
+  chmod +x "$T/bin/treehouse"
+}
+treehouse_stub
 mk_fixture() { # <id> <worktree> [extra KEY=value...]
   local id=$1 wt=$2
   shift 2
@@ -353,6 +372,122 @@ list_out=$("$KP_BIN/kingpin" list 2>/dev/null)
 ! grep -q '^Fleet:' <<< "$list_out" && pass "the hint disappears once no live task is dead" || fail "stale restore hint: $list_out"
 r1_row=$(grep '^r1 ' <<< "$list_out" || true)
 [ -n "$r1_row" ] && ! grep -q 'DEAD' <<< "$r1_row" && pass "a task with a live harness does not show DEAD" || fail "r1 row: $r1_row"
+
+# ---------------------------------------------------------------------------
+# Test 11: a legacy record with no harness.pid is DEAD from the pane's command alone
+echo "=== Test 11: list marks a shell window DEAD without a harness.pid ==="
+"$KP_BIN/kingpin" restore >/dev/null 2>&1 || fail "restoring the fleet for the legacy DEAD case failed"
+d=$(mk_fixture k-legacy "$T/fixture-wt"); printf 'issue: #149\n' > "$d/status"
+k_legacy_win=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n k-legacy 'exec bash')
+wait_for_pane_command "$k_legacy_win" bash || fail "the k-legacy window never settled on a shell"
+d=$(mk_fixture k-mismatch "$T/fixture-wt"); printf 'issue: #149\n' > "$d/status"
+tmux new-window -d -t kingpin: -n k-mismatch 'exec sleep 300' >/dev/null
+# A live pid that is not the pane pid: the recorded harness is not in the window.
+printf '%s\n' "$$" > "$KINGPIN_HOME/tasks/k-mismatch/harness.pid"
+# A live record with no status file at all: DEAD must not depend on the status guard.
+d=$(mk_fixture k-statusless "$T/fixture-wt")
+rm -f "$d/status"
+k_statusless_win=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n k-statusless 'exec bash')
+wait_for_pane_command "$k_statusless_win" bash || fail "the k-statusless window never settled on a shell"
+list_out=$("$KP_BIN/kingpin" list 2>/dev/null)
+row=$(grep '^k-legacy ' <<< "$list_out" || true)
+grep -q 'DEAD' <<< "$row" && pass "a record with no harness.pid whose window runs a shell shows DEAD" || fail "k-legacy row: $row"
+row=$(grep '^k-mismatch ' <<< "$list_out" || true)
+grep -q 'DEAD' <<< "$row" && pass "a harness.pid outside the pane shows DEAD" || fail "k-mismatch row: $row"
+row=$(grep '^k-statusless ' <<< "$list_out" || true)
+grep -q 'DEAD' <<< "$row" && pass "a live record with no status file still shows DEAD" || fail "k-statusless row: $row"
+grep -q '^Fleet: 3 live task(s) have no live window; run kingpin restore$' <<< "$list_out" \
+  && pass "every dead record is counted in the restore hint" \
+  || fail "restore hint in: $list_out"
+rm -rf "$KINGPIN_HOME/tasks/k-legacy" "$KINGPIN_HOME/tasks/k-mismatch" "$KINGPIN_HOME/tasks/k-statusless"
+tmux kill-window -t 'kingpin:=k-legacy' 2>/dev/null || true
+tmux kill-window -t 'kingpin:=k-mismatch' 2>/dev/null || true
+tmux kill-window -t 'kingpin:=k-statusless' 2>/dev/null || true
+list_out=$("$KP_BIN/kingpin" list 2>/dev/null)
+! grep -q '^Fleet:' <<< "$list_out" && pass "the hint clears once the dead records are gone" || fail "stale restore hint: $list_out"
+
+# ---------------------------------------------------------------------------
+# Test 12: a restored pi task relaunches on the provider and model it had
+echo "=== Test 12: restore keeps a pi task's provider and model ==="
+printf 'PI_PROVIDER=openrouter\nPI_MODEL=anthropic/claude-sonnet-4.5\n' >> "$KINGPIN_HOME/projects/demo-auto.env"
+"$KP_BIN/kingpin-spawn" demo-auto --issue 149 --id p1 --harness pi >/dev/null
+p1="$KINGPIN_HOME/tasks/p1"
+[ "$(env_get "$p1/task.env" PI_PROVIDER)" = openrouter ] \
+  && pass "the spawn records PI_PROVIDER in task.env" || fail "task.env: $(cat "$p1/task.env")"
+[ "$(env_get "$p1/task.env" PI_MODEL)" = anthropic/claude-sonnet-4.5 ] \
+  && pass "the spawn records PI_MODEL in task.env" || fail "task.env: $(cat "$p1/task.env")"
+restart_tmux
+p1_rc=0
+"$KP_BIN/kingpin" restore p1 >/dev/null 2>"$T/p1.err" || p1_rc=$?
+[ "$p1_rc" -eq 0 ] && pass "the pi task is restored" || fail "restore p1 exited $p1_rc: $(cat "$T/p1.err")"
+grep -q -- '--provider openrouter' "$p1/launch.sh" \
+  && pass "the restored pi launch keeps --provider" || fail "launch.sh: $(cat "$p1/launch.sh")"
+grep -q -- '--model anthropic/claude-sonnet-4.5' "$p1/launch.sh" \
+  && pass "the restored pi launch keeps --model" || fail "launch.sh: $(cat "$p1/launch.sh")"
+# The override case: a task with no recorded pi keys, forced to pi for this run.
+r6_rc=0
+"$KP_BIN/kingpin" restore r6 --harness pi >/dev/null 2>"$T/r6pi.err" || r6_rc=$?
+[ "$r6_rc" -eq 0 ] && pass "--harness pi restores an agy task" || fail "restore r6 --harness pi exited $r6_rc: $(cat "$T/r6pi.err")"
+grep -qF "has no subagent tool" "$r6/preamble.md" \
+  && pass "a --harness pi restore writes the pi sentence into the preamble" \
+  || fail "the preamble has no pi sentence: $(tail -n 3 "$r6/preamble.md")"
+[ "$(env_get "$r6/task.env" HARNESS)" = pi ] \
+  && pass "the harness override is recorded" || fail "task.env: $(cat "$r6/task.env")"
+! grep -q -- '--provider' "$r6/launch.sh" \
+  && pass "an unset provider passes no flag" || fail "launch.sh: $(cat "$r6/launch.sh")"
+
+# ---------------------------------------------------------------------------
+# Test 13: a window name another live task claims is never respawned
+echo "=== Test 13: restore never takes over another live task's window ==="
+treehouse_stub
+leased_json
+d_a=$(mk_fixture k-claim-a "$T/fixture-wt" "TMUX_TARGET=kingpin:shared"); printf 'issue: #149\n' > "$d_a/status"
+d_b=$(mk_fixture k-claim-b "$T/fixture-wt" "TMUX_TARGET=kingpin:shared"); printf 'issue: #149\n' > "$d_b/status"
+cp "$d_b/task.env" "$T/k-claim-b.env.before"
+tmux has-session -t '=kingpin' 2>/dev/null || tmux new-session -d -s kingpin -n home
+shared_win=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n shared -c "$T/fixture-wt" 'exec bash')
+wait_for_pane_command "$shared_win" bash || fail "the shared window never settled on a shell"
+shared_pid=$(tmux list-panes -t "$shared_win" -F '#{pane_pid}' | head -n 1)
+k_claim_rc=0
+k_claim_err=$("$KP_BIN/kingpin" restore k-claim-b 2>&1 >/dev/null) || k_claim_rc=$?
+[ "$k_claim_rc" -eq 1 ] && pass "a restore of a window name another live task claims exits 1" || fail "restore exited $k_claim_rc: $k_claim_err"
+grep -q "refused k-claim-b:" <<< "$k_claim_err" && pass "the refusal names the task" || fail "stderr: $k_claim_err"
+grep -qF "window kingpin:shared is also named by the live task k-claim-a" <<< "$k_claim_err" \
+  && pass "the refusal names the other task" || fail "stderr: $k_claim_err"
+[ "$(tmux list-panes -t "$shared_win" -F '#{pane_pid}' | head -n 1)" = "$shared_pid" ] \
+  && pass "the other task's pane process survived" || fail "the shared window's pane was replaced"
+[ "$(tmux list-panes -t "$shared_win" -F '#{pane_current_command}' | head -n 1)" = bash ] \
+  && pass "the other task's window still runs its own shell" || fail "the shared pane no longer runs bash"
+cmp -s "$d_b/task.env" "$T/k-claim-b.env.before" \
+  && pass "the refusal left task.env byte-identical" || fail "the refusal rewrote task.env"
+rm -rf "$d_a" "$d_b"
+tmux kill-window -t "$shared_win" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Test 14: a missing session is recreated by exact name, not by prefix
+echo "=== Test 14: restore recreates the recorded session exactly ==="
+treehouse_stub
+leased_json
+d=$(mk_fixture k-session "$T/fixture-wt"); printf 'issue: #149\n' > "$d/status"
+tmux kill-session -t '=kingpin' 2>/dev/null || true
+tmux new-session -d -s kingpin-workers -n home
+k_session_rc=0
+"$KP_BIN/kingpin" restore k-session >/dev/null 2>"$T/k-session.err" || k_session_rc=$?
+[ "$k_session_rc" -eq 0 ] && pass "the task is restored when no session carries its own name" || fail "restore exited $k_session_rc: $(cat "$T/k-session.err")"
+tmux has-session -t '=kingpin' 2>/dev/null && pass "restore created a session named exactly kingpin" || fail "no session named exactly kingpin"
+if tmux list-windows -t '=kingpin' -F '#{window_name}' 2>/dev/null | grep -qxF k-session; then
+  pass "the window lives in the kingpin session"
+else
+  fail "the window is not in kingpin: $(tmux list-windows -t '=kingpin' -F '#{window_name}' 2>/dev/null)"
+fi
+if tmux list-windows -t '=kingpin-workers' -F '#{window_name}' 2>/dev/null | grep -qxF k-session; then
+  fail "the window landed in the kingpin-workers session"
+else
+  pass "the window did not land in the kingpin-workers session"
+fi
+rm -rf "$d"
+tmux kill-window -t 'kingpin:=k-session' 2>/dev/null || true
+tmux kill-session -t '=kingpin-workers' 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 
