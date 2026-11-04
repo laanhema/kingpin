@@ -16,6 +16,8 @@ KP_BIN=$(cd "$(dirname "$0")" && pwd)
 . "$KP_BIN/../lib/exclude.sh"
 # shellcheck source=../lib/curator.sh
 . "$KP_BIN/../lib/curator.sh"
+# shellcheck source=../lib/tmux.sh
+. "$KP_BIN/../lib/tmux.sh"
 FORCE=0
 
 usage() {
@@ -318,8 +320,10 @@ fi
 
 # 1. Close tmux window
 # The window ID survives rename and move; older task.env files only have the name.
+# The socket comes from the record (issue #142); a record written before the fleet
+# had its own server names none, and its window is on the default server.
 tmux_target=${TMUX_WINDOW_ID:-${TMUX_TARGET:-kingpin:$id}}
-tmux kill-window -t "$tmux_target" 2>/dev/null || true
+kp_tmux "${TMUX_SOCKET:-}" kill-window -t "$tmux_target" 2>/dev/null || true
 # No status ack here. The refusal paths exit above and the success path archives
 # the task directory below, so this ack bought nothing; a plain `kingpin-ack`
 # would also write `seen` to the file's *current* length and acknowledge away a

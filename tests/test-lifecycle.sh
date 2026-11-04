@@ -23,7 +23,7 @@ out=$("$KP_BIN/kingpin" list)
 echo "$out" | grep -q "No tasks in fleet" && pass "empty fleet reported" || fail "list did not report empty"
 
 # The socket guard itself is silent in lib.sh; this is the suite's one assertion about it.
-tmux display-message -p '#{socket_path}' | grep -q "$TEST_SOCKET" && pass "test operates on private tmux socket" || fail "test socket not isolated"
+tmux display-message -p '#{socket_path}' | grep -qF "$TMUX_TMPDIR/" && [ "$(tmux display-message -p '#S')" = kingpin ] && pass "test operates on the private fleet socket" || fail "test socket not isolated"
 
 # Test 3: kingpin-watch auto-landing and auto-cleanup
 echo "=== Test 3: kingpin-watch auto-lifecycle ==="
@@ -101,39 +101,42 @@ export KINGPIN_AGY=$T/fake-worker
 
 # Case A: Outside tmux (TMUX unset or empty)
 spawn_out_outside=$(TMUX='' "$KP_BIN/kingpin" spawn demo-auto --issue 203 --id task-target-outside --mode review)
-echo "$spawn_out_outside" | grep -q "tmux kingpin:task-target-outside" && pass "spawn logged kingpin target when TMUX is empty" || fail "spawn did not log kingpin target"
+echo "$spawn_out_outside" | grep -q "tmux -L $KINGPIN_TMUX_SOCKET kingpin:task-target-outside" && pass "spawn logged the fleet server and kingpin session" || fail "spawn did not log the fleet target"
 grep -q "^TMUX_TARGET=kingpin:task-target-outside$" "$KINGPIN_HOME/tasks/task-target-outside/task.env" && pass "task.env recorded kingpin:task-target-outside" || fail "wrong TMUX_TARGET in task.env"
+grep -q "^TMUX_SOCKET=$KINGPIN_TMUX_SOCKET$" "$KINGPIN_HOME/tasks/task-target-outside/task.env" && pass "task.env recorded the fleet socket" || fail "task.env did not record TMUX_SOCKET"
 tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "task-target-outside" && pass "window spawned in kingpin session" || fail "window missing in kingpin session"
 outside_wid=$(tmux list-windows -t kingpin -F '#{window_id} #{window_name}' | awk '$2=="task-target-outside"{print $1}')
 grep -qx "TMUX_WINDOW_ID=$outside_wid" "$KINGPIN_HOME/tasks/task-target-outside/task.env" && echo "$outside_wid" | grep -q '^@[0-9][0-9]*$' && pass "task.env recorded window ID $outside_wid" || fail "task.env TMUX_WINDOW_ID is not the spawned window's ID ($outside_wid)"
 "$KP_BIN/kingpin" "done" task-target-outside --force >/dev/null
 ! tmux list-windows -t kingpin -F '#{window_name}' 2>/dev/null | grep -qx "task-target-outside" && pass "kingpin done cleaned up outside window" || fail "window lingering in kingpin session"
 
-# Case B: Inside tmux (active session targeting)
-tmux kill-session -t kp-test-active 2>/dev/null || true
-tmux new-session -d -s kp-test-active -n home
-active_sid=$(tmux display-message -p -t kp-test-active '#{session_id}' | tr -d '$')
-tmux_sock=$(tmux display-message -p '#{socket_path}' 2>/dev/null || echo "/tmp/tmux-$(id -u)/default")
-mock_tmux="$tmux_sock,$$,$active_sid"
+# Case B: Inside an operator tmux session, on the operator's own server (issue #142).
+# The worker must not land there: the operator's session is not part of the fleet.
+ops_socket="$TEST_SOCKET-ops"
+tmux -L "$ops_socket" new-session -d -s kp-test-active -n home
+active_sid=$(tmux -L "$ops_socket" display-message -p -t kp-test-active '#{session_id}' | tr -d '$')
+ops_path=$(tmux -L "$ops_socket" display-message -p '#{socket_path}')
+mock_tmux="$ops_path,$$,$active_sid"
 
 spawn_out_inside=$(TMUX="$mock_tmux" "$KP_BIN/kingpin" spawn demo-auto --issue 204 --id task-target-inside --mode review)
-echo "$spawn_out_inside" | grep -q "tmux kp-test-active:task-target-inside" && pass "spawn logged active session target when TMUX is set" || fail "spawn did not log active session target"
-grep -q "^TMUX_TARGET=kp-test-active:task-target-inside$" "$KINGPIN_HOME/tasks/task-target-inside/task.env" && pass "task.env recorded kp-test-active:task-target-inside" || fail "wrong TMUX_TARGET in task.env"
-tmux list-windows -t kp-test-active -F '#{window_name}' | grep -qx "task-target-inside" && pass "window spawned in active session" || fail "window missing in active session"
-inside_wid=$(tmux list-windows -t kp-test-active -F '#{window_id} #{window_name}' | awk '$2=="task-target-inside"{print $1}')
-grep -qx "TMUX_WINDOW_ID=$inside_wid" "$KINGPIN_HOME/tasks/task-target-inside/task.env" && pass "task.env recorded window ID $inside_wid in active session" || fail "task.env TMUX_WINDOW_ID is not the active-session window's ID ($inside_wid)"
+echo "$spawn_out_inside" | grep -q "tmux -L $KINGPIN_TMUX_SOCKET kingpin:task-target-inside" && pass "spawn named the fleet server while inside the operator's session" || fail "spawn output: $spawn_out_inside"
+grep -q "^TMUX_TARGET=kingpin:task-target-inside$" "$KINGPIN_HOME/tasks/task-target-inside/task.env" && pass "task.env targets the kingpin session, not the operator's" || fail "wrong TMUX_TARGET in task.env"
+! tmux -L "$ops_socket" list-windows -t kp-test-active -F '#{window_name}' 2>/dev/null | grep -qx "task-target-inside" && pass "window did not land in the operator's session" || fail "window landed in the operator's session"
+tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "task-target-inside" && pass "window spawned in the fleet's kingpin session" || fail "window missing in the fleet session"
+inside_wid=$(tmux list-windows -t kingpin -F '#{window_id} #{window_name}' | awk '$2=="task-target-inside"{print $1}')
+grep -qx "TMUX_WINDOW_ID=$inside_wid" "$KINGPIN_HOME/tasks/task-target-inside/task.env" && pass "task.env recorded window ID $inside_wid" || fail "task.env TMUX_WINDOW_ID is not the spawned window's ID ($inside_wid)"
 
-# Test downstream kingpin-send targeting active session window
+# Test downstream kingpin-send targeting the fleet window
 send_out=$("$KP_BIN/kingpin" send task-target-inside "echo inside-active-ok")
-echo "$send_out" | grep -q "OK: sent to kp-test-active:task-target-inside" && pass "kingpin-send targeted active session window" || fail "kingpin-send failed targeting active session"
+echo "$send_out" | grep -q "OK: sent to kingpin:task-target-inside" && pass "kingpin-send reached the fleet window" || fail "kingpin-send failed targeting the fleet window"
 
 "$KP_BIN/kingpin" "done" task-target-inside --force >/dev/null
-! tmux list-windows -t kp-test-active -F '#{window_name}' 2>/dev/null | grep -qx "task-target-inside" && pass "kingpin done cleaned up active session window" || fail "window lingering in active session"
-tmux kill-session -t kp-test-active 2>/dev/null || true
+! tmux list-windows -t kingpin -F '#{window_name}' 2>/dev/null | grep -qx "task-target-inside" && pass "kingpin done cleaned up the fleet window" || fail "window lingering in kingpin session"
+tmux -L "$ops_socket" kill-server 2>/dev/null || true
 
-# Case C: Lookup fallback when TMUX has invalid session id or lookup fails
+# Case C: TMUX points nowhere. The worker still lands on the fleet server.
 TMUX="/tmp/nonexistent-sock,99999,99999" "$KP_BIN/kingpin" spawn demo-auto --issue 205 --id task-target-fallback --mode review >/dev/null
-grep -q "^TMUX_TARGET=kingpin:task-target-fallback$" "$KINGPIN_HOME/tasks/task-target-fallback/task.env" && pass "fallback resolved a valid TMUX_TARGET" || fail "wrong TMUX_TARGET on fallback"
+grep -q "^TMUX_TARGET=kingpin:task-target-fallback$" "$KINGPIN_HOME/tasks/task-target-fallback/task.env" && grep -q "^TMUX_SOCKET=$KINGPIN_TMUX_SOCKET$" "$KINGPIN_HOME/tasks/task-target-fallback/task.env" && pass "an unusable TMUX still resolves the fleet target" || fail "wrong TMUX_TARGET on fallback"
 "$KP_BIN/kingpin" "done" task-target-fallback --force >/dev/null
 
 # Test 6: kingpin run ends instead of polling forever

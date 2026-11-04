@@ -35,6 +35,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_ROOT/lib/exclude.sh"
 # shellcheck source=../lib/gitdir.sh
 . "$KP_ROOT/lib/gitdir.sh"
+# shellcheck source=../lib/tmux.sh
+. "$KP_ROOT/lib/tmux.sh"
 CLAUDE_CMD=${KINGPIN_CLAUDE:-claude}
 AGY_CMD=${KINGPIN_AGY:-agy}
 OPENCODE_CMD=${KINGPIN_OPENCODE:-opencode}
@@ -45,25 +47,11 @@ GH_TIMEOUT=; ! command -v timeout >/dev/null || GH_TIMEOUT="timeout 10"
 
 die() { echo "kingpin-spawn: $*" >&2; exit 1; }
 
-resolve_tmux_session() {
-  local session=""
-  if [ -n "${TMUX:-}" ]; then
-    local sid=${TMUX##*,}
-    case "$sid" in
-      ''|*[!0-9]*) ;;
-      *) session=$(tmux display-message -p -t "\$$sid" '#S' 2>/dev/null || true) ;;
-    esac
-    if [ -z "$session" ]; then
-      session=$(tmux display-message -p '#S' 2>/dev/null || true)
-    fi
-  fi
-  if [ -n "$session" ]; then
-    printf '%s\n' "$session"
-  else
-    tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
-    printf 'kingpin\n'
-  fi
-}
+# Workers live on the fleet's own tmux server (issue #142), in one `kingpin`
+# session there. An operator session kill, or a `tmux kill-server` on the default
+# socket, cannot reach them. `kingpin list` prints how to look at that server.
+fleet_socket=$(kp_tmux_socket_name)
+fleet_session=kingpin
 
 usage() {
   cat <<'HELP'
@@ -290,7 +278,8 @@ if [ "$harness" = pi ]; then
 fi
 : > "$task_dir/status"
 
-target_session=$(resolve_tmux_session)
+kp_tmux_ensure_session "$fleet_socket" "$fleet_session" \
+  || die "cannot start the fleet's tmux server (tmux -L $fleet_socket)"
 
 # kingpin-wait does not report "exited" for a task with a fresh marker: task.env
 # exists before the window does. Removed once the window ID is recorded.
@@ -310,7 +299,8 @@ ISSUE=$issue
 MODE=$mode
 BRANCH=$branch
 WORKTREE=$worktree
-TMUX_TARGET=$target_session:$id
+TMUX_SOCKET=$fleet_socket
+TMUX_TARGET=$fleet_session:$id
 CREATED=$created
 EOF
 
@@ -562,15 +552,15 @@ chmod +x "$task_dir/launch.sh"
 
 # Record the window ID (@N): unlike the name in TMUX_TARGET, it survives a
 # rename or a move to another session.
-window_id=$(tmux new-window -d -P -F '#{window_id}' -t "$target_session:" -n "$id" -c "$worktree" "$task_dir/launch.sh")
+window_id=$(kp_tmux "$fleet_socket" new-window -d -P -F '#{window_id}' -t "$fleet_session:" -n "$id" -c "$worktree" "$task_dir/launch.sh")
 # Pin the name: ambient `automatic-rename on` and `allow-rename on` (tmux config,
 # or an escape sequence from the worker's child commands) would otherwise
 # rename the window. Only kingpin-rename/kingpin-wait renames it, explicitly.
 # `|| true`: a failed pin is cosmetic and must not tear down a started worker.
-tmux set-window-option -t "$window_id" automatic-rename off || true
-tmux set-window-option -t "$window_id" allow-rename off || true
+kp_tmux "$fleet_socket" set-window-option -t "$window_id" automatic-rename off || true
+kp_tmux "$fleet_socket" set-window-option -t "$window_id" allow-rename off || true
 printf 'TMUX_WINDOW_ID=%s\n' "$window_id" >> "$task_dir/task.env"
 rm -f "$task_dir/launching"
 launched=1
 
-echo "OK: spawned $id ($harness) in $worktree on $branch (tmux $target_session:$id, mode $mode)"
+echo "OK: spawned $id ($harness) in $worktree on $branch (tmux -L $fleet_socket $fleet_session:$id, window $window_id, mode $mode)"

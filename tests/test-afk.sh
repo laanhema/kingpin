@@ -55,6 +55,7 @@ WORKTREE=$worktree
 PROJECT_PATH=$T/proj
 ISSUE=94
 HARNESS=claude
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$id
 EOF
   printf 'issue: #94\n' > "$d/status"

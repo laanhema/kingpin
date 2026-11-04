@@ -70,7 +70,13 @@ It claims `~/.kingpin/supervisor.pid`, refuses a second copy with the running pi
 - `--id`: task id; defaults to kp-<n>-<slug> (issue title) or kp-<slug> (request)
 - `--harness`: worker harness: claude, agy, opencode, or pi (overrides the project and the lock)
 
-**Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_AGY`, `KINGPIN_OPENCODE`, `KINGPIN_PI`, `KINGPIN_GH`; the `kingpin scope check` it runs reads `KINGPIN_ALLOW_GLOBAL_CONTRACT`.
+**Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_AGY`, `KINGPIN_OPENCODE`, `KINGPIN_PI`, `KINGPIN_GH`, `KINGPIN_TMUX_SOCKET`; the `kingpin scope check` it runs reads `KINGPIN_ALLOW_GLOBAL_CONTRACT`.
+
+### Where the window lives
+
+Workers run on a tmux server Kingpin owns, not on yours. `kingpin spawn` and `kingpin curate` talk to the socket `kingpin` (`tmux -L kingpin`) and create their windows in the `kingpin` session there, so nothing they do reaches your own session or the default server: closing your last session, or restarting your tmux server, leaves a running worker alone. The task record carries both facts, `TMUX_SOCKET` for the socket and `TMUX_TARGET` for `<session>:<task-id>`, and every command that reads a worker window takes both from the same record. `KINGPIN_TMUX_SOCKET` names another socket, and `KINGPIN_TMUX_SOCKET=default` is the deliberate way back onto your own server. A `task.env` written before the split carries no `TMUX_SOCKET`: its window really is on the default server, so the readers resolve it there.
+
+To look at the fleet server by hand, attach from a shell outside tmux with `tmux -L kingpin attach -t kingpin`; from inside your own session, `TMUX= tmux -L kingpin attach -t kingpin` attaches to it instead of switching your client's server. `kingpin list` prints that command under the task rows, and `kingpin peek <task-id>` reads one pane without attaching.
 
 ### Window names
 
@@ -104,11 +110,15 @@ A finished task is shown from `archive/` (with `--all`), never from the dossier 
 
 Every live task whose folder holds a `report.html` gets its dossier command printed below its row, whatever the task's mode or status, followed by `(listening: pid <n>)` while that task's listener runs; a finished or archived row gets no dossier line.
 
+Every live row whose window is still alive also gets a `↳ Window:` line naming the socket, session and window that hold the worker, for example `↳ Window: tmux -L kingpin kingpin (@3)`, and the footer prints the command that attaches to the fleet server: `Workers live on the tmux server 'kingpin': tmux -L kingpin attach -t kingpin (kingpin peek <task-id> reads one pane)`. A worker whose pane is gone gets no line, so the line never points at a session that is empty. A task record from before the split has no socket, so its line reads `tmux kingpin (@n)`: that window is on the default server.
+
 ## kingpin send
 
 **Usage:** `kingpin send <task-id> "<text>"`
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_SEND_DELAY`
+
+It resolves the worker's window the same way `kingpin peek` does, from `TMUX_WINDOW_ID` (or `TMUX_TARGET`) and the record's `TMUX_SOCKET`, so it types into the fleet server that holds the window rather than into the default server.
 
 ## kingpin peek
 
@@ -120,7 +130,7 @@ Every live task whose folder holds a `report.html` gets its dossier command prin
 
 ### Finding the pane
 
-It finds the pane from the recorded window ID (`TMUX_WINDOW_ID`), so it works after the window is renamed or moved, and falls back to `TMUX_TARGET` for older `task.env` files.
+It finds the pane from the recorded window ID (`TMUX_WINDOW_ID`), so it works after the window is renamed or moved, and falls back to `TMUX_TARGET` for older `task.env` files. It reads the socket from the same record (`TMUX_SOCKET`), so the window ID is resolved on the server that holds it: window IDs are unique per server, not across servers, and a record without the key resolves on the default server, where its window is.
 
 ### Read-only
 
@@ -306,7 +316,7 @@ After a successful archive, `done` leaves a symlink at `~/.kingpin/tasks/<task-i
 
 ### What cleanup deletes
 
-The tmux window, and the task's Lavish listener with its pid file. The worktree goes back to the treehouse pool as a clean slot, with the spawn's injected files and exclude file cleared. The worker's branches go: the branch it was on and the one recorded in `task.env`, never the default branch. The branch on `origin` is deleted only when the merge check passed, so a `--force` cleanup leaves it in place. The task record moves to `~/.kingpin/archive/<task-id>`, and a taken name gets the next free suffix (`<task-id>.2`, `<task-id>.3`, ...); nothing ever deletes the archive.
+The tmux window, on the socket the task record names (`TMUX_SOCKET`; a record from before the split names none, and its window is on the default server), and the task's Lavish listener with its pid file. The worktree goes back to the treehouse pool as a clean slot, with the spawn's injected files and exclude file cleared. The worker's branches go: the branch it was on and the one recorded in `task.env`, never the default branch. The branch on `origin` is deleted only when the merge check passed, so a `--force` cleanup leaves it in place. The task record moves to `~/.kingpin/archive/<task-id>`, and a taken name gets the next free suffix (`<task-id>.2`, `<task-id>.3`, ...); nothing ever deletes the archive.
 
 ### A curator task and the last-task trigger
 
@@ -430,7 +440,7 @@ Curation is a pull request, never a write to the default branch of the skills ch
 
 ### The curator task record
 
-A real run creates `~/.kingpin/tasks/curator` with `MODE=review`, `CURATOR=1` and `NO_LEASE=1`, and launches the curator into the existing `kingpin:curator` window. The curator reports through the worker protocol: `ready: branch=<branch> review=PENDING report=<task>/report.html pr=<url>` starts a dossier listener, and `kingpin list` shows the row. `PENDING` is deliberate, so a curator can never auto-land: the review dossier's Approve & Land button runs `kingpin land curator`, and its Request Changes button queues the note for the orchestrator, which sends it to the curator window while it is alive (`kingpin send curator "..."`). Otherwise close the PR and run `kingpin curate` again. The task id `curator` is reserved; a `task.env` there without `CURATOR=1` makes the run refuse rather than overwrite a user's task.
+A real run creates `~/.kingpin/tasks/curator` with `MODE=review`, `CURATOR=1`, `NO_LEASE=1` and `TMUX_SOCKET` naming the fleet server, and launches the curator into the existing `kingpin:curator` window there: the curator is a worker like any other, so its window is `tmux -L kingpin kingpin:curator`, not a window in your own session. The curator reports through the worker protocol: `ready: branch=<branch> review=PENDING report=<task>/report.html pr=<url>` starts a dossier listener, and `kingpin list` shows the row. `PENDING` is deliberate, so a curator can never auto-land: the review dossier's Approve & Land button runs `kingpin land curator`, and its Request Changes button queues the note for the orchestrator, which sends it to the curator window while it is alive (`kingpin send curator "..."`). Otherwise close the PR and run `kingpin curate` again. The task id `curator` is reserved; a `task.env` there without `CURATOR=1` makes the run refuse rather than overwrite a user's task.
 
 ### The automatic trigger
 
@@ -471,6 +481,7 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 | `KINGPIN_PI` | `bin/kingpin-spawn:39`, `bin/kingpin-scope` | Command `spawn` launches for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
 | `KINGPIN_GH` | `bin/kingpin-spawn:40`, `bin/kingpin-curate` | `gh` command `spawn` uses to read an issue title for the task slug, and `curate` uses to create, view and merge the curator's PR (default `gh`). |
 | `KINGPIN_SEND_DELAY` | `bin/kingpin-send:60` | Seconds between the literal text and the Enter key (default `0.2`). |
+| `KINGPIN_TMUX_SOCKET` | `lib/tmux.sh:20` | Name of the tmux server the fleet uses (default `kingpin`, that is `tmux -L kingpin`), so worker windows are not on your own server; `default` puts them back on it. `kingpin spawn` records the name in `task.env` as `TMUX_SOCKET`, and every window reader resolves the record's socket. The test suites point it at their own socket. |
 | `KINGPIN_CURATOR_CMD` | `bin/kingpin-curate` | Command `curate` launches the curator with; falls back to `KINGPIN_CLAUDE`, then `claude`. |
 | `KINGPIN_CURATOR_AUTO` | `lib/curator.sh` | `0` disables the automatic curator trigger, so `kingpin watch` and `kingpin done` never launch one; unset or any other value leaves it on. The test suites set `0`. |
 | `KINGPIN_SKIP_MERGE_CHECK` | `bin/kingpin-done` | `1` skips the merge verification (the ancestor check and its `git fetch`); the curator's automatic reconcile sets it, because `kingpin land curator` already verified the PR state. Not for hand-setting. |

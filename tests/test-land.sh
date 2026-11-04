@@ -26,6 +26,7 @@ PROJECT=demo-gate
 MODE=review
 WORKTREE=$T/proj
 ISSUE=310
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$name
 EOF
   printf '%s\n' "$2" > "$d/status"
@@ -114,6 +115,7 @@ PROJECT=demo-auto
 MODE=review
 WORKTREE=$T/proj
 ISSUE=301
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t7-nits
 EOF
 echo "ready: branch=b review=APPROVE WITH NITS report=.agents/reviews/r1.md" > "$t7_dir/status"
@@ -142,6 +144,7 @@ TASK_ID=t7-noissue
 PROJECT=demo-auto
 MODE=review
 WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t7-noissue
 EOF
 echo "fixed: high=2 report=r.md" > "$t7_noissue/status"
@@ -175,6 +178,7 @@ PROJECT=demo-auto
 MODE=auto
 WORKTREE=$T/proj
 ISSUE=303
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t7-auto
 EOF
 echo "fixed: high=0 report=r.md" > "$t7_auto/status"
@@ -199,6 +203,7 @@ PROJECT=demo-auto
 MODE=review
 WORKTREE=$T/proj
 ISSUE=302
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t7-app
 EOF
 echo "ready: branch=b review=APPROVE report=none" > "$t7_app/status"
@@ -229,6 +234,7 @@ PROJECT=demo-t14
 MODE=review
 WORKTREE=$T/proj
 ISSUE=314
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$name
 ENVEOF
   echo "$status" > "$d/status"
@@ -300,6 +306,7 @@ HARNESS=pi
 MODE=review
 WORKTREE=$T/proj
 ISSUE=$issue
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$name
 ENVEOF
   printf '%s\n' "$status" > "$d/status"

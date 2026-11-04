@@ -12,6 +12,8 @@ set -euo pipefail
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
+# shellcheck source=../lib/tmux.sh
+. "$(dirname "$0")/../lib/tmux.sh"
 
 usage() {
   cat <<'HELP'
@@ -34,6 +36,9 @@ task_dir="$KP_HOME/tasks/$id"
 [ -d "$task_dir" ] || { echo "kingpin-send: task $id not found: $task_dir" >&2; exit 1; }
 
 env_file="$task_dir/task.env"
+# The socket the task's window lives on (issue #142); empty for a record that
+# predates the fleet's own server, which then resolves on the default server.
+tmux_socket=$(kp_tmux_socket_from_env "$env_file")
 tmux_target="kingpin:$id"
 if [ -f "$env_file" ]; then
   tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
@@ -51,12 +56,12 @@ if [ -f "$env_file" ]; then
   fi
 fi
 
-if ! tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
+if ! kp_tmux "$tmux_socket" list-panes -t "$tmux_target" >/dev/null 2>&1; then
   echo "kingpin-send: tmux window $shown_target is not alive" >&2
   exit 1
 fi
 
-tmux send-keys -t "$tmux_target" -l -- "$keys"
+kp_tmux "$tmux_socket" send-keys -t "$tmux_target" -l -- "$keys"
 sleep "${KINGPIN_SEND_DELAY:-0.2}"
-tmux send-keys -t "$tmux_target" Enter
+kp_tmux "$tmux_socket" send-keys -t "$tmux_target" Enter
 echo "OK: sent to $shown_target"

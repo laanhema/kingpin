@@ -27,6 +27,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$(dirname "$0")/../lib/status.sh"
 # shellcheck source=../lib/portable.sh
 . "$(dirname "$0")/../lib/portable.sh"
+# shellcheck source=../lib/tmux.sh
+. "$(dirname "$0")/../lib/tmux.sh"
 TIMEOUT=300
 ONCE=0
 
@@ -87,12 +89,12 @@ is_launching() {
 # the Stop hook's waiting: line) and its pane shows no activity since that ack: a
 # stop in that state is the same idle wait.
 quiet_held() {
-  local dir=$1 target=$2 last=$3 count=$4 seen=$5
+  local dir=$1 target=$2 last=$3 count=$4 seen=$5 socket=$6
   kp_status_is_waiting "$last" || return 1
   [ "$count" -eq "$seen" ] || return 1
   [ -f "$dir/seen_activity" ] || return 1
   local now_act
-  now_act=$(tmux display-message -p -t "$target" '#{window_activity}' 2>/dev/null || true)
+  now_act=$(kp_tmux "$socket" display-message -p -t "$target" '#{window_activity}' 2>/dev/null || true)
   [ "$now_act" = "$(tr -d ' \n' < "$dir/seen_activity")" ]
 }
 
@@ -145,6 +147,10 @@ check_task() {
   fi
 
   # Read tmux target
+  # The socket the task's window lives on (issue #142); empty for a record written
+  # before the fleet had its own server.
+  local tmux_socket=""
+  tmux_socket=$(kp_tmux_socket_from_env "$task_env")
   local tmux_target=""
   tmux_target=$(kp_env_get "$task_env" TMUX_TARGET)
   [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
@@ -155,7 +161,7 @@ check_task() {
 
   # 2. Window liveness check
   local window_alive=0
-  if tmux list-panes -t "$tmux_target" >/dev/null 2>&1; then
+  if kp_tmux "$tmux_socket" list-panes -t "$tmux_target" >/dev/null 2>&1; then
     window_alive=1
   fi
 
@@ -177,13 +183,13 @@ check_task() {
     local seen_stop=0
     [ -f "$seen_stopped_file" ] && seen_stop=$(cat "$seen_stopped_file" 2>/dev/null | tr -d ' ' || echo 0)
 
-    if [ "$stop_time" -gt "$seen_stop" ] && ! quiet_held "$dir" "$tmux_target" "$last_status" "$status_count" "$seen_count"; then
+    if [ "$stop_time" -gt "$seen_stop" ] && ! quiet_held "$dir" "$tmux_target" "$last_status" "$status_count" "$seen_count" "$tmux_socket"; then
       local harness="claude"
       harness=$(kp_env_get "$task_env" HARNESS)
       [ -n "$harness" ] || harness="claude"
 
       local pane_tail
-      pane_tail=$(tmux capture-pane -pt "$tmux_target" -S -30 2>/dev/null || true)
+      pane_tail=$(kp_tmux "$tmux_socket" capture-pane -pt "$tmux_target" -S -30 2>/dev/null || true)
 
       # A pane that still shows a working marker is not quiet. The list lives in
       # lib/status.sh, shared with the Stop hook and kingpin-launch-check.

@@ -24,6 +24,7 @@ HARNESS=claude
 MODE=review
 PROJECT_PATH=$T/proj
 WORKTREE=$T/t15-missing-worktree-$name
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$name
 TMUX_WINDOW_ID=$wid
 ENVEOF

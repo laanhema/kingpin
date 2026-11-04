@@ -15,6 +15,8 @@ KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$KP_ROOT/lib/status.sh"
+# shellcheck source=../lib/tmux.sh
+. "$KP_ROOT/lib/tmux.sh"
 GH_CMD=${KINGPIN_GH:-gh}
 # kingpin-wait calls this synchronously: a hung gh call must not block fleet events.
 GH_TIMEOUT=; ! command -v timeout >/dev/null || GH_TIMEOUT="timeout 10"
@@ -37,6 +39,7 @@ n=$(printf '%s\n' "$line" | sed -E 's/^issue: #([0-9]+).*/\1/')
 project_path=$(kp_env_get "$env_file" PROJECT_PATH)
 target=$(kp_env_get "$env_file" TMUX_TARGET)
 window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
+tmux_socket=$(kp_tmux_socket_from_env "$env_file")
 [ -n "$target" ] || target=kingpin:$id
 
 title=''
@@ -48,8 +51,8 @@ new=kp-$n${slug:+-$slug}
 [[ $new =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 0
 
 window=${window_id:-$target}
-if tmux list-panes -t "$window" >/dev/null 2>&1; then
-  tmux rename-window -t "$window" "$new"
+if kp_tmux "$tmux_socket" list-panes -t "$window" >/dev/null 2>&1; then
+  kp_tmux "$tmux_socket" rename-window -t "$window" "$new"
 fi
 
 session=${target%%:*}

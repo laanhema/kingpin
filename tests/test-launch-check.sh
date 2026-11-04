@@ -25,6 +25,7 @@ HARNESS=$harness
 MODE=review
 PROJECT_PATH=$T/proj
 WORKTREE=$T/t22-missing-worktree-$name
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$name
 TMUX_WINDOW_ID=$wid
 CREATED=$(kp_test_iso_ago "$age")
