@@ -18,6 +18,8 @@ KP_BIN=$(cd "$(dirname "$0")" && pwd)
 . "$KP_BIN/../lib/curator.sh"
 # shellcheck source=../lib/tmux.sh
 . "$KP_BIN/../lib/tmux.sh"
+# shellcheck source=../lib/browser.sh
+. "$KP_BIN/../lib/browser.sh"
 FORCE=0
 
 usage() {
@@ -335,6 +337,27 @@ kp_tmux "${TMUX_SOCKET:-}" kill-window -t "$tmux_target" 2>/dev/null || true
 # place: the final reply names where the page now lives.
 stop_listener
 
+# 1a. Stop the browser daemons this task started (issue #160). A worker that drove
+# chrome-devtools-axi leaves its bridge and headless Chrome running: the daemon's cwd
+# still names the task folder or the worktree it was started from, which is the whole
+# ownership rule (lib/browser.sh). Both paths are read here, before the excludes are
+# cleared and the worktree goes back, and anything that is not this task's is left alone.
+browser_note=''
+browser_paths=("$task_dir")
+if [ "$NO_LEASE" != "1" ] && [ -n "${WORKTREE:-}" ] && [ -d "$WORKTREE" ]; then
+  browser_paths+=("$WORKTREE")
+fi
+browser_stopped=$(kp_browser_stop_under "${browser_paths[@]}" 2>/dev/null || true)
+browser_count=${browser_stopped%%$'\t'*}
+browser_rss=${browser_stopped##*$'\t'}
+case "$browser_count" in ''|*[!0-9]*) browser_count=0 ;; esac
+case "$browser_rss" in ''|*[!0-9]*) browser_rss=0 ;; esac
+if [ "$browser_count" -eq 1 ]; then
+  browser_note="; stopped 1 browser daemon ($(kp_browser_size "$browser_rss"))"
+elif [ "$browser_count" -gt 1 ]; then
+  browser_note="; stopped $browser_count browser daemons ($(kp_browser_size "$browser_rss"))"
+fi
+
 LAVISH_CMD=${KINGPIN_LAVISH:-lavish-axi}
 
 # 1b. Undo the spawn's per-worktree excludes (issue #77): the pointer, the harness files
@@ -433,4 +456,4 @@ fi
 # this cleanup; its lines go to stderr so the OK: line stays last on stdout.
 kp_curate_maybe "$KP_HOME" "$KP_BIN" >&2
 
-echo "OK: cleaned up task $id (archived to $archive_dir)"
+echo "OK: cleaned up task $id (archived to $archive_dir$browser_note)"

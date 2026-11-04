@@ -103,6 +103,10 @@ The task ID, branch (`kingpin/<id>`) and window share one slug: `kp-<n>-<slug>` 
 
 An `--id` whose task path is the dossier link of an archived task is refused, naming the archive: a finished task keeps that link (see [`kingpin done`](#kingpin-done)), and a spawn must never write its harness files through it into the archive. An archive left without such a link is harmless to reuse.
 
+### A pooled slot's leftover browser
+
+A slot that comes back to the pool can still be driving a browser: a `chrome-devtools-axi` daemon left by the task that leased the slot last keeps its working directory in the worktree. The spawn checks the worktree it has just leased, stops every such daemon with its `chrome-devtools-mcp` child and headless Chrome, and names what went on stderr, for example `kingpin-spawn: stopped 1 browser daemon left in <worktree> by an earlier task (412 MB freed)`. A clean slot prints nothing. The ownership rule is the one `kingpin done` and `kingpin list` use too (`lib/browser.sh`): a daemon counts when its working directory is inside that slot, and a process that is not a bridge daemon is never touched.
+
 ### `--text` tasks
 
 For `--text`, `kingpin-wait` renames the window and `TMUX_TARGET` to `kp-<n>-<slug>` once the worker reports its issue; the task ID and branch keep the first name.
@@ -128,6 +132,8 @@ A finished task is shown from `archive/` (with `--all`), never from the dossier 
 Every live task whose folder holds a `report.html` gets its dossier line printed below its row, whatever the task's mode or status: the Lavish session URL the listener recorded in the task's `dossier.url` when it opened the page, or the `lavish-axi <path>` command when no URL is recorded yet. Hand the URL over instead of running the command, which opens a second tab on the session the listener already opened (issue #146). The line is followed by `(listening: pid <n>)` while that task's listener runs; a finished or archived row gets no dossier line.
 
 Every live row whose window is still alive also gets a `↳ Window:` line naming the socket, session and window that hold the worker, for example `↳ Window: tmux -L kingpin kingpin (@3)`, and the footer prints the command that attaches to the fleet server: `Workers live on the tmux server 'kingpin': tmux -L kingpin attach -t kingpin (kingpin peek <task-id> reads one pane)`. A worker whose pane is gone gets no line, so the line never points at a session that is empty. A task record from before the split has no socket, so its line reads `tmux kingpin (@n)`: that window is on the default server.
+
+A live row whose task holds a browser daemon also gets `↳ Browser: 1 daemon, 412 MB (pid 1234)`: the `chrome-devtools-axi` bridge the task started, with its `chrome-devtools-mcp` child and headless Chrome, summed over the whole process tree. Ownership is the daemon's working directory, so only a daemon started from the task folder or the task's worktree is counted (`lib/browser.sh`), and only a process whose argv runs the bridge script counts: a log tail or an editor that merely names it is neither listed nor stopped. A task that drives no browser gets no line, and an archived row never gets one, because `kingpin done` stops the daemons before it archives the task. A daemon left by a task archived before this change still runs, and no Kingpin command lists or stops it: its record is under `~/.kingpin/archive/<task-id>`, which `kingpin list` does not scan, and `kingpin done` only runs for a live task. Stop one by hand: find its pid, check that its working directory is that archive path (`readlink /proc/<pid>/cwd` on Linux, `lsof -a -p <pid> -d cwd -Fn` on macOS), and kill it. Two or more daemons print as `2 daemons` with their pids comma-separated.
 
 ## kingpin send
 
@@ -335,7 +341,11 @@ After a successful archive, `done` leaves a symlink at `~/.kingpin/tasks/<task-i
 
 ### What cleanup deletes
 
-The tmux window, on the socket the task record names (`TMUX_SOCKET`; a record from before the split names none, and its window is on the default server), and the task's Lavish listener with its pid file. The worktree goes back to the treehouse pool as a clean slot, with the spawn's injected files and exclude file cleared. The worker's branches go: the branch it was on and the one recorded in `task.env`, never the default branch. The branch on `origin` is deleted only when the merge check passed, so a `--force` cleanup leaves it in place. The task record moves to `~/.kingpin/archive/<task-id>`, and a taken name gets the next free suffix (`<task-id>.2`, `<task-id>.3`, ...); nothing ever deletes the archive.
+The tmux window, on the socket the task record names (`TMUX_SOCKET`; a record from before the split names none, and its window is on the default server), the task's Lavish listener with its pid file, and the browser daemons the task started (see [Browser daemons](#browser-daemons)). The worktree goes back to the treehouse pool as a clean slot, with the spawn's injected files and exclude file cleared. The worker's branches go: the branch it was on and the one recorded in `task.env`, never the default branch. The branch on `origin` is deleted only when the merge check passed, so a `--force` cleanup leaves it in place. The task record moves to `~/.kingpin/archive/<task-id>`, and a taken name gets the next free suffix (`<task-id>.2`, `<task-id>.3`, ...); nothing ever deletes the archive.
+
+### Browser daemons
+
+A worker that drove `chrome-devtools-axi` leaves a bridge daemon and its headless Chrome running after its turn ends, and nothing in the task record names it. Cleanup stops every daemon whose working directory is inside the task folder or the task's worktree, with the whole recorded process tree (SIGTERM first, then SIGKILL after two seconds), before `treehouse return` hands the slot back. The `OK:` line says what went, for example `OK: cleaned up task kp-120 (archived to ~/.kingpin/archive/kp-120; stopped 2 browser daemons (1.4 GB))`; a task that drove no browser keeps the shorter line. The check reads `ps` and each process's working directory (`lib/browser.sh`), so a daemon that belongs to another task is never killed, and neither is a process at the same path that is not a bridge daemon. A curator task (`NO_LEASE=1`) is checked for its task folder only: its recorded worktree is the shared skills checkout, where another session's browser must survive.
 
 ### A curator task and the last-task trigger
 
