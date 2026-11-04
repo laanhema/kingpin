@@ -410,10 +410,10 @@ echo "=== Test 18: a reused slot's provable Kingpin leftovers are removed ==="
 # historical ones and the opencode plugin pair), one file at a Kingpin path whose content
 # does not, and an unrelated file the user hides with a line of their own.
 #
-# generated_stop_plugin: the OpenCode Stop plugin exactly as `bin/kingpin-spawn` writes
-# it, lifted from its heredoc so the fixture follows the script.
+# generated_stop_plugin: the OpenCode Stop plugin exactly as `lib/launch.sh` writes it,
+# lifted from its heredoc so the fixture follows the launcher both spawn and restore use.
 generated_stop_plugin() {
-  sed -n "/EOF_OC_PLUG'$/,/^EOF_OC_PLUG\$/p" "$KP_BIN/kingpin-spawn" | sed '1d;$d'
+  sed -n "/EOF_OC_PLUG'$/,/^EOF_OC_PLUG\$/p" "$KP_ROOT/lib/launch.sh" | sed '1d;$d'
 }
 git init -q --bare "$T/reuse-origin.git"
 git clone -q "$T/reuse-origin.git" "$T/reuse-proj" 2>/dev/null
@@ -462,7 +462,7 @@ printf 'my own rules\n' > "${wt_reuse:-/nonexistent}/.agents/rules/kingpin.md"
 printf 'do not delete me\n' > "${wt_reuse:-/nonexistent}/worker-note.txt"
 [ -s "${wt_reuse:-/nonexistent}/.opencode/plugins/kingpin-stop.js" ] \
   && pass "the fixture carries the plugin the spawn really writes" \
-  || fail "could not lift the Stop plugin out of bin/kingpin-spawn"
+  || fail "could not lift the Stop plugin out of lib/launch.sh"
 [ -z "$(git -C "${wt_reuse:-/nonexistent}" status --porcelain -uall 2>/dev/null)" ] \
   && pass "the stale lines keep the seeded slot clean for treehouse" \
   || fail "the seeded slot is already dirty before the spawn"

@@ -320,12 +320,13 @@ if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ] && [ "$SKIP_MERGE_CHECK" != "1" ]; t
   fi
 fi
 
-# 1. Close tmux window
-# The window ID survives rename and move; older task.env files only have the name.
-# The socket comes from the record (issue #142); a record written before the fleet
-# had its own server names none, and its window is on the default server.
-tmux_target=${TMUX_WINDOW_ID:-${TMUX_TARGET:-kingpin:$id}}
-kp_tmux "${TMUX_SOCKET:-}" kill-window -t "$tmux_target" 2>/dev/null || true
+# 1. Close tmux window. The resolver (lib/tmux.sh) finds this task's own window by name
+# first and only then by the recorded id, on the socket the record names (issue #142),
+# so a stale id that names another window after a tmux server restart is not killed as
+# if it were this task's. `|| true`: a task whose window is already gone still cleans up.
+if kp_window_find "$task_dir" >/dev/null 2>&1; then
+  kp_tmux "$KP_WINDOW_SOCKET" kill-window -t "$KP_WINDOW_ID" 2>/dev/null || true
+fi
 # No status ack here. The refusal paths exit above and the success path archives
 # the task directory below, so this ack bought nothing; a plain `kingpin-ack`
 # would also write `seen` to the file's *current* length and acknowledge away a

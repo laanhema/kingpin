@@ -4,7 +4,9 @@
 # Usage: kingpin-send <task-id> "<text>"
 #
 # The text is typed literally (send-keys -l), so words like Escape or C-c reach
-# the pane as characters, not as keypresses. Enter follows in a separate call
+# the pane as characters, not as keypresses. The window is resolved by lib/tmux.sh:
+# its own name first, so a send after a tmux server restart reaches the task's own
+# window rather than whichever window inherited the stale recorded id. Enter follows in a separate call
 # after a short pause (KINGPIN_SEND_DELAY seconds, default 0.2), so a long
 # message that a TUI treats as a paste is submitted instead of swallowed.
 set -euo pipefail
@@ -35,33 +37,16 @@ keys="$*"
 task_dir="$KP_HOME/tasks/$id"
 [ -d "$task_dir" ] || { echo "kingpin-send: task $id not found: $task_dir" >&2; exit 1; }
 
-env_file="$task_dir/task.env"
-# The socket the task's window lives on (issue #142); empty for a record that
-# predates the fleet's own server, which then resolves on the default server.
-tmux_socket=$(kp_tmux_socket_from_env "$env_file")
-tmux_target="kingpin:$id"
-if [ -f "$env_file" ]; then
-  tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
-  [ -n "$tmux_target" ] || tmux_target="kingpin:$id"
-fi
-
-# Prefer the window ID (survives rename and move); task.env files from before
-# it was recorded only have the name target.
-shown_target=$tmux_target
-if [ -f "$env_file" ]; then
-  window_id=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
-  if [ -n "$window_id" ]; then
-    tmux_target=$window_id
-    shown_target="$shown_target ($window_id)"
-  fi
-fi
-
-if ! kp_tmux "$tmux_socket" list-panes -t "$tmux_target" >/dev/null 2>&1; then
-  echo "kingpin-send: tmux window $shown_target is not alive" >&2
+# The window is resolved by lib/tmux.sh: its own name first, then the recorded id,
+# on the socket the task record names (issue #142), so a send after a tmux server
+# restart reaches the task's own window rather than whichever window inherited the
+# stale recorded id.
+if ! kp_window_find "$task_dir"; then
+  echo "kingpin-send: tmux window $KP_WINDOW_LABEL is not alive" >&2
   exit 1
 fi
 
-kp_tmux "$tmux_socket" send-keys -t "$tmux_target" -l -- "$keys"
+kp_tmux "$KP_WINDOW_SOCKET" send-keys -t "$KP_WINDOW_ID" -l -- "$keys"
 sleep "${KINGPIN_SEND_DELAY:-0.2}"
-kp_tmux "$tmux_socket" send-keys -t "$tmux_target" Enter
-echo "OK: sent to $shown_target"
+kp_tmux "$KP_WINDOW_SOCKET" send-keys -t "$KP_WINDOW_ID" Enter
+echo "OK: sent to $KP_WINDOW_LABEL"

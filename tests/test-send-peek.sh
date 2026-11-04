@@ -134,6 +134,88 @@ t20_err=$("$KP_BIN/kingpin" peek t20-peek 2>&1 >/dev/null) || t20_rc=$?
 
 rm -rf "$t20_dir" "$T/t20-shim" "$T/t20-tmux.log"
 
+# Test 21: a stale window ID that now names another window is not followed (issue #149)
+echo "=== Test 21: a stale window ID that names another window ==="
+t21_other=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n t21-other bash -c 'echo other-window; exec cat')
+tmux new-window -d -t kingpin: -n t21-mine bash -c 'echo mine-window; exec cat' >/dev/null
+t21_dir="$KINGPIN_HOME/tasks/t21-moved"
+mkdir -p "$t21_dir"
+cat > "$t21_dir/task.env" << EOF
+TASK_ID=t21-moved
+PROJECT=demo-auto
+MODE=review
+WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
+TMUX_TARGET=kingpin:t21-mine
+TMUX_WINDOW_ID=$t21_other
+EOF
+t21_ready=0
+for _ in $(seq 1 50); do
+  tmux capture-pane -pJt kingpin:t21-mine -S -50 2>/dev/null | grep -qx "mine-window" \
+    && tmux capture-pane -pJt "$t21_other" -S -50 2>/dev/null | grep -qx "other-window" && { t21_ready=1; break; }
+  sleep 0.1
+done
+[ "$t21_ready" -eq 1 ] || fail "t21: the fixture panes never drew"
+t21_other_before=$(tmux capture-pane -pJt "$t21_other" -S -50)
+t21_out=$("$KP_BIN/kingpin" peek t21-moved --lines 1 2>&1) && [ "$t21_out" = "mine-window" ] \
+  && pass "t21: peek reaches the task's own window, not the stale id's" \
+  || fail "t21: peek followed the stale id: $t21_out"
+KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin" send t21-moved "hello-mine" >/dev/null
+for _ in $(seq 1 50); do
+  tmux capture-pane -pJt kingpin:t21-mine -S -50 2>/dev/null | grep -qxF "hello-mine" && break
+  sleep 0.1
+done
+t21_other_after=$(tmux capture-pane -pJt "$t21_other" -S -50)
+[ "$t21_other_before" = "$t21_other_after" ] \
+  && pass "t21: the window the stale id names was left untouched" \
+  || fail "t21: the stale id's window received the text"
+
+# The healthy path still runs only list-panes and capture-pane, on the same read-only contract.
+mkdir -p "$T/t21-shim"
+cat > "$T/t21-shim/tmux" << EOF
+#!/usr/bin/env bash
+# lib/tmux.sh passes "-L <socket>" first; log the subcommand that follows it.
+args=("\$@")
+if [ "\${args[0]:-}" = "-L" ]; then args=("\${args[@]:2}"); fi
+echo "\${args[0]:-}" >> "$T/t21-tmux.log"
+exec "$T/bin/tmux" "\$@"
+EOF
+chmod +x "$T/t21-shim/tmux"
+: > "$T/t21-tmux.log"
+PATH="$T/t21-shim:$PATH" "$KP_BIN/kingpin" peek t21-moved >/dev/null
+if [ -s "$T/t21-tmux.log" ] && ! grep -qv -e '^list-panes$' -e '^capture-pane$' "$T/t21-tmux.log"; then
+  pass "t21: peek still runs only list-panes and capture-pane"
+else
+  fail "t21: peek ran other tmux commands: $(sort -u "$T/t21-tmux.log" | tr '\n' ' ')"
+fi
+tmux kill-window -t "$t21_other" 2>/dev/null || true
+tmux kill-window -t kingpin:t21-mine 2>/dev/null || true
+rm -rf "$t21_dir" "$T/t21-shim" "$T/t21-tmux.log"
+
+# Test 22: a recorded ID alive under another name, unclaimed by any task, still resolves
+echo "=== Test 22: the ID fallback still reaches a hand-renamed window ==="
+t22_wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n t22-renamed bash -c 'echo handnamed; exec cat')
+t22_dir="$KINGPIN_HOME/tasks/t22-handnamed"
+mkdir -p "$t22_dir"
+cat > "$t22_dir/task.env" << EOF
+TASK_ID=t22-handnamed
+PROJECT=demo-auto
+MODE=review
+WORKTREE=$T/proj
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
+TMUX_TARGET=kingpin:t22-handnamed
+TMUX_WINDOW_ID=$t22_wid
+EOF
+for _ in $(seq 1 50); do
+  tmux capture-pane -pJt "$t22_wid" -S -50 2>/dev/null | grep -qx "handnamed" && break
+  sleep 0.1
+done
+t22_out=$("$KP_BIN/kingpin" peek t22-handnamed --lines 1 2>&1) && [ "$t22_out" = "handnamed" ] \
+  && pass "t22: the recorded id still reaches a hand-renamed window" \
+  || fail "t22: id fallback failed: $t22_out"
+tmux kill-window -t "$t22_wid" 2>/dev/null || true
+rm -rf "$t22_dir"
+
 # ---------------------------------------------------------------------------
 
 kp_test_finish SEND-PEEK
