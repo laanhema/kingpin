@@ -217,15 +217,23 @@ echo "--- Test 7: kp_mux_harness_live ---"
 t7="$T/tasks/t7-live"
 mkdir -p "$t7"
 printf 'TASK_ID=t7-live\nMUX=herdr\nMUX_SESSION=kp144\nMUX_TARGET=w1:p5\nMUX_LABEL=kp-144-t6\n' > "$t7/task.env"
-kp_test_herdr_process w1:p5 4242 bash
-printf '4242\n' > "$t7/harness.pid"
+# The check asks the kernel whether the recorded pid is alive, so use real pids: this
+# shell for the harness and a live child for the foreign one. A made-up number is alive
+# on some hosts and dead on others, which made this suite pass here and fail on CI.
+live_pid=$$
+sleep 30 &
+other_pid=$!
+kp_test_herdr_process w1:p5 "$live_pid" bash
+printf '%s\n' "$live_pid" > "$t7/harness.pid"
 kp_mux_harness_live "$t7" && pass "t7: a recorded pid that leads the pane is live" || fail "t7: live harness not found"
-kp_test_herdr_process w1:p5 5151 bash
+kp_test_herdr_process w1:p5 "$other_pid" bash
 kp_mux_harness_live "$t7" && fail "t7: a foreign pid read as live" || pass "t7: a pane running another pid is not this harness"
 rm -f "$t7/harness.pid"
 kp_mux_harness_live "$t7" && fail "t7: a plain shell read as a live harness" || pass "t7: without harness.pid a plain shell is not a harness"
-kp_test_herdr_process w1:p5 5151 claude
+kp_test_herdr_process w1:p5 "$other_pid" claude
 kp_mux_harness_live "$t7" && pass "t7: a foreground harness is live without harness.pid" || fail "t7: foreground harness not found"
+kill "$other_pid" 2>/dev/null || true
+wait "$other_pid" 2>/dev/null || true
 
 # Test 8: record writes, the create refusal and session reachability
 # ---------------------------------------------------------------------------
