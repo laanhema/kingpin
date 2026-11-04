@@ -111,7 +111,8 @@ A task record lives in `~/.kingpin/tasks/<id>` while it runs. `kingpin done` mov
 and leaves a symlink at the old path so an open dossier keeps resolving. `kingpin list --all`
 shows the archived rows. An archived task is not live: `kingpin peek` and `kingpin send` exit 1,
 `kingpin wait` raises no event, and `kingpin listen` says it is finished. `lib/status.sh` holds
-the reader every command uses to tell a live `tasks/<id>` from that link.
+the reader the fleet commands use to tell a live `tasks/<id>` from that link; `peek` and `send`
+resolve the tmux window instead.
 
 A fresh clone has neither the guard nor the contract: run `kingpin init` (or
 `kingpin guard install`) in the main checkout once.

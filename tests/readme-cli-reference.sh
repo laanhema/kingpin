@@ -2,8 +2,9 @@
 # Checks both directions of the CLI reference:
 #   scripts -> docs  every flag the commands parse and every KINGPIN_* variable the scripts
 #                    read appears in README.md or docs/*.md (issue #82)
-#   docs -> reference  every flag or KINGPIN_* variable the README or a docs page shows
-#                    appears in docs/cli.md, the per-command reference
+#   docs -> reference  every `--` flag in an inline code span and every KINGPIN_* variable the
+#                    README or a docs page shows appears in docs/cli.md, the per-command
+#                    reference
 #
 # `tests/lint.sh` calls it; run it alone to reproduce a failure without the syntax checks and
 # the linter. `--root <dir>` runs it against another checkout, which is what
@@ -103,7 +104,16 @@ if [ ${#readme_files[@]} -gt 0 ]; then
       case " ${host_tokens[*]} " in
         *" $tok "*) continue ;;
       esac
-      grep -qE -- "(^|[^A-Za-z0-9_-])$tok([^A-Za-z0-9_-]|$)" docs/cli.md || undocumented+=("$tok ($f)")
+      if grep -qE -- "(^|[^A-Za-z0-9_-])$tok([^A-Za-z0-9_-]|$)" docs/cli.md; then
+        continue
+      fi
+      # One entry per token and file: a token repeated on a page would otherwise print twice
+      # and make a single omission look like two.
+      entry="$tok ($f)"
+      case " ${undocumented[*]-} " in
+        *" $entry "*) continue ;;
+      esac
+      undocumented+=("$entry")
     done <<< "$tokens"
   done
 fi

@@ -8,10 +8,11 @@ Run the lint and the full test suite from the repository root:
 # Lint: bash -n + shellcheck over bin/*, lib/*.sh and tests/*.sh (config in .shellcheckrc),
 # node --check over lib/*.mjs, a check that every tests/test-*.sh is a leg of the CI matrix,
 # a check in both directions over README.md and docs/*.md: every parsed flag and KINGPIN_*
-# variable is documented, and every flag or variable a docs page shows appears in the
-# per-command reference docs/cli.md (a host tool's own flag is exempt), and a check that no
-# .agents plan, report or review file is tracked. Pass --root <dir> to lint another checkout
-# instead of this one
+# variable is documented, and every `--` flag in an inline code span and every KINGPIN_*
+# name a docs page shows appears in the per-command reference docs/cli.md (a host tool's
+# own flag is exempt; a flag shown only inside a fenced example is not read), and a
+# check that no .agents plan, report or review file is tracked. Pass --root <dir> to lint
+# another checkout instead of this one
 ./tests/lint.sh
 
 # Every suite, one after the other

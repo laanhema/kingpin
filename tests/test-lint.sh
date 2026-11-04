@@ -178,4 +178,20 @@ else
   fail "the lint stayed red after docs/cli.md documented the token (rc=$LINT_RC): $LINT_OUT"
 fi
 
+echo "=== Test 8: a token repeated on a page is reported once ==="
+cat > "$FIX/README.md" << 'F'
+# Fixture
+
+Run `kingpin fixture --fixture-flag`, set `KINGPIN_FIXTURE_VAR`, and pass `--fixture-flag`
+again to show it twice.
+F
+printf '# Reference\n' > "$FIX/docs/cli.md"
+lint
+count=$(grep -cF -- '--fixture-flag (README.md)' <<< "$LINT_OUT" || true)
+if [ "$LINT_RC" -ne 0 ] && [ "$count" -eq 1 ]; then
+  pass "a token repeated on a page is listed once"
+else
+  fail "the check listed a repeated omission $count times (rc=$LINT_RC): $LINT_OUT"
+fi
+
 kp_test_finish LINT
