@@ -50,7 +50,11 @@ action bar at the top with a prominent 'Approve & Land' button that calls
 `window.lavish?.queuePrompt?.('Request Changes: ...')` so the reviewer's note reaches the orchestrator.
 <!-- unslop:ignore -->
 
-Give the page this layout block, generated diff fallback included:
+Open the page with `<html lang="en" data-lavish-annotate="off">`: annotation starts off because the
+reader is usually reading, and the Lavish toolbar still turns it on when a review wants comments.
+`bin/kingpin-report check` fails a page whose `<html>` lacks the attribute, while an explicit `"on"`
+is a deliberate choice that passes. Give the page this layout block, generated diff fallback
+included:
 
 ```html
 <style>
@@ -76,7 +80,8 @@ shape; `{{KP_ROOT}}/bin/kingpin-report diffs` prints that shape for you. Paste i
 report. The prose is part of the deliverable, so write it as a person would and run the `unslop` skill
 over the page before you save it.
 
-Then run the checker and fix every line it names before you report:
+Then run the checker, the `data-lavish-annotate` rule included, and fix every line it names before
+you report:
 
 ```bash
 {{KP_ROOT}}/bin/kingpin-report check {{REPORT_FILE}}

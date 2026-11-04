@@ -368,7 +368,7 @@ Exit codes: 0 when the binary, credentials and extension are usable, or the cred
 
 ### `check` and the layout pass
 
-`check` exits 1 when a dossier would show blank diffs (`patch:` passed as a `FileDiff`/`render` option, which renders nothing; a comment or a string that only mentions it does not fail, `FileDiff` without `oldFile`/`newFile`, or an empty diff container), and runs a layout pass over a full page: it fails, naming the line, on a `<pre>` or inline `code` with no wrap rule, an `<img>` with no `max-width` rule, a table whose cells have no wrap rule, a grid/flex layout with no `min-width: 0` or `minmax(0, ...)` guard, and a `src`/`href`/`url()` that is an absolute path or climbs out with `..`.
+`check` exits 1 when a dossier would show blank diffs (`patch:` passed as a `FileDiff`/`render` option, which renders nothing; a comment or a string that only mentions it does not fail, `FileDiff` without `oldFile`/`newFile`, or an empty diff container), and runs a layout pass over a full page: it fails, naming the line, on a `<pre>` or inline `code` with no wrap rule, an `<img>` with no `max-width` rule, a table whose cells have no wrap rule, a grid/flex layout with no `min-width: 0` or `minmax(0, ...)` guard, and a `src`/`href`/`url()` that is an absolute path or climbs out with `..`. The same pass requires `data-lavish-annotate="off"` on the page's `<html>` element: Lavish otherwise opens the page in annotation mode, where a stray click adds an annotation card on a page the reader only wanted to read, while an explicit `"on"` is a deliberate choice and passes.
 
 ### The stylesheet parse and the palette
 
