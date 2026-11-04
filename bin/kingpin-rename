@@ -48,10 +48,11 @@ slug=$(node "$KP_ROOT/lib/slug.mjs" "$title" 2>/dev/null || true)
 new=kp-$n${slug:+-$slug}
 [[ $new =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 0
 
-# Resolve the window first (lib/tmux.sh): the task's name, then the recorded id. A
-# rename keeps the window id, so nothing else has to be rewritten.
+# Resolve the window first (lib/tmux.sh): the task's name, then the recorded id, on
+# the socket the record names (issue #142). A rename keeps the window id, so nothing
+# else has to be rewritten.
 if kp_window_find "$task_dir" >/dev/null 2>&1; then
-  tmux rename-window -t "$KP_WINDOW_ID" "$new"
+  kp_tmux "$KP_WINDOW_SOCKET" rename-window -t "$KP_WINDOW_ID" "$new"
 fi
 
 session=${target%%:*}

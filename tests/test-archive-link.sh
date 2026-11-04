@@ -42,6 +42,7 @@ HARNESS=claude
 MODE=review
 PROJECT_PATH=$T/proj
 WORKTREE=$wt
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$id
 ENVEOF
   printf '%s\n' "$status" > "$d/status"
@@ -83,6 +84,7 @@ HARNESS=claude
 MODE=review
 PROJECT_PATH=$T/proj
 WORKTREE=$T/wt-r1
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:r1
 ENVEOF
 printf 'merged: pr=https://example.invalid/pull/3\n' > "$rel_root/kp/tasks/r1/status"

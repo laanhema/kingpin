@@ -1,11 +1,14 @@
 # shellcheck shell=bash
-# One place that finds a task's tmux window, says whether its harness is in it, and
-# creates or reclaims it. Source it; it defines the functions below and the
-# `KP_WINDOW_*` result variables `kp_window_find` sets, and nothing else (no `set`
-# options, no output beyond what each states, every function returns 0 unless stated).
+# Where the fleet's tmux windows live (issue #142) and which window belongs to a task
+# (issue #149). One file, because both questions are answered from the same place: a
+# task's window lives on the socket its record names, at its name first and its
+# recorded id second.
 #
-#   # shellcheck source=../lib/tmux.sh
-#   . "$KP_ROOT/lib/tmux.sh"
+# Workers run on a tmux server of their own, named by `kingpin` unless
+# KINGPIN_TMUX_SOCKET names another socket. The default socket stays the operator's:
+# an operator session kill, or a `tmux kill-server` on the default socket, does not
+# reach a worker. Every command that resolves a worker window goes through `kp_tmux`,
+# so the socket is passed in one place.
 #
 # The window is resolved by name first and by id second (issue #149). Tmux window ids
 # are per server and restart at `@0`, so an id recorded before the server died can
@@ -21,15 +24,59 @@
 # harness.pid` a spawn records are the same number. A recorded pid that is not one of
 # the pane pids means the window came back as a plain shell (a resurrected fleet).
 #
+# Source lib/status.sh first: `kp_tmux_socket_from_env` reads the task record with
+# `kp_env_get`. These functions print only what they document.
+#
+#   # shellcheck source=../lib/status.sh
+#   . "$KP_ROOT/lib/status.sh"
+#   # shellcheck source=../lib/tmux.sh
+#   . "$KP_ROOT/lib/tmux.sh"
+#
 # The variables `kp_window_find` sets for its caller:
 #   KP_WINDOW_ID       the window id to address (`@N`), empty when none was found
 #   KP_WINDOW_NAME     the recorded window name from TMUX_TARGET
 #   KP_WINDOW_SESSION  the recorded session from TMUX_TARGET
+#   KP_WINDOW_SOCKET   the socket the record names, empty for the default server
 #   KP_WINDOW_LABEL    `<session>:<name>` or `<session>:<name> (@N)` when found
 
 # The task-record readers (kp_env_get, kp_task_is_live) live in lib/status.sh.
 # shellcheck source=status.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/status.sh"
+
+# kp_tmux_socket_name
+# The socket the fleet uses: KINGPIN_TMUX_SOCKET, or `kingpin`.
+kp_tmux_socket_name() {
+  printf '%s\n' "${KINGPIN_TMUX_SOCKET:-kingpin}"
+}
+
+# kp_tmux_socket_from_env <task-env-file>
+# The socket a task record names, or nothing for a record written before the
+# fleet moved to its own server (those windows live on the default socket).
+kp_tmux_socket_from_env() {
+  [ -f "${1:-}" ] || return 0
+  kp_env_get "$1" TMUX_SOCKET
+}
+
+# kp_tmux <socket> [tmux-args...]
+# Run tmux on <socket>; an empty socket means the default tmux server, which is
+# where a task record without TMUX_SOCKET points. The default is named
+# explicitly, `-L default`, and never left to a bare `tmux`: a caller inside a
+# tmux pane inherits TMUX, and a bare call would follow that socket instead of
+# the default server the record means.
+kp_tmux() {
+  local sock=${1:-}
+  shift || true
+  tmux -L "${sock:-default}" "$@"
+}
+
+# kp_tmux_ensure_session <socket> <session>
+# Make sure <session> exists on <socket>, creating it detached when it does not.
+# Prints nothing; the caller reports a failure.
+kp_tmux_ensure_session() {
+  local sock=${1:-} session=${2:?}
+  kp_tmux "$sock" has-session -t "$session" 2>/dev/null \
+    || kp_tmux "$sock" new-session -d -s "$session" -n home
+}
 
 # Shell names a resurrected window runs: a pane running one of these is a plain
 # shell, not a harness, so a recorded id pointing at it is not this task's window.
@@ -91,17 +138,19 @@ _kp_window_claimed_elsewhere() {
 kp_window_find() {
   local task_dir=${1:-}
   task_dir=${task_dir%/}
-  KP_WINDOW_ID='' KP_WINDOW_NAME='' KP_WINDOW_SESSION='' KP_WINDOW_LABEL=''
+  KP_WINDOW_ID='' KP_WINDOW_NAME='' KP_WINDOW_SESSION='' KP_WINDOW_LABEL='' KP_WINDOW_SOCKET=''
   [ -n "$task_dir" ] || return 1
-  local env_file="$task_dir/task.env" home session name recorded ids count rname cmd dupes
+  local env_file="$task_dir/task.env" home session name recorded ids count rname cmd dupes sock
   home=$(dirname "$(dirname "$task_dir")")
+  sock=$(kp_tmux_socket_from_env "$env_file")
+  KP_WINDOW_SOCKET=$sock
   IFS=$'\t' read -r session name < <(kp_window_parts "$env_file")
   KP_WINDOW_SESSION=${session:-kingpin}
   KP_WINDOW_NAME=${name:-$(basename "$task_dir")}
   # shellcheck disable=SC2034 # read by the caller after this returns
   KP_WINDOW_LABEL="$KP_WINDOW_SESSION:$KP_WINDOW_NAME"
 
-  ids=$(tmux list-panes -t "$KP_WINDOW_SESSION:=$KP_WINDOW_NAME" -F '#{window_id}' 2>/dev/null | sort -u || true)
+  ids=$(kp_tmux "$sock" list-panes -t "=$KP_WINDOW_SESSION:=$KP_WINDOW_NAME" -F '#{window_id}' 2>/dev/null | sort -u || true)
   count=$(printf '%s\n' "$ids" | grep -c . || true)
   if [ "${count:-0}" -eq 1 ] && [ -n "$ids" ]; then
     _kp_window_found "$ids"
@@ -113,15 +162,15 @@ kp_window_find() {
   # would never report `exited`. Require the pane list to resolve the id, and a
   # non-empty window name, before treating it as a window.
   recorded=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
-  if [ -n "$recorded" ] && tmux list-panes -t "$recorded" -F '#{window_id}' >/dev/null 2>&1 \
-    && rname=$(tmux display-message -p -t "$recorded" '#{window_name}' 2>/dev/null) \
+  if [ -n "$recorded" ] && kp_tmux "$sock" list-panes -t "$recorded" -F '#{window_id}' >/dev/null 2>&1 \
+    && rname=$(kp_tmux "$sock" display-message -p -t "$recorded" '#{window_name}' 2>/dev/null) \
     && [ -n "$rname" ]; then
     if [ "$rname" = "$KP_WINDOW_NAME" ]; then
       _kp_window_found "$recorded"
       return 0
     fi
     if ! _kp_window_claimed_elsewhere "$home" "$task_dir" "$recorded"; then
-      cmd=$(tmux display-message -p -t "$recorded" '#{pane_current_command}' 2>/dev/null || true)
+      cmd=$(kp_tmux "$sock" display-message -p -t "$recorded" '#{pane_current_command}' 2>/dev/null || true)
       case " $_kp_window_shell_names " in
         *" $cmd "*) : ;;
         *)
@@ -137,7 +186,7 @@ kp_window_find() {
 
   # Only the fallback path pays for this: say why an exact name found nothing when
   # more than one window carries it.
-  dupes=$(tmux list-windows -t "$KP_WINDOW_SESSION" -F '#{window_name}' 2>/dev/null | grep -cxF -- "$KP_WINDOW_NAME" || true)
+  dupes=$(kp_tmux "$sock" list-windows -t "$KP_WINDOW_SESSION" -F '#{window_name}' 2>/dev/null | grep -cxF -- "$KP_WINDOW_NAME" || true)
   if [ "${dupes:-0}" -gt 1 ]; then
     printf "window name '%s' is ambiguous in %s: %s windows carry it\n" \
       "$KP_WINDOW_NAME" "$KP_WINDOW_SESSION" "$dupes" >&2
@@ -159,11 +208,11 @@ kp_window_harness_live() {
     pid=$(tr -dc '0-9' < "$pid_file" 2>/dev/null || true)
     [ -n "$pid" ] || return 1
     kill -0 "$pid" 2>/dev/null || return 1
-    panes=$(tmux list-panes -t "$KP_WINDOW_ID" -F '#{pane_pid}' 2>/dev/null) || return 1
+    panes=$(kp_tmux "$KP_WINDOW_SOCKET" list-panes -t "$KP_WINDOW_ID" -F '#{pane_pid}' 2>/dev/null) || return 1
     printf '%s\n' "$panes" | grep -qxF -- "$pid"
     return
   fi
-  cmd=$(tmux display-message -p -t "$KP_WINDOW_ID" '#{pane_current_command}' 2>/dev/null) || return 1
+  cmd=$(kp_tmux "$KP_WINDOW_SOCKET" display-message -p -t "$KP_WINDOW_ID" '#{pane_current_command}' 2>/dev/null) || return 1
   case " $_kp_window_shell_names " in
     *" $cmd "*) return 1 ;;
   esac
@@ -193,12 +242,13 @@ kp_window_record_id() {
   return 0
 }
 
-# _kp_window_same_name <session> <name>: prints the id of a window in <session>
-# whose name is exactly <name>, or nothing. `=session` is exact: a session called
-# `kingpin-workers` must not answer for `kingpin` (issue #149).
+# _kp_window_same_name <socket> <session> <name>: prints the id of a window on
+# <socket> in <session> whose name is exactly <name>, or nothing. `=session` is
+# exact: a session called `kingpin-workers` must not answer for `kingpin` (issue
+# #149).
 _kp_window_same_name() {
-  local session=${1:?} name=${2:?} ids
-  ids=$(tmux list-panes -t "=$session:=$name" -F '#{window_id}' 2>/dev/null | sort -u || true)
+  local sock=${1:-} session=${2:?} name=${3:?} ids
+  ids=$(kp_tmux "$sock" list-panes -t "=$session:=$name" -F '#{window_id}' 2>/dev/null | sort -u || true)
   [ "$(printf '%s\n' "$ids" | grep -c . || true)" = "1" ] || return 0
   printf '%s\n' "$ids"
 }
@@ -230,16 +280,17 @@ kp_window_name_claimed() {
 }
 
 # kp_window_start <task-dir> <session> <name> <worktree> <launch-script> [--fresh]
-# The one place that creates or reclaims a task's window. With --fresh a same-named
-# window in <session> is refused on stderr (a spawn must never take over another
-# task's window). Without it, a same-named window is respawned in place with
-# `respawn-pane -k`, so its id and name survive and its old pane process is replaced;
-# otherwise a window is created. A caller refuses a name another live task record also
-# resolves to (`kp_window_name_claimed`) before it gets here. The name is pinned, the
-# pane pid is written to `<task-dir>/harness.pid`, and the window id is printed.
+# The one place that creates or reclaims a task's window, on the socket its record
+# names. With --fresh a same-named window in <session> is refused on stderr (a spawn
+# must never take over another task's window). Without it, a same-named window is
+# respawned in place with `respawn-pane -k`, so its id and name survive and its old
+# pane process is replaced; otherwise a window is created. A caller refuses a name
+# another live task record also resolves to (`kp_window_name_claimed`) before it gets
+# here. The name is pinned, the pane pid is written to `<task-dir>/harness.pid`, and
+# the window id is printed.
 kp_window_start() {
   local task_dir=${1:?kp_window_start needs a task dir} session=${2:?} name=${3:?}
-  local worktree=${4:?} launch=${5:?} fresh=0 existing id panes_pid
+  local worktree=${4:?} launch=${5:?} fresh=0 existing id panes_pid sock
   shift 5
   case "${1:-}" in
     --fresh) fresh=1 ;;
@@ -249,18 +300,22 @@ kp_window_start() {
   task_dir=${task_dir%/}
   [ -d "$worktree" ] || { echo "worktree is not a directory: $worktree" >&2; return 1; }
   [ -f "$launch" ] || { echo "launch script is missing: $launch" >&2; return 1; }
+  sock=$(kp_tmux_socket_from_env "$task_dir/task.env")
+  KP_WINDOW_SOCKET=$sock
+  KP_WINDOW_SESSION=$session
+  KP_WINDOW_NAME=$name
 
-  existing=$(_kp_window_same_name "$session" "$name")
+  existing=$(_kp_window_same_name "$sock" "$session" "$name")
   if [ -n "$existing" ]; then
     if [ "$fresh" = 1 ]; then
       echo "a window named $name already exists in $session ($existing)" >&2
       return 1
     fi
-    tmux respawn-pane -k -t "$existing" -c "$worktree" "$(printf '%q' "$launch")" \
+    kp_tmux "$sock" respawn-pane -k -t "$existing" -c "$worktree" "$(printf '%q' "$launch")" \
       || { echo "cannot respawn the pane of $session:$name ($existing)" >&2; return 1; }
     id=$existing
   else
-    id=$(tmux new-window -d -P -F '#{window_id}' -t "=$session:" -n "$name" -c "$worktree" "$launch") \
+    id=$(kp_tmux "$sock" new-window -d -P -F '#{window_id}' -t "=$session:" -n "$name" -c "$worktree" "$launch") \
       || { echo "cannot create a window in $session" >&2; return 1; }
     [ -n "$id" ] || { echo "cannot create a window in $session" >&2; return 1; }
   fi
@@ -269,10 +324,10 @@ kp_window_start() {
   # an escape sequence from a worker's child commands) would otherwise rename it. Only
   # kingpin-rename and kingpin-wait rename it, explicitly, and a failed pin is
   # cosmetic: it must not tear down a started worker.
-  tmux set-window-option -t "$id" automatic-rename off 2>/dev/null || true
-  tmux set-window-option -t "$id" allow-rename off 2>/dev/null || true
+  kp_tmux "$sock" set-window-option -t "$id" automatic-rename off 2>/dev/null || true
+  kp_tmux "$sock" set-window-option -t "$id" allow-rename off 2>/dev/null || true
 
-  panes_pid=$(tmux list-panes -t "$id" -F '#{pane_pid}' 2>/dev/null | head -n 1 || true)
+  panes_pid=$(kp_tmux "$sock" list-panes -t "$id" -F '#{pane_pid}' 2>/dev/null | head -n 1 || true)
   if [ -n "$panes_pid" ]; then
     printf '%s\n' "$panes_pid" > "$task_dir/harness.pid" \
       || { echo "cannot record the pane pid in $task_dir/harness.pid" >&2; return 1; }

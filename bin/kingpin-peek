@@ -59,12 +59,15 @@ done
 task_dir="$KP_HOME/tasks/$id"
 [ -d "$task_dir" ] || { echo "kingpin-peek: task $id not found: $task_dir" >&2; exit 1; }
 
+# The window is resolved by lib/tmux.sh: its own name first, then the recorded id,
+# on the socket the task record names (issue #142). Only `list-panes` and
+# `capture-pane` run: no keys are sent and nothing is written.
 if ! kp_window_find "$task_dir"; then
   echo "kingpin-peek: tmux window $KP_WINDOW_LABEL is not alive" >&2
   exit 1
 fi
 
-pane=$(tmux capture-pane -p -J -t "$KP_WINDOW_ID" -S -2000 2>/dev/null) || {
+pane=$(kp_tmux "$KP_WINDOW_SOCKET" capture-pane -p -J -t "$KP_WINDOW_ID" -S -2000 2>/dev/null) || {
   echo "kingpin-peek: could not read tmux window $KP_WINDOW_LABEL" >&2
   exit 1
 }

@@ -9,8 +9,8 @@ each task back as a visual review dossier. This file describes the repository.
 | Path | What it holds |
 |---|---|
 | `bin/` | One executable per command (`kingpin-spawn`, `kingpin-guard`, `kingpin-wait`, ...), plus `bin/kingpin`, the dispatcher that maps `kingpin <cmd>` to them |
-| `lib/` | Shared helpers: `status.sh` (the status-file protocol and the live-versus-archived task path readers, sourced by the scripts), `landing.sh`, `mutex.sh` (the mutex sequence shared by the landing lane and `kingpin-lock`, plus the non-blocking `kp_mutex_try` the auto-curate gate uses), `curator.sh` (the automatic daily curator gate, applied-critique marker and trigger, sourced by `kingpin-curate`, `kingpin-watch` and `kingpin-done`), `supervisor.sh` (the fleet supervisor's pidfile, sourced by `kingpin-watch`, `kingpin-lock` and `kingpin list`), `afk.sh` (the session-scoped AFK state, sourced by `kingpin-afk`, `kingpin-watch`, `kingpin-lock` and `kingpin list`), `session.sh` (the session-pid detection `kingpin-lock` and `kingpin-afk` share), `exclude.sh` (the per-worktree exclude file a spawn points at, and the guard-owned block of the main checkout's exclude file, sourced by `kingpin-spawn`, `kingpin-done` and `kingpin-guard`), `portable.sh` (the GNU-then-BSD clock and file-mtime readers), `gitdir.sh` (the git-dir, common-dir and git-path readers the linked-worktree checks use, which read the plain `git rev-parse` form so they work on git 2.30, sourced by `kingpin-spawn`, `kingpin-sync`, `kingpin-guard` and the suites), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, ...) |
-| `lib/tmux.sh` | The one window resolver: finds a task's window by name first and by the recorded id second, decides whether the harness really runs in it (`harness.pid` against the pane pid), records a new id, and is the only place that creates or respawns a window |
+| `lib/` | Shared helpers: `status.sh` (the status-file protocol and the live-versus-archived task path readers, sourced by the scripts), `tmux.sh`, `landing.sh`, `mutex.sh` (the mutex sequence shared by the landing lane and `kingpin-lock`, plus the non-blocking `kp_mutex_try` the auto-curate gate uses), `curator.sh` (the automatic daily curator gate, applied-critique marker and trigger, sourced by `kingpin-curate`, `kingpin-watch` and `kingpin-done`), `supervisor.sh` (the fleet supervisor's pidfile, sourced by `kingpin-watch`, `kingpin-lock` and `kingpin list`), `afk.sh` (the session-scoped AFK state, sourced by `kingpin-afk`, `kingpin-watch`, `kingpin-lock` and `kingpin list`), `session.sh` (the session-pid detection `kingpin-lock` and `kingpin-afk` share), `exclude.sh` (the per-worktree exclude file a spawn points at, and the guard-owned block of the main checkout's exclude file, sourced by `kingpin-spawn`, `kingpin-done` and `kingpin-guard`), `portable.sh` (the GNU-then-BSD clock and file-mtime readers), `gitdir.sh` (the git-dir, common-dir and git-path readers the linked-worktree checks use, which read the plain `git rev-parse` form so they work on git 2.30, sourced by `kingpin-spawn`, `kingpin-sync`, `kingpin-guard` and the suites), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, ...) |
+| `lib/tmux.sh` | The fleet's tmux socket (`KINGPIN_TMUX_SOCKET`, default `kingpin`), the one `kp_tmux` helper every command reaches tmux through, and the one window resolver: finds a task's window by name first and by the recorded id second, decides whether the harness really runs in it (`harness.pid` against the pane pid), records a new id, and is the only place that creates or respawns a window |
 | `lib/launch.sh` | The worker preamble and the per-harness `launch.sh` generator, shared by `kingpin-spawn` and `kingpin-restore`, so a restored worker gets the preamble and harness wiring a spawned one does |
 | `worker/` | `preamble.md`, the text a spawned worker receives, `curator-preamble.md`, the contract the curator worker receives, `hooks.json`, its Claude Code settings, and `pi/kingpin-harness.ts`, the Pi extension a spawn loads with `-e` |
 | `orchestrator/contract.md` | The orchestrator contract. `kingpin guard install` copies it into the main checkout's untracked instruction sources; no harness loads this tracked file directly |
@@ -31,9 +31,9 @@ each task back as a visual review dossier. This file describes the repository.
 
 ## Lavish Artifacts
 
-Every page we hand over is prose first: a worker's `report.html` dossier, and a plan or comparison page you open with `lavish-axi`, gets an unslop pass before it is served.
+Every page we hand over is prose first: any page written from the `assets/lavish/worker-dossier/` templates (a worker's `report.html` or a handover page), and any plan or comparison page you open with `lavish-axi`, always gets an unslop pass before it is served.
 
-- Start a handover artifact from the noir dossier template, not a blank page: copy `assets/lavish/noir-dossier/template.html` and its `kingpin.jpg` into the artifact's folder (`.lavish/`), swap the content, and keep the chrome. `assets/lavish/noir-dossier/DESIGN.md` sits beside the page and records the rules the look depends on; `tests/test-noir-template.sh` fails when the folder loses a file, when a `src`/`href` is absolute or climbs out of the folder, when a diff block loses its static fallback, or when the page stops passing `check`. This template is for the pages you hand the boss, not for worker review dossiers, which keep their own layout.
+- Start a handover artifact from the handover template, not a blank page: copy `assets/lavish/worker-dossier/handover.html` into the artifact's folder (`.lavish/`), swap the content, and keep the chrome. `assets/lavish/worker-dossier/DESIGN.md` sits beside it and records the rules the look depends on, including how to trim it into a review summary. A worker's review dossier, and the curator's, start from `assets/lavish/worker-dossier/template.html` instead: copy it to the task folder as `report.html`, keep its chrome, and read the same `DESIGN.md`. `tests/test-worker-dossier-template.sh` fails when the folder loses a file, when a section a page is read for goes missing, when a decision form loses its handler, when a page stops passing `check`, or when `worker/preamble.md` or `worker/curator-preamble.md` stops pointing at the worker template. The noir dossier template (`assets/lavish/noir-dossier/`, tested by `tests/test-noir-template.sh`) stays in the repo for a future look but is not the default for anything.
 - Run the `unslop` skill over the page, then `bin/kingpin-report check <file>`. A page with no diff section takes `--prose-only`.
 - `check` fails with `<file>:<line>:` and the offending line for the mechanical tells: em dash, "testament to", "it's not just", "delve", "seamless", "in order to", "let me know", "I hope this helps". Fix the line, or put `<!-- unslop:ignore -->` on it when the word is genuinely wanted.
 - The same `check` runs a layout pass over a full page (`*.html` with an `<html>` element) and names the line for a `<pre>` or inline `<code>` with no wrap rule, an `<img>` with no `max-width` rule, a table whose cells have no wrap rule, a grid/flex layout with no `min-width: 0` or `minmax(0, ...)` guard, a `src`/`href`/`url()` that is an absolute path or climbs out with `..`, and an `<html>` element with no `data-lavish-annotate` attribute, because Lavish otherwise opens the page in annotation mode; an explicit `"on"` passes. The block a worker dossier must carry is in `worker/preamble.md`, and `assets/lavish/noir-dossier/template.html` carries it too.
@@ -52,7 +52,13 @@ PR. `./tests/lint.sh` fails when a suite has no leg, so add both together.
 
 The suites need `git`, `tmux`, `node`, `treehouse` and a git identity; they set their
 own identity, run a private tmux server on a temporary socket, and use fake agents,
-so no harness binary is needed.
+so no harness binary is needed. The fleet's own tmux socket is `kingpin` (`tmux -L
+kingpin`, overridable with `KINGPIN_TMUX_SOCKET`), and `lib/tmux.sh` is the one place
+a command reaches tmux: a raw `tmux` call in `bin/` or `lib/` reads the default server,
+where no worker lives. The `test-tmux-isolation.sh` static check fails on `tmux` in
+command position there (the start of a line or of a `$(...)`, or after `;`, `&&`, `||`,
+`|` or `!`) outside `lib/tmux.sh`; a comment or a message that only mentions the word
+does not match, and the scan always reads the repository's own `bin/` and `lib/`.
 
 ## Conventions
 
@@ -130,17 +136,18 @@ holder pid is gone, and `kingpin lock release` clears it.
 
 ## Worker placement
 
-A spawn's tmux session is resolved, never guessed (issue #152): `--tmux-session <name>`, then
-`KINGPIN_TMUX_SESSION`, then the calling tmux client's own session. A named session must already
-exist, so a typo is refused rather than starting a second silent session. With no name and no
-client, the one attached session is used, then the only session the server holds; several
-unattached sessions, or more than one attached session, are refused with every candidate named
-and both ways to name a target. Only a server with no session at all gets the `kingpin` fallback,
-and the spawn says on stderr that it created one. The resolution runs before the worktree lease,
-so a refusal costs no worktree and leaves no task record, and the `OK:` line names the chosen
-session and where it came from.
-`kingpin list` prints it in a `SESSION` column read from the live window, so a window moved to
-another session is reported where it really is.
+A spawn's tmux session on the fleet's own server is resolved, never guessed (issue #152):
+`--tmux-session <name>`, then `KINGPIN_TMUX_SESSION`, then the one attached session on that
+server, then the only session it holds. A named session must already exist, so a typo is refused
+rather than starting a second silent session. Several unattached sessions, or more than one
+attached session, are refused with every candidate named and both ways to name a target. Only a
+server with no session at all gets the `kingpin` fallback, and the spawn says on stderr that it
+created one. The caller's own tmux client belongs to the operator's server, not the fleet's, so
+its session is never a target (issue #142). The resolution runs before the worktree lease, so a
+refusal costs no worktree and leaves no task record, and the `OK:` line names the chosen session
+and where it came from.
+`kingpin list` prints it in a `SESSION` column read from the live window through the record's
+socket, so a window moved to another session is reported where it really is.
 
 ## Orchestrating from this repository
 
@@ -155,7 +162,7 @@ and leaves a symlink at the old path so an open dossier keeps resolving. `kingpi
 shows the archived rows. An archived task is not live: `kingpin peek` and `kingpin send` exit 1,
 `kingpin wait` raises no event, and `kingpin listen` says it is finished. `lib/status.sh` holds
 the reader the fleet commands use to tell a live `tasks/<id>` from that link; `peek` and `send`
-resolve the tmux window instead.
+resolve the tmux window on the socket its record names instead.
 
 A dossier message reaches the capo from `kingpin listen` itself: after `handle_feedback` writes
 `feedback.md` and the `feedback:` note, the listener sends the text to the worker as one line that

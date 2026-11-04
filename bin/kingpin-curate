@@ -24,6 +24,11 @@ GH_CMD="${KINGPIN_GH:-gh}"
 . "$KP_ROOT/lib/gitdir.sh"
 # shellcheck source=../lib/portable.sh
 . "$KP_ROOT/lib/portable.sh"
+# shellcheck source=../lib/tmux.sh
+. "$KP_ROOT/lib/tmux.sh"
+
+# The curator is a worker: it runs on the fleet's own tmux server (issue #142).
+fleet_socket=$(kp_tmux_socket_name)
 
 die() { echo "kingpin-curate: $*" >&2; exit 1; }
 info() { echo "kingpin-curate: $*" >&2; }
@@ -389,14 +394,14 @@ if [ "$DRY_RUN" -eq 0 ]; then
     # Settle the shared window name before reconciling: reconcile closes a terminal
     # record through `kingpin done curator`, and done resolves the window by name, so
     # reconciling first would take down a live run that already owns kingpin:curator.
-    case "$(kp_curate_window_state)" in
+    case "$(kp_curate_window_state "$KP_HOME")" in
       alive)
         kp_curate_stamp "$KP_HOME" || true
         echo "kingpin-curate: curator window kingpin:curator is already active; the automatic run skipped"
         exit 0
         ;;
       dead)
-        tmux kill-window -t kingpin:curator 2>/dev/null || true
+        kp_tmux "$fleet_socket" kill-window -t kingpin:curator 2>/dev/null || true
         info "reaped dead curator window kingpin:curator"
         ;;
       none) : ;;
@@ -426,7 +431,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
       report_curator_hold
       exit 0
     fi
-    if [ "$(kp_curate_window_state)" = "alive" ]; then
+    if [ "$(kp_curate_window_state "$KP_HOME")" = "alive" ]; then
       exit 0
     fi
     collect_critiques
@@ -453,12 +458,12 @@ if [ "$DRY_RUN" -eq 0 ]; then
   # take down a live run that already owns the name. A live window refuses; a dead
   # pane is reaped first so the reconcile has nothing left to close.
   if [ "$AUTO" -eq 0 ]; then
-    case "$(kp_curate_window_state)" in
+    case "$(kp_curate_window_state "$KP_HOME")" in
       alive)
         die "curator window kingpin:curator is already active"
         ;;
       dead)
-        tmux kill-window -t kingpin:curator 2>/dev/null || true
+        kp_tmux "$fleet_socket" kill-window -t kingpin:curator 2>/dev/null || true
         echo "kingpin-curate: reaped dead curator window kingpin:curator"
         ;;
       none) : ;;
@@ -603,6 +608,7 @@ HARNESS=claude
 MODE=review
 BRANCH=$curator_branch
 WORKTREE=$SKILLS_DIR
+TMUX_SOCKET=$fleet_socket
 TMUX_TARGET=kingpin:curator
 CREATED=$(kp_now_iso)
 NO_LEASE=1
@@ -611,17 +617,17 @@ EOF_ENV
   : > "$curator_task_dir/status"
   : > "$curator_task_dir/launching"
 
-  tmux has-session -t kingpin 2>/dev/null || tmux new-session -d -s kingpin -n home
-  window_id=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n curator -c "$SKILLS_DIR" "$launch_file") || {
+  kp_tmux_ensure_session "$fleet_socket" kingpin
+  window_id=$(kp_tmux "$fleet_socket" new-window -d -P -F '#{window_id}' -t kingpin: -n curator -c "$SKILLS_DIR" "$launch_file") || {
     # The record was written before the window existed, so without a window it is
     # a half-made task that would hold the idle gate forever: remove it. The day
     # is not claimed either, so the next tick tries the launch again.
     rm -rf "$curator_task_dir"
     if [ "$AUTO" -eq 1 ]; then
-      info "could not launch the curator in tmux kingpin:curator; the automatic run skipped"
+      info "could not launch the curator in tmux -L $fleet_socket kingpin:curator; the automatic run skipped"
       exit 0
     fi
-    die "could not launch the curator in tmux kingpin:curator"
+    die "could not launch the curator in tmux -L $fleet_socket kingpin:curator"
   }
   printf 'TMUX_WINDOW_ID=%s\n' "$window_id" >> "$curator_task_dir/task.env"
   rm -f "$curator_task_dir/launching"
@@ -638,11 +644,11 @@ EOF_ENV
   kp_curate_stamp "$KP_HOME" || true
 
   if [ "$AUTO" -eq 1 ]; then
-    echo "OK: started the curator for $count pending critique(s) in tmux kingpin:curator"
+    echo "OK: started the curator for $count pending critique(s) in tmux -L $fleet_socket kingpin:curator"
     exit 0
   fi
 
-  echo "OK: spawned curator in tmux kingpin:curator for $count task critique(s)"
+  echo "OK: spawned curator in tmux -L $fleet_socket kingpin:curator for $count task critique(s)"
   exit 0
 fi
 

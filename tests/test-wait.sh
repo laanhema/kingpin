@@ -45,6 +45,7 @@ cat > "$task_w_dir/task.env" << ENV
 PROJECT=demo-auto
 HARNESS=claude
 MODE=review
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:test-wait-1
 ENV
 touch "$task_w_dir/status"
@@ -132,6 +133,7 @@ cat > "$t45_dir/task.env" << ENV
 PROJECT=demo-auto
 HARNESS=claude
 MODE=review
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t45-wait
 TMUX_WINDOW_ID=$t45_wid
 ENV

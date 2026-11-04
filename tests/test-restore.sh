@@ -263,6 +263,7 @@ mk_fixture() { # <id> <worktree> [extra KEY=value...]
     printf 'PROJECT_PATH=%s\n' "$T/proj"
     printf 'HARNESS=agy\nMODE=review\n'
     printf 'WORKTREE=%s\n' "$wt"
+    printf 'TMUX_SOCKET=%s\n' "$KINGPIN_TMUX_SOCKET"
     printf 'TMUX_TARGET=kingpin:%s\n' "$id"
     printf 'CREATED=%s\n' "$(date -Iseconds)"
     for kv in "$@"; do printf '%s\n' "$kv"; done

@@ -37,12 +37,16 @@ keys="$*"
 task_dir="$KP_HOME/tasks/$id"
 [ -d "$task_dir" ] || { echo "kingpin-send: task $id not found: $task_dir" >&2; exit 1; }
 
+# The window is resolved by lib/tmux.sh: its own name first, then the recorded id,
+# on the socket the task record names (issue #142), so a send after a tmux server
+# restart reaches the task's own window rather than whichever window inherited the
+# stale recorded id.
 if ! kp_window_find "$task_dir"; then
   echo "kingpin-send: tmux window $KP_WINDOW_LABEL is not alive" >&2
   exit 1
 fi
 
-tmux send-keys -t "$KP_WINDOW_ID" -l -- "$keys"
+kp_tmux "$KP_WINDOW_SOCKET" send-keys -t "$KP_WINDOW_ID" -l -- "$keys"
 sleep "${KINGPIN_SEND_DELAY:-0.2}"
-tmux send-keys -t "$KP_WINDOW_ID" Enter
+kp_tmux "$KP_WINDOW_SOCKET" send-keys -t "$KP_WINDOW_ID" Enter
 echo "OK: sent to $KP_WINDOW_LABEL"

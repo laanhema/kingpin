@@ -66,10 +66,11 @@ pane_is_working() {
   # shared marker list still covers pi for kingpin-wait and kingpin-launch-check,
   # where the pane is live.
   if [ "$harness" = pi ]; then return 1; fi
-  # The task's own window, by name first (lib/tmux.sh). A pane that cannot be found is
-  # not "working", exactly as before.
+  # The task's own window, by name first (lib/tmux.sh), on the socket the record
+  # names (issue #142). A pane that cannot be found is not "working", exactly as
+  # before.
   kp_window_find "$task_dir" >/dev/null 2>&1 || return 1
-  pane_tail=$(tmux capture-pane -pt "$KP_WINDOW_ID" -S -30 2>/dev/null) || return 1
+  pane_tail=$(kp_tmux "$KP_WINDOW_SOCKET" capture-pane -pt "$KP_WINDOW_ID" -S -30 2>/dev/null) || return 1
   kp_pane_shows_working "$pane_tail" "$harness"
 }
 

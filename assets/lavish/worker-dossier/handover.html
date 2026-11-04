@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-lavish-annotate="off">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- REPLACE: the page title is "<kind>: <one-line subject>", for example "Proposal: retry a failed landing once". -->
+<title>Proposal: retry a failed landing once before bothering you</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+<style>
+  :root {
+    color-scheme: dark;
+    --color-canvas-default: #0d1117;
+    --color-fg-default: #e6edf3;
+  }
+  * { box-sizing: border-box; min-width: 0; }
+  body {
+    margin: 0;
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+  }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto; }
+  code { font-size: .85em; font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace; overflow-wrap: anywhere; }
+  table { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; }
+  th, td { overflow-wrap: anywhere; vertical-align: top; }
+  img { max-width: 100%; height: auto; }
+  :where(p, li, td, th, .badge) { overflow-wrap: anywhere; }
+
+  /* Table rows: every cell's first line sits in a 1.25rem line box, and a pill is centred on that line,
+     so Pass, ID, the severity pill and the text beside it line up. */
+  td, th { line-height: 1.25rem; }
+  td code, td .font-mono { line-height: 1; }
+  td > .badge { vertical-align: top; margin-top: .15rem; }
+
+  /* Two components. Every panel and stat card is .card-custom. Each changed file's diff sits in a .diffbox. */
+  .card-custom { background-color: #161b22; border: 1px solid #30363d; border-radius: 0.5rem; padding: 1.25rem; }
+  .diffbox, .kp-diff { border-radius: .5rem; overflow: hidden; border: 1px solid #30363d; margin-top: 0.5rem; }
+
+  /* Style for the output of `kingpin-report diffs`: a file row (name left, change badge right) above its diff. */
+  .kp-diff-file { margin-bottom: 1.5rem; }
+  .kp-diff-title { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin: 0; font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size: .875rem; font-weight: 600; color: #e5e7eb; }
+  .kp-diff-title small { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: .75rem; font-weight: 400; color: #9ca3af; border: 1px solid currentColor; border-radius: 999px; padding: 0 .5rem; line-height: 1.25rem; white-space: nowrap; }
+  .kp-diff .kp-fallback { margin: 0; padding: .75rem; border: 0; border-radius: 0; background: #0d1117; font-size: .75rem; line-height: 1.5; color: #c9d1d9; }
+
+  /* Decision forms and option cards, for handover pages. */
+  .q-option { display: flex; gap: .75rem; align-items: flex-start; padding: .75rem 1rem; border: 1px solid #30363d; border-radius: .5rem; background: #0d1117; cursor: pointer; }
+  .q-option:hover { border-color: #6e7681; }
+  .q-option:has(input:checked) { border-color: #58a6ff; background: #58a6ff14; }
+  .q-option input { margin-top: .2rem; flex: none; }
+  .callout { border-left: 4px solid #58a6ff; background: #58a6ff10; border-radius: 0 .5rem .5rem 0; padding: .75rem 1rem; }
+  .callout.rec { border-left-color: #3fb950; background: #3fb95010; }
+  .callout.warn { border-left-color: #d29922; background: #d2992210; }
+  figure { margin: 0; }
+  svg text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+</style>
+</head>
+<body class="p-6">
+<main class="max-w-5xl mx-auto space-y-8">
+
+<!--
+  HOW TO USE THIS TEMPLATE
+  A handover page is what you hand the boss to read and decide on: a proposal, a comparison, a plan or a
+  review summary. The sample below is a proposal with decisions.
+  1. Copy this file to .lavish/<name>.html, change the title first, then replace every REPLACE comment and
+     sample value. The sample text is invented.
+  2. Keep the <style> block, the section order, the component classes and the colour meanings. They are the
+     same as worker-dossier/template.html, plus option cards, callouts and decision forms.
+  3. Delete a section the page has nothing for. For a review summary, drop How It Would Work, Three Options
+     Compared, Risks and The Change; keep What You Need to Know, the findings table, the checks table and one
+     decision form (see DESIGN.md).
+  4. One form per question. Radio questions use name="choice"; a tick list uses data-kind="batch" and
+     name="items". Keep onsubmit="kpAnswer(event)" and the script at the bottom.
+  5. Run the unslop skill, then `kingpin-report check <file>`. A page with no diff section takes --prose-only.
+  6. Open it with `lavish-axi <file>`.
+-->
+
+<header class="space-y-4">
+  <div class="card-custom bg-gradient-to-r from-gray-900 to-gray-800 border-gray-700 p-4 flex flex-wrap items-center justify-between gap-4 shadow-lg">
+    <div class="flex items-center gap-3">
+      <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-amber-950 text-amber-400 border border-amber-700/50 font-bold">?</span>
+      <div>
+        <div class="text-sm font-semibold text-white">Decision needed: 2 questions and a tick list at the bottom</div>
+        <div class="text-xs text-gray-400">Read the page, then answer the forms. Nothing is built yet.</div>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <a class="btn btn-sm btn-success text-white font-medium shadow" href="#decisions">Go to the decisions</a>
+    </div>
+  </div>
+
+  <div class="flex gap-2 items-center flex-wrap">
+    <span class="badge badge-primary font-mono text-xs">PROPOSAL</span>
+    <span class="badge badge-warning font-semibold text-xs">DECISION NEEDED</span>
+    <span class="badge badge-outline text-xs">Area: landing</span>
+  </div>
+
+  <!-- REPLACE: an h1 that states the point in plain words, then a two or three sentence lede. -->
+  <h1 class="text-3xl font-bold text-white">Retry a failed landing once before bothering you</h1>
+  <p class="text-base text-gray-300">When <code>kingpin land</code> hits a merge that moved under it, the task stops and waits for a person. Most of those merges succeed on a second try. This page compares three ways to handle it and asks for two decisions.</p>
+
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="card-custom">
+      <div class="text-xs text-gray-400 uppercase">Effort</div>
+      <div class="text-xl font-bold text-white">About 1 day</div>
+      <div class="text-xs text-gray-400">Option B, the recommendation</div>
+    </div>
+    <div class="card-custom">
+      <div class="text-xs text-gray-400 uppercase">Risk</div>
+      <div class="text-xl font-bold text-amber-400">Medium</div>
+      <div class="text-xs text-gray-400">One case needs a decision (R4)</div>
+    </div>
+    <div class="card-custom">
+      <div class="text-xs text-gray-400 uppercase">Reversible</div>
+      <div class="text-xl font-bold text-emerald-400">Yes</div>
+      <div class="text-xs text-gray-400">One loop and one revert</div>
+    </div>
+    <div class="card-custom">
+      <div class="text-xs text-gray-400 uppercase">Decisions</div>
+      <div class="text-xl font-bold text-white">2</div>
+      <div class="text-xs text-gray-400">Which option, and CI retries</div>
+    </div>
+  </div>
+</header>
+
+<!-- Section 1: the problem, in numbered Problem and Cost blocks, then a one-sentence callout. -->
+<section class="card-custom space-y-3">
+  <h2 class="text-xl font-semibold text-white">What Is Wrong Today</h2>
+  <div class="text-sm space-y-3 text-gray-300">
+    <div>
+      <h3 class="text-base font-semibold text-white">1. A moved merge stops the whole landing</h3>
+      <p><strong>Problem:</strong> Landing merges <code>origin/main</code> into the task branch, then merges the pull request. If <code>main</code> moved between the two steps, the first merge fails, the script writes <code>failed:</code> and stops. In the last two weeks 6 of 41 landings stopped this way, and 5 of the 6 landed fine when a person ran the same command again.</p>
+      <p class="mt-1"><strong>Cost:</strong> Each stop waits for you to notice it, read the log and re-run. The wait is the expensive part, not the retry.</p>
+    </div>
+  </div>
+  <div class="callout">
+    <p class="text-sm text-gray-200"><strong>In short:</strong> 5 of 6 stuck landings would have fixed themselves with one more try. The proposal is to make that try automatic, once, and to tell you right away if it fails again.</p>
+  </div>
+</section>
+
+<!-- Section 2: one inline SVG, one concept. Put a <title> on every group so the boss can annotate precisely. No Mermaid, no div-and-arrow boxes. -->
+<section class="card-custom space-y-3">
+  <h2 class="text-xl font-semibold text-white">How It Would Work</h2>
+  <figure>
+    <svg viewBox="0 0 900 330" role="img" aria-labelledby="flowT flowD" style="width:100%;height:auto;max-width:100%">
+  <title id="flowT">Landing today and with one retry</title>
+  <desc id="flowD">Today a failed merge ends the landing. With the change, one retry follows, then either a merge or a request for help.</desc>
+  <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#8b949e"/></marker></defs>
+  <g><title>Today</title>
+    <text x="10" y="24" fill="#8b949e" font-size="13" font-weight="600" letter-spacing="1">TODAY</text>
+    <rect x="10" y="36" width="170" height="52" rx="8" fill="#161b22" stroke="#30363d"/><text x="95" y="67" text-anchor="middle" fill="#e6edf3" font-size="14">Worker reports ready</text>
+    <rect x="250" y="36" width="170" height="52" rx="8" fill="#161b22" stroke="#30363d"/><text x="335" y="67" text-anchor="middle" fill="#e6edf3" font-size="14">kingpin land</text>
+    <rect x="490" y="36" width="170" height="52" rx="8" fill="#f8514915" stroke="#f85149"/><text x="575" y="67" text-anchor="middle" fill="#f85149" font-size="14" font-weight="600">Merge fails</text>
+    <rect x="730" y="36" width="160" height="52" rx="8" fill="#161b22" stroke="#30363d"/><text x="810" y="60" text-anchor="middle" fill="#e6edf3" font-size="13">Task stays stuck</text><text x="810" y="77" text-anchor="middle" fill="#8b949e" font-size="12">boss finds out later</text>
+    <path d="M180 62H246" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar)" fill="none"/>
+    <path d="M420 62H486" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar)" fill="none"/>
+    <path d="M660 62H726" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar)" fill="none"/>
+  </g>
+  <line x1="10" y1="120" x2="890" y2="120" stroke="#21262d"/>
+  <g><title>Proposed</title>
+    <text x="10" y="152" fill="#58a6ff" font-size="13" font-weight="600" letter-spacing="1">PROPOSED</text>
+    <rect x="10" y="164" width="170" height="52" rx="8" fill="#161b22" stroke="#30363d"/><text x="95" y="195" text-anchor="middle" fill="#e6edf3" font-size="14">Worker reports ready</text>
+    <rect x="230" y="164" width="150" height="52" rx="8" fill="#161b22" stroke="#30363d"/><text x="305" y="195" text-anchor="middle" fill="#e6edf3" font-size="14">kingpin land</text>
+    <rect x="430" y="164" width="150" height="52" rx="8" fill="#f8514915" stroke="#f85149"/><text x="505" y="195" text-anchor="middle" fill="#f85149" font-size="14" font-weight="600">Merge fails</text>
+    <rect x="630" y="164" width="260" height="52" rx="8" fill="#58a6ff15" stroke="#58a6ff"/><text x="760" y="188" text-anchor="middle" fill="#58a6ff" font-size="14" font-weight="600">Retry once</text><text x="760" y="205" text-anchor="middle" fill="#8b949e" font-size="12">fetch main, merge again</text>
+    <path d="M180 190H226" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar)" fill="none"/>
+    <path d="M380 190H426" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar)" fill="none"/>
+    <path d="M580 190H626" stroke="#8b949e" stroke-width="1.5" marker-end="url(#ar)" fill="none"/>
+    <rect x="430" y="262" width="200" height="52" rx="8" fill="#3fb95015" stroke="#3fb950"/><text x="530" y="286" text-anchor="middle" fill="#3fb950" font-size="14" font-weight="600">Merged</text><text x="530" y="303" text-anchor="middle" fill="#8b949e" font-size="12">no human needed</text>
+    <rect x="690" y="262" width="200" height="52" rx="8" fill="#d2992215" stroke="#d29922"/><text x="790" y="286" text-anchor="middle" fill="#d29922" font-size="14" font-weight="600">needs-input</text><text x="790" y="303" text-anchor="middle" fill="#8b949e" font-size="12">still fails: boss is told now</text>
+    <path d="M700 216V239H530V258" stroke="#3fb950" stroke-width="1.5" marker-end="url(#ar)" fill="none"/>
+    <path d="M820 216V258" stroke="#d29922" stroke-width="1.5" marker-end="url(#ar)" fill="none"/>
+    <text x="620" y="252" fill="#8b949e" font-size="12">second try works</text>
+    <text x="830" y="240" fill="#8b949e" font-size="12">fails again</text>
+  </g>
+</svg>
+    <figcaption class="text-xs text-gray-400 mt-2">Top: landing today. Bottom: landing with one retry. Only a failed merge retries; a failed check still stops the landing.</figcaption>
+  </figure>
+</section>
+
+<!-- Section 3: option cards, then one table, then the recommendation. Mark exactly one card RECOMMENDED. -->
+<section class="card-custom space-y-3">
+  <h2 class="text-xl font-semibold text-white">Three Options Compared</h2>
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+    <div class="card-custom space-y-2">
+      <div class="flex flex-wrap items-center gap-2"><span class="badge badge-outline badge-sm">Option A</span></div>
+      <h3 class="text-base font-semibold text-white">Do nothing</h3>
+      <ul class="list-disc list-inside space-y-1 text-sm text-gray-300"><li>Landings that move under us keep stopping</li><li>You re-run them by hand</li><li>No code to maintain</li></ul>
+    </div>
+    <div class="card-custom space-y-2 border-emerald-700/60">
+      <div class="flex flex-wrap items-center gap-2"><span class="badge badge-success badge-sm">RECOMMENDED</span> <span class="badge badge-outline badge-sm">Option B</span></div>
+      <h3 class="text-base font-semibold text-white">Retry once, then ask</h3>
+      <ul class="list-disc list-inside space-y-1 text-sm text-gray-300"><li>One retry after fetching <code>main</code></li><li>A second failure becomes <code>needs-input:</code></li><li>Smallest change that fixes 5 of 6 cases</li></ul>
+    </div>
+    <div class="card-custom space-y-2">
+      <div class="flex flex-wrap items-center gap-2"><span class="badge badge-outline badge-sm">Option C</span></div>
+      <h3 class="text-base font-semibold text-white">Retry with backoff and a queue</h3>
+      <ul class="list-disc list-inside space-y-1 text-sm text-gray-300"><li>Up to 3 retries with a growing wait</li><li>A queue file so retries survive a restart</li><li>Covers rarer cases, adds config to maintain</li></ul>
+    </div>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="table table-sm text-sm border border-gray-700">
+      <colgroup><col style="width:30%"><col style="width:20%"><col style="width:25%"><col style="width:25%"></colgroup>
+      <thead><tr class="bg-gray-800 text-gray-200"><th></th><th>A: Do nothing</th><th>B: Retry once</th><th>C: Backoff and queue</th></tr></thead>
+      <tbody>
+        <tr class="border-t border-gray-700"><td><strong>Effort</strong></td><td>None</td><td>About 1 day</td><td>About 3 days</td></tr>
+        <tr class="border-t border-gray-700"><td><strong>Fixes a merge that moved under us</strong></td><td><span class="badge badge-error badge-xs">No</span></td><td><span class="badge badge-success badge-xs">Yes</span></td><td><span class="badge badge-success badge-xs">Yes</span></td></tr>
+        <tr class="border-t border-gray-700"><td><strong>Hides a real conflict</strong></td><td><span class="badge badge-success badge-xs">Never</span></td><td><span class="badge badge-warning badge-xs">Rarely</span></td><td><span class="badge badge-error badge-xs">Sometimes</span></td></tr>
+        <tr class="border-t border-gray-700"><td><strong>Boss told on failure</strong></td><td>Late</td><td>Right away, after one retry</td><td>After the last retry</td></tr>
+        <tr class="border-t border-gray-700"><td><strong>Easy to undo</strong></td><td>Nothing to undo</td><td>One loop, one revert</td><td>New config and a queue</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout rec">
+    <p class="text-sm text-gray-200"><strong>Recommendation:</strong> Option B. It fixes the common case with one small loop, tells you at once when the retry fails, and is easy to revert if it turns out to hide something.</p>
+  </div>
+</section>
+
+<!-- Section 4: risks as table rows with a severity pill: red High, amber Medium, green Low. -->
+<section class="card-custom space-y-3">
+  <h2 class="text-xl font-semibold text-white">Risks</h2>
+  <div class="overflow-x-auto">
+    <table class="table table-sm text-sm border border-gray-700">
+      <colgroup><col style="width:30%"><col style="width:7%"><col style="width:11%"><col style="width:52%"></colgroup>
+      <thead><tr class="bg-gray-800 text-gray-200"><th>Risk</th><th>ID</th><th>Severity</th><th>What stops it</th></tr></thead>
+      <tbody>
+        <tr class="border-t border-gray-700"><td>A retry hides a real conflict</td><td><span class="font-mono">R1</span></td><td><span class="badge badge-warning badge-xs">Medium</span></td><td>Only a merge failure retries, and only once. The second failure goes to the boss as <code>needs-input:</code> with the merge output attached.</td></tr>
+        <tr class="border-t border-gray-700"><td>A retry lands while a person is editing the same branch</td><td><span class="font-mono">R2</span></td><td><span class="badge badge-success badge-xs">Low</span></td><td>Landing already takes the landing lock, so nothing else writes to the branch during the retry.</td></tr>
+        <tr class="border-t border-gray-700"><td>The status log gets noisy</td><td><span class="font-mono">R3</span></td><td><span class="badge badge-success badge-xs">Low</span></td><td>One extra line, <code>landing: retrying once</code>, and only when a retry happens.</td></tr>
+        <tr class="border-t border-gray-700"><td>A flaky CI check is mistaken for a merge failure</td><td><span class="font-mono">R4</span></td><td><span class="badge badge-error badge-xs">High</span></td><td>Not covered. The retry wraps the merge only, so a red check still stops the landing. Needs its own decision.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="callout warn">
+    <p class="text-sm text-gray-200"><strong>R4 needs your call.</strong> A flaky CI check looks like a failed landing from outside. This proposal does not retry checks. Question 2 below asks whether it should.</p>
+  </div>
+</section>
+
+<!-- Section 5: the code, if any. REPLACE the <section id="kp-diffs"> with the output of `kingpin-report diffs`, or delete this section. -->
+<section class="space-y-6">
+  <h2 class="text-2xl font-bold text-white">The Change</h2>
+  <section id="kp-diffs">
+    <div class="kp-diff-file">
+      <h3 class="kp-diff-title"><code>bin/kingpin-land</code> <small>modified</small></h3>
+      <div class="kp-diff" data-index="0"><pre class="kp-fallback">diff --git a/bin/kingpin-land b/bin/kingpin-land
+--- a/bin/kingpin-land
++++ b/bin/kingpin-land
+@@ -1,10 +1,14 @@
+-# land: merge the task branch into main
++# land: merge the task branch into main, retrying once on a merge that moved under us
+ land_task() {
+-  local id=$1
+-  git -C &quot;$KP_ROOT&quot; fetch origin main || return 1
+-  if ! git -C &quot;$wt&quot; merge --no-ff &quot;origin/main&quot;; then
+-    echo &quot;failed: merge conflict while landing&quot; &gt;&gt; &quot;$task_dir/status&quot;
+-    return 1
+-  fi
+-  gh pr merge &quot;$pr&quot; --squash
++  local id=$1 attempt
++  for attempt in 1 2; do
++    git -C &quot;$KP_ROOT&quot; fetch origin main || return 1
++    if git -C &quot;$wt&quot; merge --no-ff &quot;origin/main&quot;; then
++      gh pr merge &quot;$pr&quot; --squash &amp;&amp; return 0
++    fi
++    git -C &quot;$wt&quot; merge --abort 2&gt;/dev/null || true
++    [ &quot;$attempt&quot; -eq 1 ] &amp;&amp; echo &quot;landing: retrying once after a merge failure&quot; &gt;&gt; &quot;$task_dir/status&quot;
++  done
++  echo &quot;needs-input: landing failed twice, please look at the merge&quot; &gt;&gt; &quot;$task_dir/status&quot;
++  return 1
+ }</pre></div>
+    </div>
+    <script type="application/json" id="kp-diff-data">[{"name": "bin/kingpin-land", "oldName": "bin/kingpin-land", "oldContents": "# land: merge the task branch into main\nland_task() {\n  local id=$1\n  git -C \"$KP_ROOT\" fetch origin main || return 1\n  if ! git -C \"$wt\" merge --no-ff \"origin/main\"; then\n    echo \"failed: merge conflict while landing\" >> \"$task_dir/status\"\n    return 1\n  fi\n  gh pr merge \"$pr\" --squash\n}\n", "newContents": "# land: merge the task branch into main, retrying once on a merge that moved under us\nland_task() {\n  local id=$1 attempt\n  for attempt in 1 2; do\n    git -C \"$KP_ROOT\" fetch origin main || return 1\n    if git -C \"$wt\" merge --no-ff \"origin/main\"; then\n      gh pr merge \"$pr\" --squash && return 0\n    fi\n    git -C \"$wt\" merge --abort 2>/dev/null || true\n    [ \"$attempt\" -eq 1 ] && echo \"landing: retrying once after a merge failure\" >> \"$task_dir/status\"\n  done\n  echo \"needs-input: landing failed twice, please look at the merge\" >> \"$task_dir/status\"\n  return 1\n}\n", "binary": false}]</script>
+    <script type="module">
+      import { FileDiff } from "https://esm.sh/@pierre/diffs@1.2.10?bundle";
+      const files = JSON.parse(document.getElementById("kp-diff-data").textContent);
+      const options = { theme: { light: "github-light", dark: "github-dark" }, themeType: "dark", overflow: "wrap", diffStyle: "split" };
+      files.forEach((f, i) => {
+        const box = document.querySelector('.kp-diff[data-index="' + i + '"]');
+        const fallback = box.querySelector(".kp-fallback");
+        if (f.binary) return;
+        const host = document.createElement("div");
+        box.appendChild(host);
+        const settle = () => { if (host.childElementCount > 0) fallback.hidden = true; return host.childElementCount > 0; };
+        try {
+          new FileDiff(options).render({
+            containerWrapper: host,
+            oldFile: { name: f.oldName, contents: f.oldContents },
+            newFile: { name: f.name, contents: f.newContents },
+          });
+          if (!settle()) setTimeout(settle, 1500);
+        } catch (err) {
+          console.error("kp-diff: render failed for " + f.name, err);
+        }
+      });
+    </script>
+  </section>
+</section>
+
+<!-- Section 6: decisions. One form per question; each queues one prompt with the final answer. -->
+<section id="decisions" class="space-y-4">
+  <h2 class="text-2xl font-bold text-white">Decisions</h2>
+  <form class="card-custom space-y-3" data-lavish-question="option" data-label="Option" data-kind="choice" onsubmit="kpAnswer(event)">
+    <h3 class="text-base font-semibold text-white">1. Which option should we build?</h3>
+    <div class="space-y-2">
+      <label class="q-option"><input type="radio" class="radio radio-sm" name="choice" value="A: Do nothing"><span><span class="text-sm font-semibold text-white">A: Do nothing</span><span class="block text-xs text-gray-400">Keep stopping and waiting for you.</span></span></label>
+      <label class="q-option"><input type="radio" class="radio radio-sm" name="choice" value="B: Retry once, then ask"><span><span class="text-sm font-semibold text-white">B: Retry once, then ask</span><span class="block text-xs text-gray-400">Recommended. One retry, then <code>needs-input:</code>.</span></span></label>
+      <label class="q-option"><input type="radio" class="radio radio-sm" name="choice" value="C: Backoff and a queue"><span><span class="text-sm font-semibold text-white">C: Backoff and a queue</span><span class="block text-xs text-gray-400">Up to 3 retries and a queue file. About 3 days.</span></span></label>
+    </div>
+      <textarea class="textarea textarea-bordered w-full text-sm bg-transparent" name="note" rows="2" placeholder="Anything to add? (optional)"></textarea>
+    <div class="flex flex-wrap items-center gap-3">
+      <button type="submit" class="btn btn-sm btn-success text-white font-medium shadow">Queue answer</button>
+      <span data-status class="text-xs text-gray-400">Nothing queued yet.</span>
+    </div>
+  </form>
+  <form class="card-custom space-y-3" data-lavish-question="checks" data-label="Failed CI checks" data-kind="choice" onsubmit="kpAnswer(event)">
+    <h3 class="text-base font-semibold text-white">2. Should a failed CI check also be retried once (R4)?</h3>
+    <div class="space-y-2">
+      <label class="q-option"><input type="radio" class="radio radio-sm" name="choice" value="No, only merges"><span><span class="text-sm font-semibold text-white">No, only merges</span><span class="block text-xs text-gray-400">A red check keeps stopping the landing. Simplest, and what B assumes.</span></span></label>
+      <label class="q-option"><input type="radio" class="radio radio-sm" name="choice" value="Yes, retry checks once too"><span><span class="text-sm font-semibold text-white">Yes, retry checks once too</span><span class="block text-xs text-gray-400">Handles flaky checks, but can hide a real test failure for one more run.</span></span></label>
+      <label class="q-option"><input type="radio" class="radio radio-sm" name="choice" value="Decide later"><span><span class="text-sm font-semibold text-white">Decide later</span><span class="block text-xs text-gray-400">Build B as written and file this as its own issue.</span></span></label>
+    </div>
+      <textarea class="textarea textarea-bordered w-full text-sm bg-transparent" name="note" rows="2" placeholder="Anything to add? (optional)"></textarea>
+    <div class="flex flex-wrap items-center gap-3">
+      <button type="submit" class="btn btn-sm btn-success text-white font-medium shadow">Queue answer</button>
+      <span data-status class="text-xs text-gray-400">Nothing queued yet.</span>
+    </div>
+  </form>
+  <form class="card-custom space-y-3" data-lavish-question="followups" data-label="Follow-ups" data-kind="batch" onsubmit="kpAnswer(event)">
+    <h3 class="text-base font-semibold text-white">3. Which follow-ups should I file as issues? (tick any)</h3>
+    <div class="space-y-2">
+      <label class="q-option"><input type="checkbox" class="checkbox checkbox-sm" name="items" value="F-1" data-label="Show a retry count in &lt;code&gt;kingpin list&lt;/code&gt;"><span><span class="font-mono text-xs text-gray-400">F-1</span> <span class="text-sm text-gray-200">Show a retry count in <code>kingpin list</code></span></span></label>
+      <label class="q-option"><input type="checkbox" class="checkbox checkbox-sm" name="items" value="F-2" data-label="Log the merge output next to the status line"><span><span class="font-mono text-xs text-gray-400">F-2</span> <span class="text-sm text-gray-200">Log the merge output next to the status line</span></span></label>
+      <label class="q-option"><input type="checkbox" class="checkbox checkbox-sm" name="items" value="F-3" data-label="Report how often retries succeed, once a month"><span><span class="font-mono text-xs text-gray-400">F-3</span> <span class="text-sm text-gray-200">Report how often retries succeed, once a month</span></span></label>
+    </div>
+      <textarea class="textarea textarea-bordered w-full text-sm bg-transparent" name="note" rows="2" placeholder="Anything to add? (optional)"></textarea>
+    <div class="flex flex-wrap items-center gap-3">
+      <button type="submit" class="btn btn-sm btn-success text-white font-medium shadow">Queue answer</button>
+      <span data-status class="text-xs text-gray-400">Nothing queued yet.</span>
+    </div>
+  </form>
+</section>
+
+</main>
+
+<script>
+  // One handler for every decision form. Without the Lavish bridge the answer is shown to paste into chat.
+  function kpAnswer(event) {
+    event.preventDefault();
+    var form = event.currentTarget;
+    var key = form.getAttribute('data-lavish-question');
+    var label = form.getAttribute('data-label') || key;
+    var picked = [];
+    var fd = new FormData(form);
+    var choice = fd.get('choice');
+    var checked = Array.prototype.map.call(form.querySelectorAll('input[name=items]:checked'), function (i) { return { id: i.value, label: i.getAttribute('data-label') }; });
+    var note = (fd.get('note') || '').toString().trim();
+    var status = form.querySelector('[data-status]');
+    var kind = form.getAttribute('data-kind');
+    if (kind === 'batch' ? !checked.length : !choice) { status.textContent = 'Pick an answer first.'; status.className = 'text-xs text-amber-400'; return; }
+    var text = kind === 'batch'
+      ? label + ': ' + checked.map(function (c) { return c.id + ' ' + c.label; }).join('; ')
+      : label + ': ' + choice + (note ? ' (' + note + ')' : '');
+    if (window.lavish && typeof window.lavish.queuePrompt === 'function') {
+      window.lavish.queuePrompt(text, { tag: 'decision', text: text, element: form, queueKey: key, data: kind === 'batch' ? { question: key, items: checked, note: note } : { question: key, answer: choice, note: note } });
+      status.textContent = 'Queued. Press Send to Agent to deliver it.';
+      status.className = 'text-xs text-emerald-400';
+    } else {
+      status.textContent = 'Lavish is not connected here. Paste this answer into chat: ' + text;
+      status.className = 'text-xs text-amber-400';
+    }
+  }
+</script>
+</body>
+</html>

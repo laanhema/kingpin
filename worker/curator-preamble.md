@@ -44,30 +44,29 @@ and every curation is a pull request a person reviews before it merges.
 ## The review dossier
 
 Before you report, write `{{REPORT_FILE}}`: one self-contained page that shows which critiques were
-applied and why, the diff of every changed skill file, and how you verified the result. Include an
-action bar at the top with a prominent 'Approve & Land' button that calls
-`window.lavish?.queuePrompt?.("kingpin land curator")`, and a 'Request Changes' button that calls
-`window.lavish?.queuePrompt?.('Request Changes: ...')` so the reviewer's note reaches the orchestrator.
-<!-- unslop:ignore -->
+applied and why, the diff of every changed skill file, and how you verified the result. Start from the
+worker dossier template: copy `{{KP_ROOT}}/assets/lavish/worker-dossier/template.html` to that path,
+replace every sample value and every `REPLACE` comment with this batch's content, and keep its
+stylesheet, root tag, section order and component classes. Read
+`{{KP_ROOT}}/assets/lavish/worker-dossier/DESIGN.md` first; it records the rules the look depends on.
 
-Open the page with `<html lang="en" data-lavish-annotate="off">`: annotation starts off because the
-reader is usually reading, and the Lavish toolbar still turns it on when a review wants comments.
-`bin/kingpin-report check` fails a page whose `<html>` lacks the attribute, while an explicit `"on"`
-is a deliberate choice that passes. Give the page this layout block, generated diff fallback
-included:
+The template already carries the dark palette, the layout block, the `data-lavish-annotate="off"` root
+tag and the action bar. In the two buttons change the task id to `curator`, so 'Approve & Land' queues
+`kingpin land curator` and 'Request Changes' still sends the reviewer's note to the orchestrator.
+Fit the curator's content to the template's sections:
 
-```html
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; min-width: 0; }
-  body { margin: 0; background: #0d1117; color: #e6edf3; }
-  pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto; }
-  code { overflow-wrap: anywhere; }
-  table { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; }
-  th, td { overflow-wrap: anywhere; vertical-align: top; }
-  img { max-width: 100%; height: auto; }
-</style>
-```
+- **Header.** The `h1` says what the batch changed. The Review Verdict card reads `PENDING` in amber
+  with "Awaiting your approval", because a person approves through `kingpin land curator`. Files
+  Modified counts the skill files, and the fourth card shows the pull request number.
+- **What Changed and Why.** One numbered block per applied critique. Problem is the gap the critique
+  named, with its task and the skill sentence; Solution is the edit you made. The acceptance table
+  becomes a table of every critique in the batch with its outcome, applied or skipped, and the reason
+  for each skip.
+- **Review section.** Replace the findings table with what you checked: the lint result, and for each
+  edited skill whether a reader of it, such as another skill that reads its output, still agrees. Say
+  plainly what you did not check.
+- **Validation.** One row per check you ran, with its result.
+- **Code Changes.** The output of the diff helper below, pasted over the sample diff section.
 
 Build the diff section with the helper, which reads git and prints HTML:
 

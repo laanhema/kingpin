@@ -149,11 +149,11 @@ case "$cmd" in
     print_task_row() {
       local d=$1 suffix=${2:-}
       local tid env_file proj harness mode status_file st listen_info lpid url
-      local state last lines seen dead window_alive tmux_target session
+      local state last lines seen dead window_alive tmux_target tmux_socket live_session
       tid=$(basename "$d")
       env_file="$d/task.env"
       proj="-" harness="claude" mode="review"
-      tmux_target=''
+      tmux_target='' tmux_socket=''
       if [ -f "$env_file" ]; then
         proj=$(kp_env_get "$env_file" PROJECT)
         [ -n "$proj" ] || proj="-"
@@ -161,27 +161,24 @@ case "$cmd" in
         [ -n "$harness" ] || harness="claude"
         mode=$(kp_env_get "$env_file" MODE)
         [ -n "$mode" ] || mode="review"
+        # Where the worker lives (issue #142): socket, session, window.
+        tmux_socket=$(kp_tmux_socket_from_env "$env_file")
         tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
+        [ -n "$tmux_target" ] || tmux_target="kingpin:$tid"
       fi
-      # The task's own window, resolved once by name first and by id second (lib/tmux.sh).
-      # A stale recorded id that now names a stranger's window is not this task's, so a
-      # fleet whose tmux server died reads as dead instead of healthy (issue #149).
-      dead=0 window_alive=0
+      # The task's own window, resolved once by name first and by id second (lib/tmux.sh),
+      # on the socket the record names. A stale recorded id that now names a stranger's
+      # window is not this task's, so a fleet whose tmux server died reads as dead instead
+      # of healthy (issue #149). An archived row never probes: its window was killed by
+      # `kingpin done`, and a window check would only say DEAD for good.
+      dead=0 window_alive=0 live_session=''
       if [ -z "$suffix" ] && kp_window_find "$d" >/dev/null 2>&1; then
         window_alive=1
+        tmux_socket=$KP_WINDOW_SOCKET
+        live_session=$(kp_tmux "$KP_WINDOW_SOCKET" display-message -p -t "$KP_WINDOW_ID" '#S' 2>/dev/null || true)
       fi
-      # The session the worker's window is in, read from the live window so a move to
-      # another session is reported where it really is (issue #152). A window that is
-      # gone leaves the recorded target as the only answer; an archived row never had a
-      # live window to ask.
-      session='-'
-      if [ "$window_alive" -eq 1 ]; then
-        session=$(tmux display-message -p -t "$KP_WINDOW_ID" '#S' 2>/dev/null || true)
-      fi
-      if [ -z "$session" ] && [ -n "$tmux_target" ]; then
-        session=${tmux_target%%:*}
-      fi
-      [ -n "$session" ] || session='-'
+      [ -n "$live_session" ] || live_session=${tmux_target%%:*}
+      [ -n "$live_session" ] || live_session='-'
       status_file="$d/status"
       st="(pending)"
       state="-"
@@ -189,12 +186,8 @@ case "$cmd" in
       # longer in the window that carries its name, whether or not the record has a
       # status file or a `harness.pid`: an older record (or a curator record) has
       # neither, and `kp_window_harness_live` falls back to the pane's command for it.
-      # WAITING and SILENT still describe a pane that is really there. Nothing here
-      # trusts a raw recorded id, which after a restart may name another task's window
-      # (issue #149).
+      # WAITING and SILENT still describe a pane that is really there.
       if [ -n "$suffix" ]; then
-        # An archived row is finished: its window was killed by `kingpin done`, and a
-        # window check on a record that no longer runs would only say "DEAD" for good.
         dead=0
       elif [ "$window_alive" -eq 0 ]; then
         dead=1
@@ -209,18 +202,6 @@ case "$cmd" in
         if [ "$dead" -eq 1 ] && kp_status_is_terminal "$last"; then
           dead=0
         fi
-      fi
-      if [ "$dead" -eq 1 ]; then
-        state="DEAD"
-        [ -n "$suffix" ] || dead_count=$((dead_count + 1))
-      elif [ "$window_alive" -eq 1 ] && [ -f "$status_file" ] && [ -s "$status_file" ]; then
-        if kp_status_is_waiting "$st"; then
-          state="WAITING"
-        elif kp_status_is_silent "$last"; then
-          state="SILENT"
-        fi
-      fi
-      if [ -f "$status_file" ] && [ -s "$status_file" ]; then
         # Events appended since the last `kingpin ack` (the supervisor acks what
         # it dispatches), so an event nobody has looked at stays visible.
         lines=$(wc -l < "$status_file" | tr -d ' ')
@@ -236,7 +217,29 @@ case "$cmd" in
           fi
         fi
       fi
-      printf "%-22s %-10s %-8s %-12s %-10s %-18s %s%s\n" "$tid" "$proj" "$harness" "$mode" "$session" "$state" "$st" "$suffix"
+      if [ "$dead" -eq 1 ]; then
+        state="DEAD"
+        [ -n "$suffix" ] || dead_count=$((dead_count + 1))
+      elif [ "$window_alive" -eq 1 ] && [ -f "$status_file" ] && [ -s "$status_file" ]; then
+        if kp_status_is_waiting "$st"; then
+          state="WAITING"
+        elif kp_status_is_silent "$last"; then
+          state="SILENT"
+        fi
+      fi
+      printf "%-22s %-10s %-8s %-12s %-10s %-18s %s%s\n" "$tid" "$proj" "$harness" "$mode" "$live_session" "$state" "$st" "$suffix"
+      # Name the server and session that hold a live worker, so an operator can
+      # attach to it (issue #142). A dead worker's window is gone, and so is an
+      # archived row's, so neither names one.
+      if [ -z "$suffix" ] && [ -f "$env_file" ] && [ "$window_alive" -eq 1 ]; then
+        local where
+        if [ -n "$tmux_socket" ]; then
+          where="tmux -L $tmux_socket $live_session"
+        else
+          where="tmux $live_session"
+        fi
+        printf "  %-20s %s\n" "↳ Window:" "$where ($KP_WINDOW_ID)"
+      fi
       if [ -z "$suffix" ] && [ -f "$d/report.html" ]; then
         listen_info=""
         # The URL the listener recorded when it opened the page (issue #146): handing it
@@ -292,6 +295,8 @@ case "$cmd" in
     if [ "${dead_count:-0}" -gt 0 ]; then
       printf 'Fleet: %s live task(s) have no live window; run kingpin restore\n' "$dead_count"
     fi
+    # Where the workers live, and how to look at them by hand (issue #142).
+    printf "\n%s\n" "Workers live on the tmux server '$(kp_tmux_socket_name)': tmux -L $(kp_tmux_socket_name) attach -t kingpin (kingpin peek <task-id> reads one pane)"
     # Whether anyone is watching the fleet, and how to start a supervisor when not.
     printf "\n%s\n" "$(kp_supervisor_line "$KP_HOME")"
     afk_line=$(kp_afk_line "$KP_HOME")

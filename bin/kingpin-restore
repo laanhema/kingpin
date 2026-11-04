@@ -394,13 +394,15 @@ for id in ${ids[@]+"${ids[@]}"}; do
     continue
   fi
 
-  # The recorded session died with the server; recreate it under the same name, as a
-  # spawn's resolve_tmux_session does for `kingpin`, so the record needs no other change.
-  # `=name` is an exact match: a session called `kingpin-workers` is not `kingpin`, and
-  # prefix matching here would put the window in a session the record never names.
-  if ! tmux has-session -t "=$session" 2>/dev/null; then
-    if ! tmux new-session -d -s "$session" -n home 2>/dev/null; then
-      refuse "$id" "cannot create the tmux session $session"
+  # The recorded session died with the server; recreate it under the same name on the
+  # socket the record names (issue #142), as a spawn's resolve_tmux_session does for
+  # `kingpin`, so the record needs no other change. `=name` is an exact match: a
+  # session called `kingpin-workers` is not `kingpin`, and prefix matching here would
+  # put the window in a session the record never names.
+  fleet_socket=$(kp_tmux_socket_from_env "$env_file")
+  if ! kp_tmux "$fleet_socket" has-session -t "=$session" 2>/dev/null; then
+    if ! kp_tmux "$fleet_socket" new-session -d -s "$session" -n home 2>/dev/null; then
+      refuse "$id" "cannot create the tmux session $session on tmux -L ${fleet_socket:-default}"
       continue
     fi
   fi

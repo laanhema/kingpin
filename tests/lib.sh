@@ -61,14 +61,19 @@ kp_test_setup() {
   KP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
   KP_BIN="$KP_ROOT/bin"
 
-  # Set up isolated private tmux server on a temporary socket
+  # Set up isolated private tmux servers: a private TMUX_TMPDIR plus the fleet's own
+  # socket name (issue #142), so the run never reaches the user's real `kingpin`
+  # server. A bare `tmux` call in a suite lands on the fleet server, which is the
+  # socket a task record from `kingpin spawn` names; a suite that needs a second
+  # server names it with an explicit `-L`, which wins because it comes last.
   export TMUX_TMPDIR="$T/tmux-tmp"
   mkdir -p "$TMUX_TMPDIR" "$T/bin"
   TEST_SOCKET="kingpin-test-$suite-$$"
+  export KINGPIN_TMUX_SOCKET=kingpin
   REAL_TMUX=$(command -v tmux)
   cat > "$T/bin/tmux" << EOF
 #!/usr/bin/env bash
-exec "$REAL_TMUX" -L "$TEST_SOCKET" "\$@"
+exec "$REAL_TMUX" -L "$KINGPIN_TMUX_SOCKET" "\$@"
 EOF
   chmod +x "$T/bin/tmux"
   export PATH="$T/bin:$PATH"
@@ -93,7 +98,7 @@ EOF
   done
   # Silent guard: a suite on the wrong tmux server must stop before it touches anything.
   # test-lifecycle.sh keeps the one pass/fail assertion about the socket.
-  tmux display-message -p '#{socket_path}' | grep -q "$TEST_SOCKET" || { echo "kp_test_setup: tmux is not on the private socket" >&2; exit 1; }
+  tmux display-message -p '#{socket_path}' | grep -qF "$TMUX_TMPDIR/" || { echo "kp_test_setup: tmux is not on the private socket directory" >&2; exit 1; }
 
   # Worker stand-in: an idle shell.
   cat > "$T/fake-worker" << 'F'
@@ -131,6 +136,7 @@ kp_test_cleanup() {
     [ -f "$f" ] || continue
     cp -p "$f" "$KP_BIN/$(basename "${f%.orig}")" 2>/dev/null || true
   done
+  "$REAL_TMUX" -L "$KINGPIN_TMUX_SOCKET" kill-server 2>/dev/null || true
   "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
   rm -rf "$T"
 }

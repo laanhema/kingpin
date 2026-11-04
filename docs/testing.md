@@ -23,7 +23,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 
 | Suite | Covers |
 |---|---|
-| `test-lifecycle.sh` | `init`, `list`, `watch` auto-lifecycle, `run`, tmux session targeting |
+| `test-lifecycle.sh` | `init`, `list`, `watch` auto-lifecycle, `run`, fleet-server targeting |
 | `test-wait.sh` | `wait` and `ack`: blocking, wake filtering, exit codes |
 | `test-watch-supervisor.sh` | `watch`: single supervisor with a pidfile, stale reclaim, `list` line, `lock acquire` warning, events handled across turns |
 | `test-lock.sh` | `lock`: lifecycle, collisions, stale locks, recorded harness, parallel acquire race, atomic publish, release ownership |
@@ -38,6 +38,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-restore.sh` | `restore` after a tmux server restart, the `DEAD` list state, and the shared window resolver |
 | `test-send-peek.sh` | `send` and `peek` |
 | `test-spawn.sh` | `spawn`: window ID tracking, descriptive slugs, pinned window names |
+| `test-tmux-isolation.sh` | tmux isolation: the operator's session and server killed under a running worker, the static check that every tmux call goes through `lib/tmux.sh`, `list` naming the socket and session, and `done` closing the fleet window |
 | `test-sync.sh` | `sync` |
 | `test-git-compat.sh` | git 2.30 shim: `sync` and `guard install` refusals, `spawn` lease, `info/exclude` resolution, and helper paths with no `--path-format` line |
 | `test-cli-help.sh` | `--help` on every command in `kingpin --help`: usage text, exit 0, no window or task started |
@@ -48,6 +49,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-markdown.sh` | `report check`: markdown prose masking, CRLF line numbers, the full rule list |
 | `test-ranks.sh` | rank voice: the contract's Ranks section, the capo preamble, and the neutral status lines |
 | `test-noir-template.sh` | noir dossier template: the three files ship together, every ref stays inside the folder, the diffs keep static fallbacks, the prose stays clean |
+| `test-worker-dossier-template.sh` | worker dossier and handover templates: the files ship together, the sections each page is read for stay, the diffs keep static fallbacks, the decision forms keep their handler, the preamble points at the worker template, the prose stays clean |
 | `test-harnesses.sh` | Multi-harness contract and isolation |
 | `test-pi-harness.sh` | Pi worker extension (`lib/pi-harness.mjs`): the `agent_settled` stop call, the `resources_discover` skills bridge, and the per-worktree `project_trust` answer |
 | `test-worker-scope.sh` | Worker instruction context: what each harness really loads, the spawn refusal, the installed contract |

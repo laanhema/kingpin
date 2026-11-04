@@ -314,6 +314,7 @@ cat > "$KINGPIN_HOME/tasks/t-exited/task.env" << ENV
 PROJECT=demo
 HARNESS=claude
 MODE=review
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:no-such-window
 TMUX_WINDOW_ID=@999999
 ENV
@@ -341,6 +342,7 @@ cat > "$KINGPIN_HOME/tasks/t-nostatus/task.env" << ENV
 PROJECT=demo
 HARNESS=claude
 MODE=review
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:no-such-window
 TMUX_WINDOW_ID=@999999
 ENV

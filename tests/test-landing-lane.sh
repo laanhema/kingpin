@@ -24,6 +24,7 @@ PROJECT=$project
 MODE=review
 WORKTREE=$T/wt-lane-$id
 ISSUE=72
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$id
 EOF
   printf '%s\n' "$status" > "$d/status"
@@ -313,6 +314,7 @@ PROJECT=demo-h
 PROJECT_PATH=$T/proj
 WORKTREE=$T/missing-h1
 BRANCH=x
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:lane-h1
 EOF
 printf 'merged: pr=x\n' > "$KINGPIN_HOME/tasks/lane-h1/status"

@@ -258,6 +258,24 @@ wait_until 100 calls_eq 1 && pass "a dead curator pane is reaped and replaced" |
 watch_out | grep -q "reaped dead curator window" && pass "the dead-window reap is reported" || fail "reap not reported: $(watch_out)"
 tmux set-option -g remain-on-exit off
 
+# Test 5b: a record without TMUX_SOCKET is probed where its window really lives
+# ---------------------------------------------------------------------------
+# A curator record written before the fleet had its own server (issue #142) names
+# no socket, so its window is on the default server. The liveness probe must read
+# the record's socket, not the current environment's, or it misses a live curator
+# and launches a second one beside it.
+reset_state
+seed_critiques 3
+mk_curator_record "curator/$(date +%F)" "none"
+tmux -L default new-session -d -s kingpin -n curator "sleep 300"
+run_watch
+sleep 0.5
+watch_out | grep -q "curator window kingpin:curator is already active; the automatic run skipped" \
+  && pass "a record without TMUX_SOCKET sees its default-server window as live" \
+  || fail "the record's default-server window was missed: $(watch_out)"
+[ "$(curator_calls)" = "0" ] && pass "an old record's live window launches nothing" || fail "a second curator launched over the default-server window"
+tmux -L default kill-server 2>/dev/null || true
+
 # Test 6: two triggers in parallel still start one curator
 echo "=== Test 6: concurrency ==="
 reset_state

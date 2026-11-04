@@ -53,6 +53,7 @@ PROJECT=demo-t10
 PROJECT_PATH=$t10_wt1
 WORKTREE=$t10_wt1
 BRANCH=feature-t10-1
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t10-dirty
 EOF
 echo "dirty uncommitted changes" > "$t10_wt1/uncommitted.txt"
@@ -64,6 +65,7 @@ PROJECT=demo-t10
 PROJECT_PATH=$t10_wt2
 WORKTREE=$t10_wt2
 BRANCH=feature-t10-2
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t10-queued
 EOF
 echo "ready: branch=feature-t10-2 review=APPROVE report=none" > "$t10_dir2/status"
@@ -134,6 +136,7 @@ TASK_ID=t10-land
 PROJECT=demo-t10
 MODE=review
 WORKTREE=$t10_wt2
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t10-land
 EOF2
 echo "ready: branch=b review=APPROVE report=none" > "$t10_dir3/status"
@@ -164,6 +167,7 @@ TASK_ID=t10-force
 PROJECT=demo-t10
 PROJECT_PATH=$t10_wt1
 WORKTREE=$t10_wt3
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t10-force
 EOF2
 echo "merged: pr=x" > "$t10_dir4/status"
@@ -200,6 +204,7 @@ TASK_ID=$id
 PROJECT=demo-t12
 PROJECT_PATH=$t12_repo
 WORKTREE=$worktree
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$id
 EOF12
   echo "$last_status" > "$KINGPIN_HOME/tasks/$id/status"
@@ -297,6 +302,7 @@ PROJECT=demo-t16
 PROJECT_PATH=$t16_repo
 WORKTREE=$wt
 BRANCH=$recorded
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$id
 EOF16T
   echo "merged: pr=x" > "$KINGPIN_HOME/tasks/$id/status"
@@ -345,6 +351,7 @@ HARNESS=claude
 MODE=review
 PROJECT_PATH=$wt
 WORKTREE=$wt
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$name
 ENVEOF
   printf '%s\n' "$status" > "$d/status"
@@ -438,6 +445,7 @@ PROJECT=demo-t20
 PROJECT_PATH=$t20_repo
 WORKTREE=$t20_wt
 BRANCH=kingpin/$1
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$1
 EOF20T
 }
@@ -532,6 +540,7 @@ PROJECT=demo-t21
 PROJECT_PATH=$t21_repo
 WORKTREE=$t21_wt
 BRANCH=kingpin/t21-lost
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t21-lost
 EOF21T
 echo "merged: pr=z" > "$KINGPIN_HOME/tasks/t21-lost/status"
@@ -627,6 +636,7 @@ PROJECT=demo-t22
 PROJECT_PATH=$t22_repo
 WORKTREE=$t22_wt
 BRANCH=feature/t22
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:t22
 EOF22
 echo "merged: pr=m" > "$KINGPIN_HOME/tasks/t22/status"
@@ -674,6 +684,7 @@ PROJECT=demo-t23
 PROJECT_PATH=$t23_repo
 WORKTREE=$t23_wt
 BRANCH=feature/t23
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$1
 EOF23
   echo "merged: pr=n" > "$KINGPIN_HOME/tasks/$1/status"

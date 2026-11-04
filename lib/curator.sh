@@ -28,6 +28,8 @@
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/landing.sh"
 # shellcheck source=mutex.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mutex.sh"
+# shellcheck source=tmux.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tmux.sh"
 
 # kp_curate_pending_task <task-dir>
 # Exit 0 when the task still has an unapplied critique: the file is non-empty and
@@ -116,14 +118,23 @@ kp_curate_stamp() {
   fi
 }
 
-# kp_curate_window_state
-# Prints alive, dead or none for the kingpin:curator window. A window whose only
-# panes have exited is dead, not a curator: on a host with tmux's remain-on-exit
-# set, a failed launch leaves that pane behind and treating it as live would block
-# every later run.
+# kp_curate_window_state <kp-home>
+# Prints alive, dead or none for the kingpin:curator window. The socket comes from
+# the curator record (`tasks/curator/task.env`), like every other window reader, so
+# a record written under another KINGPIN_TMUX_SOCKET, or before the fleet had its
+# own server (no TMUX_SOCKET, so the default server), is probed where its window
+# actually lives. With no record yet, the current environment's socket is the one
+# the launch will use. A window whose only panes have exited is dead, not a
+# curator: on a host with tmux's remain-on-exit set, a failed launch leaves that
+# pane behind and treating it as live would block every later run.
 kp_curate_window_state() {
-  local panes
-  panes=$(tmux list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null) || { echo none; return 0; }
+  local home=${1:?} sock panes
+  if [ -f "$home/tasks/curator/task.env" ]; then
+    sock=$(kp_tmux_socket_from_env "$home/tasks/curator/task.env")
+  else
+    sock=$(kp_tmux_socket_name)
+  fi
+  panes=$(kp_tmux "$sock" list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null) || { echo none; return 0; }
   if printf '%s\n' "$panes" | grep -q '^0$'; then
     echo alive
   else

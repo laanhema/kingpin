@@ -92,12 +92,13 @@ ack_task() {
   fi
 
   # 3. If no window of this task is alive, touch seen_exited. The resolver (lib/tmux.sh)
-  # looks for the task's own window name first, so a stale recorded id that now names a
-  # foreign window no longer counts as this task being alive.
+  # looks for the task's own window name first, on the socket the record names (issue
+  # #142), so a stale recorded id that now names a foreign window no longer counts as
+  # this task being alive.
   if kp_window_find "$task_dir" >/dev/null 2>&1; then
     # 4. Remember the pane activity time: kingpin-wait holds a repeated `quiet`
     # for an acknowledged needs-input until it changes.
-    tmux display-message -p -t "$KP_WINDOW_ID" '#{window_activity}' > "$task_dir/seen_activity" 2>/dev/null || rm -f "$task_dir/seen_activity"
+    kp_tmux "$KP_WINDOW_SOCKET" display-message -p -t "$KP_WINDOW_ID" '#{window_activity}' > "$task_dir/seen_activity" 2>/dev/null || rm -f "$task_dir/seen_activity"
   else
     touch "$task_dir/seen_exited"
   fi
