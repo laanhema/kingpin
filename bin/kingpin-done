@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Complete and clean up a merged task.
 #
+# A task record that names an issue is checked after the merge: the issue is
+# closed when it is still open, and the OK: line reports its state (issue #170).
+#
 # Usage: kingpin-done <task-id> [--force]
 set -euo pipefail
 
@@ -20,6 +23,7 @@ KP_BIN=$(cd "$(dirname "$0")" && pwd)
 . "$KP_BIN/../lib/tmux.sh"
 # shellcheck source=../lib/browser.sh
 . "$KP_BIN/../lib/browser.sh"
+GH_CMD=${KINGPIN_GH:-gh}
 FORCE=0
 
 usage() {
@@ -28,6 +32,8 @@ usage: kingpin-done <task-id> [--force]
 
 Verify the merge, release the worktree lease, advance the landing queue and
 archive the task record. --force bypasses a recorded lease-lost refusal.
+A task record that names an issue is checked too: after a verified merge the
+issue is closed when it is still open, and the OK: line reports its state.
 HELP
 }
 
@@ -144,6 +150,18 @@ fi
 
 # shellcheck source=/dev/null
 . "$env_file"
+
+# The issue this task names (issue #170). task.env carries it from the spawn; an
+# older record is read from the worker's first issue: line instead. The value is
+# read from the record, never from the caller's environment, so an ISSUE exported
+# by whoever runs this command cannot become the target. A value that is not a
+# plain number is ignored, so it can never reach gh as an argument.
+issue=$(kp_env_get "$env_file" ISSUE)
+case "$issue" in ''|*[!0-9]*) issue='' ;; esac
+if [ -z "$issue" ] && [ -f "$task_dir/status" ]; then
+  issue=$(grep -E '^issue: #[0-9]+' "$task_dir/status" 2>/dev/null \
+    | head -n 1 | sed -E 's/^issue: #([0-9]+).*/\1/' || true)
+fi
 
 [ -n "${PROJECT_PATH:-}" ] || die "PROJECT_PATH missing in $env_file"
 [ -n "${WORKTREE:-}" ] || die "WORKTREE missing in $env_file"
@@ -407,6 +425,37 @@ if [ "$merge_verified" -eq 1 ] && [ -n "$task_branch" ] && [ "$task_branch" != "
   fi
 fi
 
+# 3c. The issue the task names. `merged:` is the line the supervisor acts on and
+# this cleanup archives the record, so an issue the worker left open has no later
+# step that closes it. The merge check above is the permission: the issue is only
+# touched when this run proved the work is on the remote default branch. Every gh
+# failure lands in the OK: line and never fails the cleanup.
+issue_note=''
+if [ -n "$issue" ]; then
+  if [ "$merge_verified" -ne 1 ]; then
+    issue_note="; issue #$issue not checked (the merge was not verified)"
+  elif ! command -v "$GH_CMD" >/dev/null 2>&1; then
+    issue_note="; issue #$issue not checked ($GH_CMD is not available)"
+  else
+    issue_state=$(cd "$PROJECT_PATH" && "$GH_CMD" issue view "$issue" --json state --jq .state 2>/dev/null || true)
+    case "$issue_state" in
+      CLOSED)
+        issue_note="; issue #$issue is closed"
+        ;;
+      OPEN)
+        if (cd "$PROJECT_PATH" && "$GH_CMD" issue close "$issue" >/dev/null 2>&1); then
+          issue_note="; closed issue #$issue after the merge"
+        else
+          issue_note="; issue #$issue is still open (close it by hand)"
+        fi
+        ;;
+      *)
+        issue_note="; issue #$issue state could not be read (check that it is closed)"
+        ;;
+    esac
+  fi
+fi
+
 # 4. Release project landing lock and pop next task in queue
 release_landing_lock_and_advance_queue
 
@@ -457,4 +506,4 @@ fi
 # this cleanup; its lines go to stderr so the OK: line stays last on stdout.
 kp_curate_maybe "$KP_HOME" "$KP_BIN" >&2
 
-echo "OK: cleaned up task $id (archived to $archive_dir$browser_note)"
+echo "OK: cleaned up task $id (archived to $archive_dir$browser_note$issue_note)"
