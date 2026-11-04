@@ -67,6 +67,37 @@ fi
 # Repeat the guard warning once at startup (stderr, non-fatal, silent when active).
 "$(dirname "$0")/kingpin-guard" warn || true
 
+# A tmux server that died takes every window with it while the task records still name
+# its socket, so a dead fleet reads as `exited` events with no reason (issue #165).
+# Warn once per socket per process, on stderr, with the attach command; the check rides
+# every pass as well, so a server that dies during a long wait is still named once.
+# KINGPIN_SKIP_SOCKET_WARN=1 silences it, like KINGPIN_SKIP_GUARD=1 for the guard.
+WARNED_SOCKETS=' '
+warn_unreachable_sockets() {
+  local dir sock checked=' ' ids id isock
+  for dir in "$tasks_dir"/*; do
+    kp_task_is_live "$dir" || continue
+    sock=$(kp_tmux_socket_from_env "$dir/task.env")
+    case "$checked" in *" ${sock:-default} "*) continue ;; esac
+    checked="$checked${sock:-default} "
+    kp_tmux_socket_reachable "$sock" && continue
+    case "$WARNED_SOCKETS" in *" ${sock:-default} "*) continue ;; esac
+    WARNED_SOCKETS="$WARNED_SOCKETS${sock:-default} "
+    ids=''
+    for id in "$tasks_dir"/*; do
+      kp_task_is_live "$id" || continue
+      # Normalized on both sides: no socket and `default` name the same server, and the
+      # dedupe above already treats them as one (issue #165 review M2).
+      isock=$(kp_tmux_socket_from_env "$id/task.env")
+      [ "${isock:-default}" = "${sock:-default}" ] || continue
+      ids=${ids:+"$ids "}$(basename "$id")
+    done
+    # shellcheck disable=SC2086 # ids is a space-separated list of task ids
+    kp_tmux_socket_warn_line "$sock" $ids
+  done
+}
+warn_unreachable_sockets
+
 # kingpin-spawn writes task.env before it creates the window and drops `launching`
 # once the window ID is recorded. A fresh marker means the window is still being
 # created; a stale one (a spawn that died) no longer hides a missing window.
@@ -203,6 +234,7 @@ check_task() {
 
 check_all() {
   local updates=0
+  warn_unreachable_sockets
   for dir in "$tasks_dir"/*; do
     # A finished task keeps a symlink at tasks/<id> so its dossier path resolves
     # (issue #115). It is not live: reporting an event for it would wake the

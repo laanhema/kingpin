@@ -69,6 +69,37 @@ kp_tmux() {
   tmux -L "${sock:-default}" "$@"
 }
 
+# kp_tmux_socket_reachable <socket>
+# Exit 0 when a tmux server answers on <socket> (empty means the default server),
+# 1 when none does. `list-sessions` is the cheapest call that proves a server is
+# there without creating one; a server with no sessions exits on its own, so a
+# reachable server always answers. Never prints anything.
+kp_tmux_socket_reachable() {
+  kp_tmux "${1:-}" list-sessions >/dev/null 2>&1
+}
+
+# kp_tmux_socket_warn_line <socket> <task-id>...
+# One stderr line for a server that is not running while live task records still
+# name it: the socket, the tasks whose windows died with it, and the command that
+# attaches once it is back. Prints nothing when the server answers, when no task
+# id is given, or when KINGPIN_SKIP_SOCKET_WARN=1 silences it, so a caller can
+# hand it every socket it saw. Returns 0 either way.
+kp_tmux_socket_warn_line() {
+  local sock=${1:-} ids='' id hint
+  shift || true
+  [ "${KINGPIN_SKIP_SOCKET_WARN:-}" != 1 ] || return 0
+  for id in "$@"; do ids=${ids:+"$ids, "}$id; done
+  [ -n "$ids" ] || return 0
+  kp_tmux_socket_reachable "$sock" && return 0
+  case "$sock" in
+    ''|default) hint='tmux attach' ;;
+    *) hint="tmux -L $sock attach" ;;
+  esac
+  printf "kingpin: the tmux server '%s' is not running; live tasks %s name it and their windows are gone. Attach once it is back: %s; kingpin watch restarts it and runs kingpin restore (or run kingpin restore yourself)\n" \
+    "${sock:-default}" "$ids" "$hint" >&2
+  return 0
+}
+
 # kp_tmux_ensure_session <socket> <session>
 # Make sure <session> exists on <socket>, creating it detached when it does not.
 # Prints nothing; the caller reports a failure.

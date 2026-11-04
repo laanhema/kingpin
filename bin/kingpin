@@ -323,13 +323,73 @@ case "$cmd" in
         print_task_row "$d" " (archived)"
       done
     fi
+    # One warning per server that no longer answers while live records still name it
+    # (issue #165): a dead server reads as a table of DEAD rows, and the operator needs
+    # the socket named, not only the tasks. The line goes to stderr and is silenced by
+    # KINGPIN_SKIP_SOCKET_WARN=1, the same shape as KINGPIN_SKIP_GUARD=1.
+    warn_unreachable_sockets() {
+      local d sock seen=' ' ids id isock
+      for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
+        sock=$(kp_tmux_socket_from_env "$d/task.env")
+        case "$seen" in *" ${sock:-default} "*) continue ;; esac
+        seen="$seen${sock:-default} "
+        kp_tmux_socket_reachable "$sock" && continue
+        ids=''
+        for id in ${live_dirs[@]+"${live_dirs[@]}"}; do
+          # Compare the normalized socket: a record written before the split names no
+          # socket and one naming `default` are the same server, and the dedupe above
+          # already treats them as one (issue #165 review M2).
+          isock=$(kp_tmux_socket_from_env "$id/task.env")
+          [ "${isock:-default}" = "${sock:-default}" ] || continue
+          ids=${ids:+"$ids "}$(basename "$id")
+        done
+        # shellcheck disable=SC2086 # ids is a space-separated list of task ids
+        kp_tmux_socket_warn_line "$sock" $ids
+      done
+    }
+
+    # The attach command for one socket: `default` and an empty socket are one case, the
+    # way kp_tmux_socket_warn_line reads them, and the default server is the operator's
+    # own, so it takes a plain `tmux attach`. `tmux -L default attach` works, but a
+    # hardcoded `-t kingpin` does not: the default server holds the operator's sessions,
+    # not the fleet's (issue #165 review M1, L1).
+    socket_attach_cmd() {
+      case "${1:-}" in
+        ''|default) printf 'tmux attach' ;;
+        *) printf 'tmux -L %s attach' "$1" ;;
+      esac
+    }
+
+    # Where the workers really live, and how to look at them by hand (issue #142). The
+    # line is built from the sockets the live records name, not from the caller's
+    # KINGPIN_TMUX_SOCKET: a fleet running on the operator's default server used to be
+    # told to attach to a server that held no worker (issue #165). With no live task
+    # the fleet's own default is the one a spawn would use, so it is named instead.
+    print_socket_footer() {
+      local d sock seen=' ' any=0
+      for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
+        sock=$(kp_tmux_socket_from_env "$d/task.env")
+        case "$seen" in *" ${sock:-default} "*) continue ;; esac
+        seen="$seen${sock:-default} "
+        any=1
+        printf "Workers live on the tmux server '%s': %s (kingpin peek <task-id> reads one pane)\n" \
+          "${sock:-default}" "$(socket_attach_cmd "$sock")"
+      done
+      if [ "$any" -eq 0 ]; then
+        sock=$(kp_tmux_socket_name)
+        printf "Workers live on the tmux server '%s': %s (kingpin peek <task-id> reads one pane)\n" \
+          "$sock" "$(socket_attach_cmd "$sock")"
+      fi
+    }
+
     # A fleet whose windows are gone used to read as healthy. Say it plainly, and say
     # what brings it back, before the supervisor and lock lines.
     if [ "${dead_count:-0}" -gt 0 ]; then
       printf 'Fleet: %s live task(s) have no live window; run kingpin restore\n' "$dead_count"
     fi
-    # Where the workers live, and how to look at them by hand (issue #142).
-    printf "\n%s\n" "Workers live on the tmux server '$(kp_tmux_socket_name)': tmux -L $(kp_tmux_socket_name) attach -t kingpin (kingpin peek <task-id> reads one pane)"
+    warn_unreachable_sockets
+    printf '\n'
+    print_socket_footer
     # Whether anyone is watching the fleet, and how to start a supervisor when not.
     printf "\n%s\n" "$(kp_supervisor_line "$KP_HOME")"
     afk_line=$(kp_afk_line "$KP_HOME")
