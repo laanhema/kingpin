@@ -34,8 +34,11 @@ Report every event as one line appended to `{{TASK_DIR}}/status`, with `printf '
 Before you append `ready:` or `merged:`, write `{{TASK_DIR}}/report.html`: one self-contained page that shows what changed and why, the review verdict and every finding, the diff of each changed file, and before/after screenshots for a visual change. The prose is part of the deliverable, so write it as a person would and run the `unslop` skill over the page before you save it: no em dashes, no "testament to", no "it's not just", no "delve", "seamless", "in order to", "let me know", "I hope this helps". The checker below enforces that mechanical list. Use dark mode by default: put `:root { color-scheme: dark }` at the top of the stylesheet and paint the page with `body { background: #0d1117; color: #e6edf3 }`, and keep `themeType: "dark"` on the diff blocks. A bare `color-scheme: dark;` line outside a selector is a parse error, and the browser then drops the rule that follows it, so the page renders white; `check` fails that and a dark claim with no parsed background on `body`, `html` or `:root`. Build the diffs as described under "Diffs in `report.html`" below (`lavish-axi playbook code` has the general Pierre guidance). Include an action bar at the top with a prominent 'Approve & Land' CTA (`kingpin land {{TASK_ID}}`, with a button triggering `window.lavish?.queuePrompt?.("kingpin land {{TASK_ID}}")` or copying the CLI command to clipboard) and a 'Request Changes' button (triggering `window.lavish?.queuePrompt?.('Request Changes: ...')`). <!-- unslop:ignore -->
 
 Dossier layout. A dossier is a page someone reads in a browser, so it has to hold its box at two
-widths. Every dossier carries this block, and the generated diff fallback needs it like any other
-`pre`:
+widths. Open it with `<html lang="en" data-lavish-annotate="off">`: annotation starts off because the
+reader is usually reading, and the Lavish toolbar still turns it on when a review wants comments.
+`bin/kingpin-report check` fails a page whose `<html>` lacks the attribute, while an explicit
+`"on"` is a deliberate choice that passes. Every dossier carries this block, and the generated diff
+fallback needs it like any other `pre`:
 
 ```html
 <style>
@@ -60,9 +63,9 @@ or truncates data is rejected at review, so fit the text to the box and wrap it.
 rule, inline `code` with none, an `img` with no `max-width`, a table whose cells have none, a grid
 or flex layout with no shrink guard, a `src`, `href` or `url()` that is an absolute path or
 climbs out with `..`, a declaration at the top level of a `<style>` block that sits outside any
-selector, and a page that claims `color-scheme: dark` with no parsed background on `body`, `html`
-or `:root`. Fix the line it names; `overflow: hidden`, a narrower font or a shortened value is not
-a fix.
+selector, a page that claims `color-scheme: dark` with no parsed background on `body`, `html`
+or `:root`, and an `<html>` element with no `data-lavish-annotate`. Fix the line it names;
+`overflow: hidden`, a narrower font or a shortened value is not a fix.
 
 Diffs in `report.html` (the section that shows each changed file) must go through `@pierre/diffs`, whose `FileDiff` takes `oldFile` and `newFile`, each `{ name, contents }`. It has no `patch` option: `render({ containerWrapper, patch: diffString })` returns without rendering and leaves the section blank. Generate the section with the helper (it only reads git and prints HTML; it is not an orchestration command):
 
@@ -85,7 +88,7 @@ It covers committed, uncommitted and untracked files, includes a static diff tha
 </script>
 ```
 
-Before you append `ready:` or `merged:`, run `{{KP_ROOT}}/bin/kingpin-report check {{TASK_DIR}}/report.html`. It prints `FAILED: <file>:<line>:` when the diff section would render blank, when the layout pass finds a `pre`, `code`, image, table, grid/flex or asset path that lets the page overflow, when a `<style>` block holds a top-level declaration outside any selector, when a dark `color-scheme` claim has no background on `body`, `html` or `:root`, and when a prose line carries one of the tells above; fix that line and run it again. If a flagged word is genuinely wanted, put `<!-- unslop:ignore -->` on that line. Do not report ready on a failing check.
+Before you append `ready:` or `merged:`, run `{{KP_ROOT}}/bin/kingpin-report check {{TASK_DIR}}/report.html`. It prints `FAILED: <file>:<line>:` when the diff section would render blank, when the layout pass finds a `pre`, `code`, image, table, grid/flex or asset path that lets the page overflow, when a `<style>` block holds a top-level declaration outside any selector, when a dark `color-scheme` claim has no background on `body`, `html` or `:root`, when the `<html>` element has no `data-lavish-annotate`, and when a prose line carries one of the tells above; fix that line and run it again. If a flagged word is genuinely wanted, put `<!-- unslop:ignore -->` on that line. Do not report ready on a failing check.
 
 The same check reads markdown. Run `{{KP_ROOT}}/bin/kingpin-report check --prose-only <file>.md` on the review report under `.agents/reviews/` before you hand it back, and on the body you write for an issue or a pull request before you file it (`gh issue create --body-file <file>.md`, `gh pr create --body-file <file>.md`). A markdown file has no diff section, so the diff checks are skipped; fenced blocks, indented code, inline code spans and HTML comments are ignored, and `<!-- unslop:ignore -->` stays the single escape.
 
