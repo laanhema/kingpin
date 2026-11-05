@@ -587,34 +587,36 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 
 ## Environment variables
 
-| Variable | Read by | Effect |
-|---|---|---|
-| `KINGPIN_HOME` | every fleet command | Fleet state directory (default `~/.kingpin`): `tasks/`, `archive/`, `projects/`, `locks/`, `supervisor.pid` and `config.env`. |
-| `KINGPIN_HARNESS` | `bin/kingpin-lock:97` | Harness recorded by `lock acquire` when `--harness` is omitted (before the command-name and agent-marker detection). |
-| `KINGPIN_CLAUDE` | `lib/launch.sh` | Command `spawn` and `restore` launch for the `claude` harness (default `claude`). |
-| `KINGPIN_AGY` | `lib/launch.sh` | Command `spawn` and `restore` launch for the `agy` harness (default `agy`). |
-| `KINGPIN_OPENCODE` | `lib/launch.sh` | Command `spawn` and `restore` launch for the `opencode` harness (default `opencode`). |
-| `KINGPIN_PI` | `lib/launch.sh`, `bin/kingpin-scope` | Command `spawn` and `restore` launch for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
-| `KINGPIN_CODEX` | `lib/launch.sh`, `bin/kingpin-scope` | Command `spawn` and `restore` launch for the `codex` harness (default `codex`); `kingpin scope doctor --harness codex` probes the same command. |
-| `KINGPIN_GH` | `bin/kingpin-spawn:54`, `bin/kingpin-curate`, `bin/kingpin-done:26` | `gh` command `spawn` uses to read an issue title for the task slug, `curate` uses to create, view and merge the curator's PR, and `done` uses to read and close the issue a finished task names (default `gh`).
-| `KINGPIN_TMUX_SESSION` | `bin/kingpin-spawn:224` | tmux session on the fleet's own server that `spawn` places the worker window in when `--tmux-session` is not given. The session must already exist; an unknown name is refused. Unset, the spawn uses the one attached session on the fleet server, then the only one it holds, and refuses when several are unattached or more than one is attached. |
-| `KINGPIN_SEND_DELAY` | `bin/kingpin-send:53` | Seconds between the literal text and the Enter key (default `0.2`). |
-| `KINGPIN_MUX` | `lib/mux.sh` | Multiplexer the fleet creates and reads workers with: `tmux`, `herdr`, or `auto` (default). `auto` selects Herdr only inside a Herdr pane (`HERDR_ENV=1`) and tmux everywhere else; any other value is refused by name. A task record's `MUX=` line, not this variable, decides where an existing task lives. |
-| `KINGPIN_HERDR_SESSION` | `lib/mux-herdr.sh` | Name of the fleet's Herdr session (default `kingpin`, the same name the tmux socket uses). The session must already be running: `herdr server` is a foreground process the operator owns, and nothing in Kingpin starts it. Inside a Herdr pane the inherited `HERDR_SESSION` is used instead. |
-| `KINGPIN_TMUX_SOCKET` | `lib/tmux.sh:20` | Name of the tmux server the fleet uses (default `kingpin`, that is `tmux -L kingpin`), so worker windows are not on your own server; `default` puts them back on it. `kingpin spawn` records the name in `task.env` as `TMUX_SOCKET`, and every window reader resolves the record's socket. The test suites point it at their own socket. |
-| `KINGPIN_CURATOR_CMD` | `bin/kingpin-curate` | Command `curate` launches the curator with; falls back to `KINGPIN_CLAUDE`, then `claude`. |
-| `KINGPIN_CURATOR_AUTO` | `lib/curator.sh` | `0` disables the automatic curator trigger, so `kingpin watch` and `kingpin done` never launch one; unset or any other value leaves it on. The test suites set `0`. |
-| `KINGPIN_SKIP_MERGE_CHECK` | `bin/kingpin-done` | `1` skips the merge verification (the ancestor check and its `git fetch`); the curator's automatic reconcile sets it, because `kingpin land curator` already verified the PR state. Not for hand-setting. |
-| `KINGPIN_SKILLS_DIR` | `bin/kingpin-curate`, `bin/kingpin-scope`, `lib/pi-harness.mjs:55` | Skills directory the curator works in (default `~/.claude/skills`); `kingpin scope` counts its `SKILL.md` files and checks them for the contract, and the Pi extension bridges it into Pi's skill discovery. |
-| `KINGPIN_LAVISH` | `bin/kingpin-listen:58` | `lavish-axi` command the listener drives (default `lavish-axi`). |
-| `KINGPIN_STATUS_GRACE` | `bin/kingpin-launch-check:49` | Seconds a worker may stay silent before `wait`/`watch`/`run` record `failed: no status:` (default `30`). |
-| `KINGPIN_ALLOW_GLOBAL_CONTRACT` | `bin/kingpin-scope` | `1` downgrades a contract found in a global instruction file to a warning instead of a refusal. |
-| `KINGPIN_SKIP_GUARD` | `bin/kingpin-guard:54`, `bin/kingpin-init:82` | `1` silences `kingpin guard warn`, which `kingpin list` and `kingpin wait` call, and the install `kingpin init` runs; it does not silence `kingpin lock acquire`, which runs `kingpin guard check` directly, or a hand-run `kingpin guard install`/`check`. Set by the test suites and scripted setups. |
-| `KINGPIN_SKIP_SOCKET_WARN` | `lib/tmux.sh` | `1` silences the warning `kingpin list` and `kingpin wait` print when a live task record names a tmux server that is not running. Set by scripted setups and the suites. |
-| `KINGPIN_LOCK_PID` | `bin/kingpin-lock:156` | A whole-number pid `lock acquire` records as the session pid instead of detecting one; the test suites use it. |
-| `KINGPIN_TASK_DIR` | `bin/kingpin-stop:39`, `worker/hooks.json:19` | Set by `kingpin spawn` to the task folder (`~/.kingpin/tasks/<id>`) so the Stop hook can write `status`. Not for hand-setting. |
-| `KINGPIN_ROOT` | `worker/hooks.json:9-19`, `bin/kingpin-spawn:463` | Set by `kingpin spawn` to the Kingpin checkout, so a hook finds `bin/kingpin-stop` even after the worker `cd`s elsewhere. Not for hand-setting. |
-| `KINGPIN_WORKTREE` | `lib/guard-hook.mjs:109,153`, `lib/pi-harness.mjs:54` | Set by `kingpin spawn` to the leased worktree; the worker's `PreToolUse` hook allows edits only inside it and the task folder, and the Pi extension's `project_trust` answer covers only it. Not for hand-setting. |
+| Variable | Effect |
+|---|---|
+| `KINGPIN_HOME` | Fleet state directory (default `~/.kingpin`): `tasks/`, `archive/`, `projects/`, `locks/`, `supervisor.pid` and `config.env`. |
+| `KINGPIN_HARNESS` | Harness recorded by `lock acquire` when `--harness` is omitted (before the command-name and agent-marker detection). |
+| `KINGPIN_CLAUDE` | Command `spawn` and `restore` launch for the `claude` harness (default `claude`). |
+| `KINGPIN_AGY` | Command `spawn` and `restore` launch for the `agy` harness (default `agy`). |
+| `KINGPIN_OPENCODE` | Command `spawn` and `restore` launch for the `opencode` harness (default `opencode`). |
+| `KINGPIN_PI` | Command `spawn` and `restore` launch for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
+| `KINGPIN_CODEX` | Command `spawn` and `restore` launch for the `codex` harness (default `codex`); `kingpin scope doctor --harness codex` probes the same command. |
+| `KINGPIN_GH` | `gh` command `spawn` uses to read an issue title for the task slug, `curate` uses to create, view and merge the curator's PR, and `done` uses to read and close the issue a finished task names (default `gh`). |
+| `KINGPIN_TMUX_SESSION` | tmux session on the fleet's own server that `spawn` places the worker window in when `--tmux-session` is not given. The session must already exist; an unknown name is refused. Unset, the spawn uses the one attached session on the fleet server, then the only one it holds, and refuses when several are unattached or more than one is attached. |
+| `KINGPIN_SEND_DELAY` | Seconds between the literal text and the Enter key (default `0.2`). |
+| `KINGPIN_MUX` | Multiplexer the fleet creates and reads workers with: `tmux`, `herdr`, or `auto` (default). `auto` selects Herdr only inside a Herdr pane (`HERDR_ENV=1`) and tmux everywhere else; any other value is refused by name. A task record's `MUX=` line, not this variable, decides where an existing task lives. |
+| `KINGPIN_HERDR_SESSION` | Name of the fleet's Herdr session (default `kingpin`, the same name the tmux socket uses). The session must already be running: `herdr server` is a foreground process the operator owns, and nothing in Kingpin starts it. Inside a Herdr pane the inherited `HERDR_SESSION` is used instead. |
+| `KINGPIN_TMUX_SOCKET` | Name of the tmux server the fleet uses (default `kingpin`, that is `tmux -L kingpin`), so worker windows are not on your own server; `default` puts them back on it. `kingpin spawn` records the name in `task.env` as `TMUX_SOCKET`, and every window reader resolves the record's socket. The test suites point it at their own socket. |
+| `KINGPIN_CURATOR_CMD` | Command `curate` launches the curator with; falls back to `KINGPIN_CLAUDE`, then `claude`. |
+| `KINGPIN_CURATOR_AUTO` | `0` disables the automatic curator trigger, so `kingpin watch` and `kingpin done` never launch one; unset or any other value leaves it on. The test suites set `0`. |
+| `KINGPIN_SKIP_MERGE_CHECK` | `1` skips the merge verification (the ancestor check and its `git fetch`); the curator's automatic reconcile sets it, because `kingpin land curator` already verified the PR state. Not for hand-setting. |
+| `KINGPIN_SKILLS_DIR` | Skills directory the curator works in (default `~/.claude/skills`); `kingpin scope` counts its `SKILL.md` files and checks them for the contract, and the Pi extension bridges it into Pi's skill discovery. |
+| `KINGPIN_LAVISH` | `lavish-axi` command the listener drives (default `lavish-axi`). |
+| `KINGPIN_STATUS_GRACE` | Seconds a worker may stay silent before `wait`/`watch`/`run` record `failed: no status:` (default `30`). |
+| `KINGPIN_ALLOW_GLOBAL_CONTRACT` | `1` downgrades a contract found in a global instruction file to a warning instead of a refusal. |
+| `KINGPIN_SKIP_GUARD` | `1` silences `kingpin guard warn`, which `kingpin list` and `kingpin wait` call, and the install `kingpin init` runs; it does not silence `kingpin lock acquire`, which runs `kingpin guard check` directly, or a hand-run `kingpin guard install`/`check`. Set by the test suites and scripted setups. |
+| `KINGPIN_SKIP_SOCKET_WARN` | `1` silences the warning `kingpin list` and `kingpin wait` print when a live task record names a tmux server that is not running. Set by scripted setups and the suites. |
+| `KINGPIN_LOCK_PID` | A whole-number pid `lock acquire` records as the session pid instead of detecting one; the test suites use it. |
+| `KINGPIN_TASK_DIR` | Set by `kingpin spawn` to the task folder (`~/.kingpin/tasks/<id>`) so the Stop hook can write `status`. Not for hand-setting. |
+| `KINGPIN_ROOT` | Set by `kingpin spawn` to the Kingpin checkout, so a hook finds `bin/kingpin-stop` even after the worker `cd`s elsewhere. Not for hand-setting. |
+| `KINGPIN_WORKTREE` | Set by `kingpin spawn` to the leased worktree; the worker's `PreToolUse` hook allows edits only inside it and the task folder, and the Pi extension's `project_trust` answer covers only it. Not for hand-setting. |
+
+`grep -rl KINGPIN_<name> bin lib` is the honest reader list, and it cannot tell a reader from a writer (a spawn sets `KINGPIN_TASK_DIR`), which is why this table carries no `Read by` column; each command's section above names the variables it reads.
 
 ## Internal helpers
 

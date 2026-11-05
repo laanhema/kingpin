@@ -6,7 +6,8 @@ Run the lint and the full test suite from the repository root:
 
 ```bash
 # Lint: bash -n + shellcheck over bin/*, lib/*.sh and tests/*.sh (config in .shellcheckrc),
-# node --check over lib/*.mjs, a check that every tests/test-*.sh is a leg of the CI matrix,
+# node --check over lib/*.mjs, a check that every tests/test-*.sh is a leg of the CI matrix
+# and has a row in the suite table below, a check that no page cites a source file by line,
 # a check in both directions over README.md and docs/*.md: every parsed flag and KINGPIN_*
 # variable is documented, and every `--` flag in a backtick span and every KINGPIN_* name a
 # docs page shows appears in the per-command reference docs/cli.md (a host tool's own flag
@@ -39,6 +40,9 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-send-peek.sh` | `send` and `peek` |
 | `test-spawn.sh` | `spawn`: window ID tracking, descriptive slugs, pinned window names |
 | `test-tmux-isolation.sh` | tmux isolation: the operator's session and server killed under a running worker, the static check that every tmux call goes through `lib/tmux.sh`, `list` naming the socket and session, and `done` closing the fleet window |
+| `test-fleet-server.sh` | the fleet tmux server: a dead server read as `DEAD`, the socket warning, the supervisor's restore sweep, and the spawn line that says it started the server |
+| `test-mux.sh` | the mux contract: `KINGPIN_MUX` selection, the per-record mux reader, every verb's argv against a fake Herdr, and the two static checks |
+| `test-mux-herdr-real.sh` | the opt-in real-Herdr leg: `lib/mux.sh`'s backend against the installed `herdr`, self-skipping when it is absent |
 | `test-sync.sh` | `sync` |
 | `test-git-compat.sh` | git 2.30 shim: `sync` and `guard install` refusals, `spawn` lease, `info/exclude` resolution, and helper paths with no `--path-format` line |
 | `test-cli-help.sh` | `--help` on every command in `kingpin --help`: usage text, exit 0, no window or task started |
@@ -55,10 +59,11 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-worker-scope.sh` | Worker instruction context: what each harness really loads, the spawn refusal, the installed contract |
 | `test-worker-settings.sh` | Orchestrator tool guard and worker edit boundary |
 | `test-excludes.sh` | spawn and done never write the main checkout's `.git/info/exclude`, and injected harness files stay out of a worktree's `git status` |
+| `test-browser-daemons.sh` | browser daemons: ownership by working directory, the process-tree stop, and the memory total the `↳ Browser:` line shows |
 | `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
 | `test-agents-paths.sh` | `.agents` artifact policy: nothing under `plans/`, `reports/` or `reviews/` is tracked, other `.agents/` files stay trackable, and the lint fails on a forced artifact |
-| `test-lint.sh` | the lint itself: a syntax error in a shell script or a `lib/*.mjs` module fails it by name, and a suite with no CI leg fails the matrix check |
+| `test-lint.sh` | the lint itself: a syntax error in a shell script or a `lib/*.mjs` module fails it by name, a suite with no CI leg fails the matrix check, a suite with no row in the table above fails by name, and a source file cited by line fails by name |
 
 Run one suite with `./tests/test-<name>.sh`. Run suites one at a time in a checkout: `test-lifecycle.sh`, `test-acceptance.sh` and `test-landing-lane.sh` briefly replace `bin/kingpin-send` with a stub (restored on exit), so a second suite that sends keys to a worker during that window hits the stub and fails. CI legs do not clash, since each runs in its own checkout.
 
-CI (`.github/workflows/ci.yml`) runs the lint plus one matrix leg per suite on every PR and push to `main`. The suites need `git`, `tmux`, `node`, `treehouse` and a git identity (the suites set one themselves). They use fake agents, so no harness binary is required, and no `lavish-axi` either: `tests/lib.sh` installs a recording stub in `kp_test_setup`, plus a `lavish-axi` shim first on `PATH` that records a real call and exits 1, so a suite never reaches the real Lavish server by omission or by unsetting `KINGPIN_LAVISH`. A suite that drives that stub on purpose declares `kp_test_expect_lavish_calls`, optionally with shell-glob patterns its recorded calls must match; a declaration that records nothing fails, and any other call, or a real call, fails the suite at `kp_test_finish` and names the arguments. A new suite needs a matrix leg; `./tests/lint.sh` fails until it has one.
+CI (`.github/workflows/ci.yml`) runs the lint plus one matrix leg per suite on every PR and push to `main`. The suites need `git`, `tmux`, `node`, `treehouse` and a git identity (the suites set one themselves). They use fake agents, so no harness binary is required, and no `lavish-axi` either: `tests/lib.sh` installs a recording stub in `kp_test_setup`, plus a `lavish-axi` shim first on `PATH` that records a real call and exits 1, so a suite never reaches the real Lavish server by omission or by unsetting `KINGPIN_LAVISH`. A suite that drives that stub on purpose declares `kp_test_expect_lavish_calls`, optionally with shell-glob patterns its recorded calls must match; a declaration that records nothing fails, and any other call, or a real call, fails the suite at `kp_test_finish` and names the arguments. A new suite needs a matrix leg and a row in the suite table above; `./tests/lint.sh` fails until both are there.

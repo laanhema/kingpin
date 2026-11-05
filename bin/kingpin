@@ -1,27 +1,5 @@
 #!/usr/bin/env bash
 # Unified entrypoint for the Kingpin orchestrator fleet.
-#
-# Usage:
-#   kingpin init [name] [path] [--harness <name>] [--setup "<cmd>"]
-#   kingpin spawn <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto] [--id <task-id>] [--tmux-session <name>]
-#   kingpin run <project> (--issue <n> | --text "<req>") [--harness <name>] [--mode review|auto] [--id <task-id>] [--tmux-session <name>]
-#   kingpin watch [--once] [--interval <seconds>]
-#   kingpin land <task-id>        (alias: kingpin approve <task-id>)
-#   kingpin done <task-id> [--force]
-#   kingpin restore [<task-id> ...] [--harness <name>] [--dry-run] [--force]
-#   kingpin send <task-id> "<text>"
-#   kingpin peek <task-id> [--lines N]
-#   kingpin sync                  (fast-forward the main checkout; run it in the main checkout)
-#   kingpin listen <task-id> [--once] [--background]
-#   kingpin wait [--timeout <seconds>] [--once]   (exit 0 on events or plain timeout; --once with no events exits 1)
-#   kingpin ack [--through <line>] <task-id>... | --all
-#   kingpin list [--all|-a]
-#   kingpin lock [status|check|acquire [--harness <name>]|release|harness] [pid]
-#   kingpin afk [on [--ttl <duration>]|off|status]
-#   kingpin guard [install|check|warn] [--dir <kingpin-checkout>]
-#   kingpin scope files|check|doctor --harness <name> --worktree <dir> [--preamble <file>]
-#   kingpin report diffs [--repo <dir>] [--base <ref>] | check [--prose-only] <file>
-#   kingpin curate [--dry-run] [--auto] [--mark-applied <pr-url>] [--land]
 set -euo pipefail
 
 KP_BIN=$(cd "$(dirname "$0")" && pwd)
