@@ -221,13 +221,19 @@ afk_dispatch_ready() {
       fi
       ;;
     findings)
-      # A findings verdict never merges here: kingpin-land starts the fix pass,
-      # and the fixed: branch continues the landing once the worker reports.
-      echo "[kingpin-watch] $id review has findings (afk on); starting the fix pass..."
+      # The landing gate makes the call, not AFK: it lands a report whose open
+      # findings are all Low (and writes followups.md), and runs the fix pass for
+      # anything blocking or unreadable. AFK reads the markers land wrote instead
+      # of deciding the same question twice.
+      echo "[kingpin-watch] $id review has findings (afk on); asking the landing gate..."
       if "$KP_BIN/kingpin-land" "$id"; then
-        # The pass was AFK-started whatever the task's mode, so its clean fixed:
-        # line gains the note that records who decided.
-        if [ -f "$task_dir/landing_in_progress" ]; then
+        if [ -f "$task_dir/landing_sent" ]; then
+          # It landed past the findings, so this line is the decision AFK took.
+          afk_note_landing "$task_dir"
+          rm -f "$task_dir/afk_fix_pass"
+        elif [ -f "$task_dir/landing_in_progress" ]; then
+          # The pass was AFK-started whatever the task's mode, so its clean fixed:
+          # line gains the note that records who decided.
           touch "$task_dir/afk_fix_pass"
         fi
       fi

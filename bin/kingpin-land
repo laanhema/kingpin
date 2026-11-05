@@ -5,6 +5,14 @@
 # The review gate fails closed: a status line whose verdict cannot be read never
 # creates landing_sent. It prints the line it could not parse and exits 1.
 #
+# A findings verdict is not a fix pass on its own: the gate reads the review
+# report the `ready:` line names, and only a Critical, High or Medium finding
+# blocks the merge. A report whose open findings are all Low lands, with those
+# lines written to <task>/followups.md for the worker to track; a NEEDS CHANGES
+# verdict blocks on its own even then, because it is the reviewer's "not yet". A
+# report the gate cannot read is not proof that nothing blocks, so it runs the
+# fix pass.
+#
 # Usage: kingpin-land <task-id>
 set -euo pipefail
 
@@ -12,6 +20,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 KP_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../lib/status.sh
 . "$KP_BIN/../lib/status.sh"
+# shellcheck source=../lib/review.sh
+. "$KP_BIN/../lib/review.sh"
 # shellcheck source=../lib/landing.sh
 . "$KP_BIN/../lib/landing.sh"
 
@@ -19,9 +29,13 @@ usage() {
   cat <<'HELP'
 usage: kingpin-land <task-id>
 
-Land a ready task: run the fix pass when the review has findings, serialize
-landing per project, and send /issue-flow-done to the worker. The review gate
-fails closed: a `ready:` line whose verdict cannot be read lands nothing.
+Land a ready task, serialize landing per project, and send /issue-flow-done to
+the worker. A findings verdict runs the fix pass when the review report has a
+Critical, High or Medium finding; a report whose open findings are all Low lands
+and writes them to <task>/followups.md, unless the verdict is `NEEDS CHANGES`,
+which blocks on its own. The review gate fails closed: a `ready:` line whose
+verdict cannot be read, or whose report cannot be read, lands nothing and runs
+the fix pass.
 When the task names an issue the dispatch is the bare `/issue-flow-done <n>`,
 because that skill's input contract asks for exactly one issue number; the order
 to close the issue and move its board item before `merged:` comes from the
@@ -65,6 +79,11 @@ fi
 status_file="$task_dir/status"
 # The gate needs the worker's own last event (kp_status_last skips listener notes).
 last_status=$(kp_status_last "$status_file")
+
+# What the findings arm derived from the review report, for the landing path.
+# Empty and zero on every other path, so the follow-up writer below is a no-op.
+followup_lines=""
+followup_count=0
 
 if [ -z "$issue" ] && [ -f "$status_file" ]; then
   # Parse issue number from status if not in task.env
@@ -126,15 +145,42 @@ else
 
   case $(kp_verdict_kind "$verdict") in
     findings)
-      # NEEDS CHANGES and APPROVE WITH NITS: run /fix-findings first
-      echo "kingpin-land: task $id review has findings ($verdict): running the fix pass first (/fix-findings), not landing yet; landing continues after the worker reports fixed: (kingpin watch does it, or run kingpin land again)"
-      touch "$task_dir/landing_in_progress"
+      # A report the gate can read decides. A Critical, High or Medium finding
+      # blocks the merge and runs the fix pass; a report whose open findings are
+      # all Low lands. A report the gate cannot read is not proof that nothing
+      # blocks, so it keeps today's fix pass. NEEDS CHANGES is the reviewer's
+      # "not yet" and blocks even when the report lists only Low findings, which
+      # contradicts the verdict, so that input also fails closed into the pass.
+      blocking=""
       if [ -n "$resolved_report" ]; then
-        "$KP_BIN/kingpin-send" "$id" "$(kp_skill_command "$harness" fix-findings "$resolved_report")" >/dev/null
-      else
-        "$KP_BIN/kingpin-send" "$id" "$(kp_skill_command "$harness" fix-findings)" >/dev/null
+        blocking=$(kp_review_blocking_count "$resolved_report") || blocking=""
       fi
-      exit 0
+      if [ -n "$blocking" ] && [ "$verdict" != "NEEDS CHANGES" ] && [ "$blocking" -eq 0 ]; then
+        followup_lines=$(kp_review_followups "$resolved_report") || followup_lines=""
+        followup_count=$(printf '%s\n' "$followup_lines" | awk 'NF { n++ } END { print n + 0 }')
+        if [ "$followup_count" -eq 0 ]; then
+          landing_reason="the review has no open findings ($verdict)"
+        else
+          landing_reason="the review has no blocking findings ($followup_count Low finding(s) are follow-up work, no fix pass needed)"
+        fi
+      else
+        if [ -z "$blocking" ]; then
+          echo "kingpin-land: task $id review has findings ($verdict) and its report cannot be read: running the fix pass first (/fix-findings), not landing yet; landing continues after the worker reports fixed: (kingpin watch does it, or run kingpin land again)"
+        elif [ "$blocking" -eq 0 ]; then
+          # Only NEEDS CHANGES reaches here: the verdict blocks on its own, so
+          # quoting a count of zero would read as a bug instead of the rule.
+          echo "kingpin-land: task $id review has findings ($verdict) and the report lists no blocking finding, so the verdict blocks the merge on its own: running the fix pass first (/fix-findings), not landing yet; landing continues after the worker reports fixed: (kingpin watch does it, or run kingpin land again)"
+        else
+          echo "kingpin-land: task $id review has findings ($verdict) with $blocking blocking finding(s): running the fix pass first (/fix-findings), not landing yet; landing continues after the worker reports fixed: (kingpin watch does it, or run kingpin land again)"
+        fi
+        touch "$task_dir/landing_in_progress"
+        if [ -n "$resolved_report" ]; then
+          "$KP_BIN/kingpin-send" "$id" "$(kp_skill_command "$harness" fix-findings "$resolved_report")" >/dev/null
+        else
+          "$KP_BIN/kingpin-send" "$id" "$(kp_skill_command "$harness" fix-findings)" >/dev/null
+        fi
+        exit 0
+      fi
       ;;
     clean)
       landing_reason="the review is clean ($verdict)"
@@ -192,6 +238,20 @@ if [ "$acquire_rc" -eq 1 ]; then
     exit 0
   fi
 fi
+# Carry the follow-up findings into the task record before the landing marker,
+# so landing_sent never appears without the file the worker's preamble points it
+# at; the send-failure path below removes both, because a landing that never
+# started must leave nothing behind that claims it did. The file is the worker's
+# own checklist after the merge.
+if [ "$followup_count" -gt 0 ]; then
+  followup_file="$task_dir/followups.md"
+  {
+    printf '# Follow-up findings\n\n'
+    printf 'None of these blocks the merge. The landing gate read only Low findings in the review report, and a Medium or above finding would have run the fix pass first.\n\n'
+    printf '%s\n' "$followup_lines"
+  } > "$followup_file"
+  landing_reason="$landing_reason; follow-ups written to $followup_file"
+fi
 touch "$task_dir/landing_sent"
 
 # The echoed message keeps the plain skill name (it is prose for the operator); the
@@ -214,11 +274,12 @@ if "$KP_BIN/kingpin-send" "$id" "$land_cmd" >/dev/null; then
   echo "$started_msg"
   exit 0
 fi
-# Nothing reached the worker (a dead tmux window, for example). Keeping the lock
-# and landing_sent would tell kingpin-listen "already landing" and hide the
-# failure, so release the lane and let the next land acquire it.
+# Nothing reached the worker (a dead tmux window, for example). Keeping the lock,
+# landing_sent and followups.md would tell kingpin-listen "already landing" and
+# hide the failure, and would tell the worker's preamble a review had landed with
+# Low findings open, so release the lane and let the next land acquire it.
 echo "kingpin-land: task $id: could not send '$land_cmd' (the worker window is gone?)" >&2
-rm -f "$task_dir/landing_sent"
+rm -f "$task_dir/landing_sent" "$task_dir/followups.md"
 # Report what the release actually did: a release that fails leaves the lane
 # held by a task that can no longer land, which is the wedge this lane removes.
 if kp_landing_release "$KP_HOME" "$project" "$id"; then
