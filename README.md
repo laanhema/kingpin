@@ -68,7 +68,7 @@ Without `--harness`, no `HARNESS` is written and the project follows the default
 
 `kingpin spawn` follows `--harness <name>`, then the project's `HARNESS`, then the harness the orchestrator lock recorded, then `DEFAULT_HARNESS` in `~/.kingpin/config.env`, then `claude`; `kingpin lock acquire` records the orchestrator's own harness, so a worker matches the session you are in. The full order, how `acquire` detects a harness and the lock's refusals are in [`kingpin spawn`](docs/cli.md#kingpin-spawn) and [`kingpin lock`](docs/cli.md#kingpin-lock).
 
-`~/.kingpin/config.env` also says where new workers land. `TMUX_SOCKET` and `TMUX_SESSION` name the fleet's server and session, `KINGPIN_TMUX_SOCKET` and `KINGPIN_TMUX_SESSION` win over them, and with none of the four set a spawn started inside tmux follows your own session and socket. Set `KINGPIN_TMUX_SOCKET=kingpin` to keep workers off your own server, because `tmux kill-server` there ends every worker on it. How the target is resolved, and what a refusal names, is in [`Where the window lives`](docs/cli.md#where-the-window-lives).
+`~/.kingpin/config.env` also says where new workers land. `TMUX_SOCKET` and `TMUX_SESSION` name the fleet's server and session, `KINGPIN_TMUX_SOCKET` and `KINGPIN_TMUX_SESSION` win over them, and with none of the four set a spawn started inside tmux follows your own session and socket. Set `KINGPIN_TMUX_SOCKET=kingpin` to keep workers off your own server, because `tmux kill-server` there ends every worker on it. The resolution order and what a refusal names are in [`Choosing the session`](docs/cli.md#choosing-the-session), and where the window lives is in [`Where the window lives`](docs/cli.md#where-the-window-lives).
 
 ### 2. Run a task to completion in one command
 

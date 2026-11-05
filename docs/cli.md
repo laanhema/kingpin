@@ -5,10 +5,11 @@
 ## Conventions
 
 Every command prints its usage on `--help` (or `-h`) and exits 0, and an unknown flag exits
-non-zero. A success line starts with `OK:` on stdout. A refusal or a failed check goes to
-stderr and exits non-zero, with one exception: `kingpin guard warn` reports its warning and
-exits 0, because it is a startup check (see [`kingpin guard`](#kingpin-guard)). Where a
-command has exit codes of its own, its section below lists them.
+non-zero. A success line starts with `OK:` on stdout, and a refusal goes to stderr and exits
+non-zero. A startup check that only warns still exits 0: `kingpin guard warn`, a
+`kingpin listen` without `lavish-axi`, and a `kingpin curate --auto` whose checkout is
+missing are the cases, and their sections say which check ran. Where a command has exit codes
+of its own, its section below lists them.
 
 ## kingpin init
 
@@ -581,7 +582,7 @@ The dossier listener's `landing_sent` and `approve_pending` markers are checked 
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_SKIP_GUARD`; `KINGPIN_TASK_DIR` and `KINGPIN_WORKTREE` are read by the `guard hook worker` entry point (`lib/guard-hook.mjs`).
 
-`install` writes the hook into the checkout `--dir` names and refuses a linked worktree.
+`install` writes the hook into a `PreToolUse` entry of `.claude/settings.local.json` in the checkout `--dir` names, and refuses a linked worktree.
 
 ### What install writes
 
