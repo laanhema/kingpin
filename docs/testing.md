@@ -42,6 +42,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-restore.sh` | `restore` after a tmux server restart, the `DEAD` list state, and the shared window resolver |
 | `test-send-peek.sh` | `send` and `peek` |
 | `test-spawn.sh` | `spawn`: window ID tracking, descriptive slugs, pinned window names |
+| `test-stats.sh` | `stats`: the summary counts on a three-task fixture, `--since`, archived records and their dossier links, curator and undated records skipped, the merged and failed precedence rules, and the no-write guarantee |
 | `test-tmux-isolation.sh` | tmux isolation: the operator's session and server killed under a running worker, the static checks that every tmux call goes through `lib/tmux.sh` and every session check goes through `kp_tmux_has_session`, `list` naming the socket and session, and `done` closing the fleet window |
 | `test-fleet-server.sh` | the fleet tmux server: a dead server read as `DEAD`, the socket warning, the supervisor's restore sweep, and the spawn line that says it started the server |
 | `test-mux.sh` | the mux contract: `KINGPIN_MUX` selection, the per-record mux reader, every verb's argv against a fake Herdr, and the two static checks |

@@ -12,6 +12,8 @@ set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 KP_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=../lib/duration.sh
+. "$KP_BIN/../lib/duration.sh"
 # shellcheck source=../lib/afk.sh
 . "$KP_BIN/../lib/afk.sh"
 # shellcheck source=../lib/session.sh
@@ -30,43 +32,12 @@ usage: kingpin afk [on [--ttl <duration>]|off|status]
   off     disarm it
   status  print "AFK: on until HH:MM (pid N)", or "AFK: off"
 
---ttl takes one or more <n><unit> segments, unit s, m or h (90m, 8h, 1h30m);
+--ttl takes one or more <n><unit> segments, unit s, m, h or d (90m, 8h, 1h30m);
 the default is 8h. While armed, `kingpin watch` lands a clean review verdict
 through the normal landing gate and holds everything that needs judgement.
 The state is session-scoped at $KINGPIN_HOME/afk and `kingpin lock release`
 clears it; it also reads as off once the TTL passes or the holder pid is gone.
 HELP
-}
-
-# parse_ttl <duration>
-# Print the duration in seconds. One or more <digits><unit> segments with unit s,
-# m or h; each number is at most 9 digits and the total must be positive. Anything
-# else (a bare number, an unknown unit, a trailing character) is an error.
-parse_ttl() {
-  local spec=${1:-} total=0 num unit
-  [ -n "$spec" ] || return 1
-  while [ -n "$spec" ]; do
-    case "$spec" in
-      [0-9]*) ;;
-      *) return 1 ;;
-    esac
-    num=${spec%%[!0-9]*}
-    spec=${spec#"$num"}
-    [ "${#num}" -le 9 ] || return 1
-    # Strip a leading zero before the arithmetic: bash reads 08 as an invalid
-    # octal number, so --ttl 08h must become 8h rather than a shell error.
-    num=$((10#$num))
-    case "$spec" in
-      s*) unit=1 ;;
-      m*) unit=60 ;;
-      h*) unit=3600 ;;
-      *) return 1 ;;
-    esac
-    spec=${spec#?}
-    total=$((total + num * unit))
-  done
-  [ "$total" -gt 0 ] || return 1
-  printf '%s\n' "$total"
 }
 
 cmd=${1:-}
@@ -82,7 +53,7 @@ case "$cmd" in
     while [ $# -gt 0 ]; do
       case "$1" in
         --ttl)
-          ttl=$(parse_ttl "${2:-}") || usage_error "--ttl needs a duration such as 90m, 8h or 1h30m (got '${2:-}')"
+          ttl=$(kp_parse_duration "${2:-}") || usage_error "--ttl needs a duration such as 90m, 8h or 1h30m (got '${2:-}')"
           shift 2
           ;;
         -h|--help) usage; exit 0 ;;

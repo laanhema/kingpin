@@ -157,6 +157,38 @@ When a live task record names a tmux server that is not running, `kingpin list` 
 
 A live row whose task holds a browser daemon also gets `↳ Browser: 1 daemon, 412 MB (pid 1234)`: the `chrome-devtools-axi` bridge the task started, with its `chrome-devtools-mcp` child and headless Chrome, summed over the whole process tree. Ownership is the daemon's working directory, so only a daemon started from the task folder or the task's worktree is counted (`lib/browser.sh`), and only a process whose argv runs the bridge script counts: a log tail or an editor that merely names it is neither listed nor stopped. A task that drives no browser gets no line, and an archived row never gets one, because `kingpin done` stops the daemons before it archives the task. A daemon left by a task archived before this change still runs, and no Kingpin command lists or stops it: its record is under `~/.kingpin/archive/<task-id>`, which `kingpin list` does not scan, and `kingpin done` only runs for a live task. Stop one by hand: find its pid, check that its working directory is that archive path (`readlink /proc/<pid>/cwd` on Linux, `lsof -a -p <pid> -d cwd -Fn` on macOS), and kill it. Two or more daemons print as `2 daemons` with their pids comma-separated.
 
+## kingpin stats
+
+**Usage:** `kingpin stats [--since <duration>]`
+
+**Flags:** `--since <duration>`
+
+**Environment:** `KINGPIN_HOME`
+
+Reads every task record, live under `tasks/` and archived under `archive/`, and prints one summary of finished work:
+
+```
+Window: all records
+Records: 3 (finished 3, in flight 0, without a report 0)
+Finished: 2 merged, 1 failed
+Verdicts: APPROVE 2, APPROVE WITH NITS 0, NEEDS CHANGES 1, other 0
+Fix passes: 1 of 3 reviewed tasks (33%)
+Cleanup refused: 0
+Failed:
+  t-stats-failed  failed: tests red
+Time to merged: median 2h, p90 3h (n=2)
+```
+
+`Records:` counts the records the run considered and splits them three ways: finished, in flight, and without a report (a record with no status line yet). A record counts as merged when any line of its status starts with `merged:`, because a `cleanup-refused:` line that follows the merge does not undo it; the `Cleanup refused:` line keeps a refused cleanup visible instead of burying it in the merged count. A record counts as failed only when its last worker line starts with `failed:`, so a task that failed once and later asked a question is in flight, not failed. `Failed:` lists each of them as a task id and its line.
+
+`Verdicts:` reads the last `ready:` line of each record, the final review verdict, and puts it in `APPROVE`, `APPROVE WITH NITS`, `NEEDS CHANGES` or `other`. `Fix passes:` is the number of reviewed records (those with a `ready:` line) that also carry a `fixed:` line, over that same denominator, so a task that never reached review is not asked for a fix pass.
+
+The time to merged runs from `CREATED` (recorded in `task.env`) to the record's last `status` write. The status protocol carries no timestamps, and the archive moves at cleanup time, which can lag the merge, so the status file's modification time is the closest local measure. The line prints the median and the p90 over the records with a readable `CREATED` and a non-negative span, and `none (no merged record)` when the window holds no merged record.
+
+`--since` takes one or more `<n><unit>` segments with unit `s`, `m`, `h` or `d` (`7d`, `90m`, `1h30m`) and keeps only the records whose `CREATED` falls inside the window. A record without a readable `CREATED` is counted in the `Records:` line as `; N skipped: no CREATED` and left out of the buckets, since it cannot be placed in a window. Curator records (`CURATOR=1`) are counted as `; N curator skipped` and left out in every run, windowed or not, because a curator's verdict is `PENDING` by design.
+
+The command writes nothing: no marker, index or temp file, so it is safe on a read-only fleet home. A missing or empty `$KINGPIN_HOME` prints the zero summary and exits 0 instead of an error. An unknown flag, or a `--since` that is not a duration, prints usage and exits 2.
+
 ## kingpin send
 
 **Usage:** `kingpin send <task-id> "<text>"`
@@ -456,7 +488,7 @@ Exits 0 when every named task was restored or was already live; 1 when any task 
 
 `on` arms auto-landing for this orchestrator session, `off` disarms it, and `status` prints `AFK: on until HH:MM (pid N)` or `AFK: off`. The state is the three-line file `$KINGPIN_HOME/afk` (holder pid, arm epoch, expiry epoch), published whole with a rename, and it is never a project or global setting.
 
-`--ttl` takes one or more `<n><unit>` segments with unit `s`, `m` or `h` (`30m`, `8h`, `1h30m`); the default is `8h`. A bare number, an unknown unit, a zero total, an unknown subcommand or an unknown flag exits 2; a state file that cannot be written exits 1.
+`--ttl` takes one or more `<n><unit>` segments with unit `s`, `m`, `h` or `d` (`30m`, `8h`, `1h30m`); the default is `8h`. A bare number, an unknown unit, a zero total, an unknown subcommand or an unknown flag exits 2; a state file that cannot be written exits 1.
 
 The arm reads as off once the expiry passes or the recorded pid is gone, so a session that died cannot leave the fleet landing on its own. `kingpin lock release` removes the file as well.
 
