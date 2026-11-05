@@ -353,6 +353,25 @@ reconcile_curator_task() {
   esac
 }
 
+# curator_record_unarchived
+# Exit 0 and print the last status line when tasks/curator is still a real curator
+# record with a terminal line after `reconcile_curator_task`, which means
+# `kingpin done curator` failed without recording its refusal: a record missing
+# WORKTREE or PROJECT_PATH, a failed archive move, or a cleanup lock that could
+# not be created. The status, the PR file and the report are the only evidence of
+# that run, and the launch would truncate them in place, so the caller stops. A
+# record with no status line is not this case: it is a launch that died before its
+# first line.
+curator_record_unarchived() {
+  local dir="$curator_task_dir" last
+  kp_task_is_live "$dir" || return 1
+  [ -f "$dir/task.env" ] || return 1
+  [ "$(kp_env_get "$dir/task.env" CURATOR)" = "1" ] || return 1
+  last=$(kp_status_last "$dir/status")
+  kp_status_is_terminal "$last" || return 1
+  printf '%s\n' "$last"
+}
+
 # curator_record_hold
 # Exit 0 when tasks/curator holds a live, non-terminal curator record, which is a
 # run nobody has landed or closed yet; prints its last status line and the PR it
@@ -371,15 +390,18 @@ curator_record_hold() {
   return 0
 }
 
-# report_curator_hold
-# One stderr line when the idle gate failed because tasks/curator holds a live,
-# non-terminal curator record; nothing on any other path. Without it the
-# automatic run stops for a record a person has to land, and the fleet log says
-# nothing about why.
-report_curator_hold() {
+# report_idle_hold
+# One stderr line when the idle gate failed, naming what held it: a live,
+# non-terminal curator record (with its last status line and PR), or else the
+# first task record that is still in flight (with its last status). Nothing on
+# any other path. Without it the automatic run stops for a record a person has to
+# land, and the fleet log says nothing about why.
+report_idle_hold() {
   local hold
   if hold=$(curator_record_hold); then
     info "task curator is still live (last status: ${hold%$'\n'*}; pr=${hold##*$'\n'}); the automatic run skipped"
+  elif hold=$(kp_curate_in_flight_task "$KP_HOME"); then
+    info "task ${hold%%$'\n'*} is still in flight (last status: ${hold#*$'\n'}); the automatic run skipped"
   fi
   return 0
 }
@@ -428,7 +450,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
       exit 0
     fi
     if ! kp_curate_idle "$KP_HOME"; then
-      report_curator_hold
+      report_idle_hold
       exit 0
     fi
     collect_critiques
@@ -445,7 +467,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
       exit 0
     fi
     if ! kp_curate_idle "$KP_HOME"; then
-      report_curator_hold
+      report_idle_hold
       exit 0
     fi
     if [ "$(kp_curate_window_state "$KP_HOME")" = "alive" ]; then
@@ -491,6 +513,17 @@ if [ "$DRY_RUN" -eq 0 ]; then
   fi
 
   reconcile_curator_task
+
+  # reconcile_curator_task ignores `kingpin done`'s exit status: a finished curator
+  # record it could not archive is still a real directory here, and everything
+  # below would overwrite its status, task.env and report in place. Stop instead.
+  if unarchived=$(curator_record_unarchived); then
+    if [ "$AUTO" -eq 1 ]; then
+      info "the finished curator record could not be archived (last status: $unarchived); the automatic run skipped"
+      exit 0
+    fi
+    die "the finished curator record could not be archived (last status: $unarchived); run kingpin done curator to see why, then repair the record"
+  fi
 
   # A manual run would replace the record, the status and the PR URL of a curator
   # nobody has landed yet: refuse instead of truncating them. A terminal record
