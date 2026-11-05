@@ -10,6 +10,7 @@ each task back as a visual review dossier. This file describes the repository.
 |---|---|
 | `bin/` | One executable per command (`kingpin-spawn`, `kingpin-guard`, `kingpin-wait`, `kingpin-brief`, ...), plus `bin/kingpin`, the dispatcher that maps `kingpin <cmd>` to them |
 | `lib/` | Shared helpers: `status.sh` (the status-file protocol, the `seen`/`seen_line` dispatch cursor with the reader that notices a file rewritten under it, the live-versus-archived task path readers, and the state token `kingpin list` and `kingpin brief` share: `kp_task_state`), `tmux.sh`, `browser.sh` (the browser-daemon table, its working-directory ownership rule, the process-tree stop and the size formatter), `landing.sh`, `mutex.sh` (the mutex sequence, plus the non-blocking `kp_mutex_try` the auto-curate gate uses), `curator.sh` (the automatic daily curator gate, applied-critique marker and trigger), `supervisor.sh` (the fleet supervisor's pidfile), `afk.sh` (the session-scoped AFK state), `queue.sh` (the issue-queue runner's state under `$KINGPIN_HOME/queue/`, which only `kingpin brief` reads), `session.sh` (the session-pid detection), `exclude.sh` (the per-worktree exclude file a spawn points at, and the guard-owned block of the main checkout's exclude file), `portable.sh` (the GNU-then-BSD clock and file-mtime readers), `duration.sh` (the one duration parser the `--since` and `--ttl` flags share, units `s`, `m`, `h` and `d`, and the short formatter `kingpin stats` prints: `3h12m`, `48m`), `gitdir.sh` (the git-dir, common-dir and git-path readers the linked-worktree checks use, which read the plain `git rev-parse` form so they work on git 2.30), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, `codex-trust`, ...) |
+| `lib/review.sh` | The review-report reader the landing gate asks: it scans the `## Issues Found` block, classifies each finding by its severity heading (Critical, High and Medium block, Low is follow-up), and returns the counts and the follow-up lines, failing closed on a report it cannot derive |
 | `lib/tmux.sh` | The fleet's tmux socket (`KINGPIN_TMUX_SOCKET`, default `kingpin`), the one `kp_tmux` helper every command reaches tmux through (a name takes `-L`, a value holding a `/` takes `-S`), `kp_tmux_resolve_target`, the one place a new worker's socket and session are resolved (issue #191), the exact session check (`kp_tmux_has_session`) and the one prefix resolver (`kp_tmux_resolve_session`, which only a user-typed target such as `--tmux-session` uses), the spellers `kp_tmux_label`/`kp_tmux_attach_cmd` every message and attach hint uses, the two socket-health readers (`kp_tmux_socket_reachable`, whether a server answers, and `kp_tmux_socket_warn_line`, the one stderr line a dead server prints for the tasks on it), and the one window resolver: finds a task's window by name first and by the recorded id second, decides whether the harness really runs in it (`harness.pid` against the pane pid), records a new id, and is the only place that creates or respawns a window |
 | `lib/mux.sh` | The one terminal contract every command calls (issue #144): selects the backend from `KINGPIN_MUX` or from the task record's `MUX=` line, and delegates every verb (find, capture, send, activity, rename, kill, ensure-session, create, record-id) to `lib/tmux.sh` or to the Herdr backend. The tmux delegations are today's `kp_tmux`/`kp_window_*` calls unchanged, and the Herdr file is loaded only when a record or `KINGPIN_MUX` selects it |
 | `lib/mux-herdr.sh` | The Herdr backend of `lib/mux.sh`: the one place the `herdr` binary is reached, session resolution (`KINGPIN_HERDR_SESSION`, then the inherited `HERDR_SESSION`), the label-first pane resolver with its pane-id fallback, and the verbs written against herdr 0.9.3 (`pane read` prints plain text, `pane list`/`pane get` print JSON). It refuses to create a terminal until the spawn path is migrated (issue #144 phase E) |
@@ -45,10 +46,12 @@ A rule that only a person keeps is one that goes stale; each rule below names wh
 | a suite waits with `kp_wait_until` or `kp_holds_for`, never a fixed `sleep` before an assertion | `tests/lint.sh` |
 | a test script captures a status with `kp_run`, never on a `NAME=$?` assignment after an unguarded command while errexit is on | `tests/lint.sh` |
 | every parsed flag and `KINGPIN_*` variable is documented, and every one a page shows reaches `docs/cli.md` | `tests/readme-cli-reference.sh` |
+| command behaviour (refusals, exit codes, flags) is written in full only in `docs/cli.md`; `README.md`, `AGENTS.md` and `orchestrator/contract.md` keep what their reader acts on and point at the section | review |
 | no page the citation check reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md`, `worker/*.md`) cites a source file by line number | `tests/doc-citations.sh` |
 | nothing under `.agents/` is tracked | `tests/lint.sh` |
 | `tmux` is reached only through `lib/tmux.sh` and `herdr` only through `lib/mux-herdr.sh` | the static checks in `tests/test-tmux-isolation.sh` and `tests/test-mux.sh` |
 | a tmux session is matched exactly: a session check goes through `kp_tmux_has_session`, never a raw `has-session`, and only a user-typed target (`--tmux-session` or `KINGPIN_TMUX_SESSION`, for a spawn or the curator) accepts a prefix, through `kp_tmux_resolve_session` | the static check in `tests/test-tmux-isolation.sh` for the raw `has-session`, and review for the prefix resolver |
+| the land gate lands past a review report whose open findings are all Low, and fails closed into the fix pass on a report it cannot read, including a report that carries a `###` heading it does not know or a `NEEDS CHANGES` verdict | `tests/test-review-findings.sh` |
 | a dossier or handover page passes the prose, layout and palette `check` | `bin/kingpin-report check` |
 | a message or marker that reports a step is written only after the step's status is checked | review |
 | a test never silences a status it claims to check with `\|\| true` (reviews of #5, #75), and never runs an unbounded `wait` that hangs instead of failing (reviews of #99, #145) | review |
@@ -96,12 +99,12 @@ does not match, and the scan always reads the repository's own `bin/` and `lib/`
 - User-facing success lines start with `OK:`; failures go to stderr through `die`.
 - Test suites define `pass`/`fail` from `tests/lib.sh` and print `ALL <LABEL> TESTS PASSED`
   through `kp_test_finish`.
-- `kingpin sync` refuses a tracked change, the only thing that counts as a dirty tree
-  (`git status --porcelain --untracked-files=no`). An untracked path, such as a `.lavish/`
-  handover page, does not block it and survives the fast-forward. When the incoming tree
-  would overwrite one, `git pull --ff-only` aborts before writing anything, and the sync
-  reports every such path by name and changes nothing; the fix is to move or remove the
-  named path, never to add it to `.git/info/exclude` or `.gitignore`.
+- `kingpin sync` fast-forwards the main checkout and refuses rather than discarding. What it
+  blocks, what it never does and its exit codes are listed once, in
+  [`kingpin sync`](docs/cli.md#kingpin-sync); this page keeps the remedy, because that part is a
+  convention of this repository. A path a sync names is moved or removed, never added to
+  `.git/info/exclude` or `.gitignore`, and a handover page belongs in `.lavish/`, which is
+  untracked.
 - Harness-specific files a command writes into a worktree (`.opencode/*`, `.agents/rules/*`,
   `.agents/hooks.json`) are hidden by a Kingpin-owned exclude file,
   `$KP_HOME/tasks/<id>/exclude`, which the worktree reads through a worktree-scoped
@@ -148,13 +151,12 @@ The listener opens a review dossier once and records its Lavish session URL in t
 running `lavish-axi` on the page again.
 
 A tmux server that dies leaves every worker window gone or back as a plain shell, and tmux
-window ids restart at `@0`, so a recorded id can name another task's window. `kingpin list`
-marks those tasks `DEAD` and prints the `kingpin restore` hint, and it names the socket that
-is gone on stderr, with the attach command; `kingpin wait` prints the same warning once per
-server per process, and `KINGPIN_SKIP_SOCKET_WARN=1` silences both. `kingpin restore`
-recreates or reclaims each live task's window from its own worktree and branch, relaunches
-the recorded harness with a resume brief, and repairs the recorded id. Every reader resolves
-a window through `lib/tmux.sh`, so a stale id is never typed into.
+window ids restart at `@0`, so a recorded id can name another task's window. Every reader
+resolves a window through `lib/tmux.sh`, so a stale id is never typed into. `kingpin list`
+reports the fleet as dead and points at `kingpin restore`; the warning `list` and `wait`
+print is described in [`kingpin list`](docs/cli.md#kingpin-list) and
+[`kingpin wait`](docs/cli.md#kingpin-wait), and what a restore refuses is in
+[`kingpin restore`](docs/cli.md#kingpin-restore).
 
 The supervisor owns the tmux server's lifecycle, and no systemd unit or timer does: the
 socket is data, not configuration (each record names its own `TMUX_SOCKET`, a fleet can hold
@@ -175,36 +177,29 @@ says so in its `OK:` line.
 it is never written to a project or global config. While it is armed, `bin/kingpin-watch`
 calls `bin/kingpin-land` for a `ready:` line whose verdict `kp_verdict_kind` reads as
 clean, then appends `approved: auto (afk)` to the task status. A findings verdict reaches
-the same command but only starts the fix pass; its later clean `fixed:` landing carries the
-same note, while a pass left with High findings asks for a re-review and carries none. An
-unreadable verdict, `needs-input:`, `cleanup-refused:` and `failed:` wait for the operator,
+the same command, which lands it when the report's open findings are all Low and runs the
+fix pass otherwise, while a pass left with High findings asks for a re-review; the clean
+landing that follows a pass gains the same note. An unreadable verdict,
+`needs-input:`, `cleanup-refused:` and `failed:` wait for the operator,
 and AFK never calls `kingpin done --force`. The arm reads as off once the TTL passes or the
-holder pid is gone, and `kingpin lock release` clears it.
+holder pid is gone, and `kingpin lock release` clears it. What the gate reads is in
+[`Fix passes`](docs/cli.md#fix-passes).
 
 ## Worker placement
 
 A spawn's or curator's tmux target is resolved, never guessed, in one place
-(`kp_tmux_resolve_target` in `lib/tmux.sh`, issues #152 and #191). A named session wins first:
-`--tmux-session <name>`, then `KINGPIN_TMUX_SESSION`, then `TMUX_SESSION` in
-`$KINGPIN_HOME/config.env`, resolved on the chosen socket, and it must already exist, so a typo is
-refused rather than starting a second silent session. A user-typed target (`--tmux-session` or
-`KINGPIN_TMUX_SESSION`) may be an unambiguous prefix, and the resolved name is recorded; a
-`TMUX_SESSION` from the config file is matched exactly, so a `kingpin-workers` session is never
-taken for `kingpin` (issues #181 and #191). With no name, a spawn started inside tmux
-follows the caller's own session and socket, so a worker lands beside the orchestrator. A named
-socket suppresses that caller default only, because the caller's session lives on another server:
-`KINGPIN_TMUX_SOCKET` or `TMUX_SOCKET` in the config does not hide a configured `TMUX_SESSION`,
-and a configured session missing from the chosen socket is refused with both sources named.
-Outside tmux, or with a socket named, the one attached session on that server is used, then the
-only session it holds; several unattached sessions, or more than one attached session, are refused
-with every candidate named. Only a server with no session at all gets the `kingpin` fallback, and
-the command says on stderr that it created one. A socket is a `-L` name, or a socket path when the
-value holds a `/`, which is how the caller's own server is recorded; every message and attach hint
-spells it through `kp_tmux_label`/`kp_tmux_attach_cmd`. The resolution runs before the worktree
-lease, so a refusal costs no worktree and leaves no task record, and the `OK:` line names the
-chosen session and where it came from.
-`kingpin list` prints it in a `SESSION` column read from the live window through the record's
-socket, so a window moved to another session is reported where it really is.
+(`kp_tmux_resolve_target` in `lib/tmux.sh`, issues #152 and #191), and the resolution runs
+before the worktree lease, so a refusal costs no worktree and leaves no task record. A named
+session must already exist, so a typo is refused rather than starting a second silent
+session. A socket is a `-L` name, or a socket path when the value holds a `/`, which is how
+the caller's own server is recorded, and every message and attach hint spells it through
+`kp_tmux_label`/`kp_tmux_attach_cmd`. The caller's own tmux client belongs to the operator's
+server, not necessarily the fleet's, so the resolution follows it only when no socket or
+session is named (issue #142). The `OK:` line names the chosen session and where it came
+from, and `kingpin list` prints it in a `SESSION` column read from the live window through
+the record's socket, so a window moved to another session is reported where it really is.
+The order, the prefix rule and the refusals are listed once, in
+[`Choosing the session`](docs/cli.md#choosing-the-session).
 
 Sharing the operator's own server has a price: `tmux kill-server` there ends every worker on it,
 and `kingpin watch` and `kingpin restore` recreate the session and re-arm the windows from their
@@ -221,26 +216,15 @@ argue with the other. If you are a worker, follow the preamble you were given.
 A task record lives in `~/.kingpin/tasks/<id>` while it runs. `kingpin done` moves it to
 `~/.kingpin/archive/<id>`, or the next free `<id>.2`, `<id>.3`, ... when that name is taken,
 and leaves a symlink at the old path so an open dossier keeps resolving. `kingpin list --all`
-shows the archived rows. An archived task is not live: `kingpin peek` and `kingpin send` exit 1,
-`kingpin wait` raises no event, and `kingpin listen` says it is finished. `lib/status.sh` holds
-the reader the fleet commands use to tell a live `tasks/<id>` from that link; `peek` and `send`
-resolve the tmux window on the socket its record names instead.
+shows the archived rows. An archived task is not live: it raises no event and no fleet command
+treats it as a task. `lib/status.sh` holds the reader the fleet commands use to tell a live
+`tasks/<id>` from that link; what each reader does with it is in
+[`kingpin done`](docs/cli.md#kingpin-done).
 
-A dossier message reaches the capo from `kingpin listen` itself: after `handle_feedback` writes
-`feedback.md` and the `feedback:` note, the listener sends the text to the worker as one line that
-names the dossier and repeats the review rule (answer there, do not land). The note and the file
-stay for the orchestrator, which reviews what the capo did instead of relaying the message. A
-`feedback: not forwarded: <reason>` note means the text is recorded but the capo never received it,
-because the task was no longer live or its window was gone. One listener owns a task at a time:
-`listener.owner` holds its pid, so a second `kingpin listen` prints one line and exits 0.
-
-After the forward, a watcher beside the poll posts one `The capo updated the page; open it to read
-the answer` reply when the worker's next status event lands, so the Lavish conversation stops
-showing Working; `answer.done` records the answered line so a restart does not repeat it. With no
-event within `KINGPIN_LISTEN_ANSWER_TIMEOUT` seconds (default 600) it posts one `still working`
-pointer and no more for that prompt. The poll itself runs in its own process group, recorded in
-`listener.poll`, and a listener stop or a replacement stops that group, so an orphaned poll cannot
-swallow the reviewer's next annotation.
+One listener owns a task at a time, and `listener.owner` holds its pid, so a second
+`kingpin listen` exits without polling. A `feedback: not forwarded: <reason>` note means the
+text was recorded but the capo never received it. The forward, the answer pointer and the
+poll's own process group are in [`kingpin listen`](docs/cli.md#kingpin-listen).
 
 A fresh clone has neither the guard nor the contract: run `kingpin init` (or
 `kingpin guard install`) in the main checkout once.

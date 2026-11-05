@@ -60,7 +60,10 @@ nothing uses it by default.
   as is.
 - **Fit the box.** The `<style>` block carries the overflow rules `worker/preamble.md` requires:
   `min-width: 0` on everything, wrap rules on `pre`, `code`, `table`, `th`, `td` and `img`. Check at
-  1280 and 1024 wide.
+  1280 and 1024 wide. A pill in a table cell wraps too: `td > .badge` gets `white-space: normal`,
+  `max-width: 100%`, `height: auto` with `min-height: var(--size)` and `line-height: 1.4`, so a short
+  badge keeps its 1rem height on the row baseline and a long label grows the pill instead of spilling
+  past its border. Badges outside a cell are unchanged, because the selector names `td > .badge`.
 - **Annotation starts off.** `data-lavish-annotate="off"` is the reading default the worker contract asks for, so a stray click leaves no annotation card. The Lavish toolbar still turns annotation on when the boss wants to comment. The two action buttons are native buttons, so they work either way.
 - **Buttons degrade.** Approve & Land and Request Changes call `window.lavish.queuePrompt` and fall
   back to copying the text when the page is opened as a plain file.

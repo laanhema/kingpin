@@ -49,6 +49,10 @@ left until after the report is a step nobody takes.
   they are not.
 - Report `merged: pr=<PR URL>` only after that: close the issue and move its board item
   before you append `merged:`.
+- When `{{TASK_DIR}}/followups.md` exists, the review landed with Low findings left open.
+  Track them before you report `merged:`: put a `## Follow-up` checklist with its items in
+  the PR body, or open one GitHub issue for them. Nothing after the merge tracks them for
+  you, so this step is yours.
 
 ## Dossier
 
