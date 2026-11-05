@@ -597,6 +597,65 @@ default_pid=$(cat "$default_pid_file" 2>/dev/null || true)
 kill -- "-$default_pid" 2>/dev/null || kill "$default_pid" 2>/dev/null || true
 kp_wait_until 8 listener_dead "$default_pid"
 
+# Test 13b: a listener that could not be launched is named, not reported as started (issue #182)
+cp -p "$KP_BIN/kingpin-listen" "$T/kingpin-listen.orig"
+cat > "$KP_BIN/kingpin-listen" << 'LISTEN'
+#!/usr/bin/env bash
+echo "kingpin-listen: refusing to launch from the suite" >&2
+exit 1
+LISTEN
+chmod +x "$KP_BIN/kingpin-listen"
+reset_arm_task
+rm -f "$KINGPIN_HOME/tasks/t-arm/seen"
+refused_out=$("$KP_BIN/kingpin-watch" --once 2>&1)
+echo "$refused_out" | grep -q "could not start the dossier listener" \
+  && pass "a refused listener launch in the ready branch is reported" \
+  || fail "the ready-branch listener refusal is silent: $refused_out"
+echo "$refused_out" | grep -q "could not re-arm the dossier listener" \
+  && pass "a refused re-arm is reported" \
+  || fail "the re-arm refusal is silent: $refused_out"
+cp -p "$T/kingpin-listen.orig" "$KP_BIN/kingpin-listen"
+
+# Test 13c: a launcher that exits 0 with nothing running is not called started
+# (issue #182 review M1). `kingpin-listen --background` exits 0 without a listener
+# when it cannot take the launch lock and when its child never writes listener.pid;
+# the launch status alone does not mean a listener is up.
+cat > "$KP_BIN/kingpin-listen" << 'LISTEN'
+#!/usr/bin/env bash
+echo "kingpin-listen: the suite's launcher starts nothing" >&2
+exit 0
+LISTEN
+chmod +x "$KP_BIN/kingpin-listen"
+reset_arm_task
+rm -f "$KINGPIN_HOME/tasks/t-arm/seen"
+quiet_out=$("$KP_BIN/kingpin-watch" --once 2>&1)
+echo "$quiet_out" | grep -q "could not start the dossier listener" \
+  && pass "a launch that exits 0 with no listener is not reported as started" \
+  || fail "a listener-less launch was reported as started: $quiet_out"
+echo "$quiet_out" | grep -q "dossier listener started" \
+  && fail "the ready branch printed its success line for a listener-less launch: $quiet_out" \
+  || pass "the ready branch prints no listener success line"
+echo "$quiet_out" | grep -q "the suite's launcher starts nothing" \
+  && pass "the launcher's own reason reaches the operator" \
+  || fail "the launcher's reason stayed hidden: $quiet_out"
+echo "$quiet_out" | grep -q "could not re-arm the dossier listener" \
+  && pass "a re-arm that starts nothing is reported" \
+  || fail "the re-arm of a listener-less launch is silent: $quiet_out"
+cp -p "$T/kingpin-listen.orig" "$KP_BIN/kingpin-listen"
+
+# Test 13d: a host without lavish-axi is the real shape of that case. The launcher
+# prints its note and exits 0; the sweep must say a listener could not be started
+# and repeat the note, not report a started listener.
+reset_arm_task
+rm -f "$KINGPIN_HOME/tasks/t-arm/seen"
+missing_out=$(KINGPIN_LAVISH=/nonexistent/lavish-axi "$KP_BIN/kingpin-watch" --once 2>&1)
+echo "$missing_out" | grep -q "could not start the dossier listener" \
+  && pass "a host without lavish-axi is reported, not called started" \
+  || fail "a missing lavish-axi was reported as a started listener: $missing_out"
+echo "$missing_out" | grep -q "not installed; skipping" \
+  && pass "the launcher's missing-binary note reaches the operator" \
+  || fail "the missing-binary note stayed hidden: $missing_out"
+
 # Every blocker keeps the dead pid in place.
 reset_arm_task; touch "$KINGPIN_HOME/tasks/t-arm/lavish_ended"; assert_no_rearm "a reviewer-ended session"
 reset_arm_task; touch "$KINGPIN_HOME/tasks/t-arm/landing_sent"; assert_no_rearm "a decided review"

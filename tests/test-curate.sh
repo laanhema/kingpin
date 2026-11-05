@@ -162,6 +162,12 @@ tmux list-panes -t kingpin:curator >/dev/null 2>&1 && pass "live curator window 
 [ -d "$KINGPIN_HOME/tasks/curator" ] && pass "the refused run left the stale curator record for a later reconcile" || fail "the refused run reconciled the stale record away"
 tmux kill-window -t kingpin:curator 2>/dev/null || true
 
+# curator_pane_dead: the staged curator window's pane has exited. remain-on-exit
+# keeps the window, which is what lets the guard see a dead pane at all.
+curator_pane_dead() {
+  [ "$(tmux list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null || echo 0)" = "1" ]
+}
+
 # 8.2d A curator whose launch.sh exited is reaped instead of blocking the next run
 cat > "$T/fake-curator-reap" << EOF_REAP
 #!/usr/bin/env bash
@@ -174,24 +180,55 @@ export KINGPIN_CURATOR_CMD="$T/fake-curator-reap"
 # it tmux closes the window and the guard never sees it.
 tmux set-option -g remain-on-exit on
 tmux new-window -d -t kingpin: -n curator "bash -c 'exit 3'"
-dead=0
-for _ in $(seq 1 40); do
-  dead=$(tmux list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null || echo 0)
-  [ "$dead" = "1" ] && break
-  sleep 0.1
-done
-[ "$dead" = "1" ] && pass "dead curator pane staged (pane_dead=1)" || fail "could not stage a dead curator pane"
+kp_wait_until 4 curator_pane_dead \
+  && pass "dead curator pane staged (pane_dead=1)" || fail "could not stage a dead curator pane"
 reap_rc=0
 reap_out=$("$KP_BIN/kingpin" curate 2>&1) || reap_rc=$?
 [ "$reap_rc" -eq 0 ] && pass "curate reaped the dead curator window and continued" || fail "curate after a dead window exit=$reap_rc: $reap_out"
 echo "$reap_out" | grep -q "reaped dead curator window" && pass "dead-window reap is reported" || fail "reap not reported: $reap_out"
-for _ in $(seq 1 40); do
-  [ -f "$T/curator-reap-received.txt" ] && break
-  sleep 0.1
-done
-[ -f "$T/curator-reap-received.txt" ] && grep -qF "$tricky_critique" "$T/curator-reap-received.txt" && pass "new curator launched after the reap" || fail "no curator launched after the reap"
+kp_wait_until 4 test -f "$T/curator-reap-received.txt" \
+  && grep -qF "$tricky_critique" "$T/curator-reap-received.txt" \
+  && pass "new curator launched after the reap" || fail "no curator launched after the reap"
 tmux set-option -g remain-on-exit off
 tmux kill-window -t kingpin:curator 2>/dev/null || true
+
+# 8.2d2 A reap that fails is not reported as done (issue #182)
+mkdir -p "$KINGPIN_HOME/tasks/test-curate-reap-fail"
+echo "Refused reap critique" > "$KINGPIN_HOME/tasks/test-curate-reap-fail/critique"
+cat > "$T/fake-curator-reap-fail" << 'EOF_REAP_FAIL'
+#!/usr/bin/env bash
+exit 0
+EOF_REAP_FAIL
+chmod +x "$T/fake-curator-reap-fail"
+export KINGPIN_CURATOR_CMD="$T/fake-curator-reap-fail"
+tmux set-option -g remain-on-exit on
+tmux new-window -d -t kingpin: -n curator "bash -c 'exit 3'"
+kp_wait_until 4 curator_pane_dead \
+  && pass "a dead curator pane is staged for the refused reap" \
+  || fail "could not stage a dead pane for the refused reap"
+mkdir -p "$T/failbin"
+cat > "$T/failbin/tmux" << FAILTMUX
+#!/usr/bin/env bash
+case " \$* " in
+  *" kill-window "*curator*) echo "tmux: refusing kill-window from the suite" >&2; exit 1 ;;
+esac
+exec "$T/bin/tmux" "\$@"
+FAILTMUX
+chmod +x "$T/failbin/tmux"
+reap_fail_out='' reap_fail_rc=0
+kp_run reap_fail_out reap_fail_rc env PATH="$T/failbin:$PATH" "$KP_BIN/kingpin" curate
+[ "$reap_fail_rc" -eq 0 ] && pass "a refused reap does not fail the run" \
+  || fail "curate after a refused reap exit=$reap_fail_rc: $reap_fail_out"
+echo "$reap_fail_out" | grep -q "could not reap dead curator window" \
+  && pass "a refused reap is reported" || fail "refused reap not reported: $reap_fail_out"
+echo "$reap_fail_out" | grep -q "reaped dead curator window" \
+  && fail "a refused reap was reported as done: $reap_fail_out" \
+  || pass "a refused reap is not reported as done"
+tmux list-windows -t kingpin -F '#{window_id} #{window_name}' \
+  | awk '$2 == "curator" { print $1 }' \
+  | while read -r w; do tmux kill-window -t "$w" 2>/dev/null || true; done
+tmux set-option -g remain-on-exit off
+rm -rf "$KINGPIN_HOME/tasks/test-curate-reap-fail"
 
 # 8.2e A curator reaped mid-run leaves its critiques pending
 mkdir -p "$KINGPIN_HOME/tasks/test-curate-reaped"
