@@ -35,6 +35,16 @@
   td code, td .font-mono { line-height: 1; }
   td > .badge { vertical-align: top; margin-top: .15rem; white-space: normal; max-width: 100%; height: auto; min-height: var(--size); line-height: 1.4; text-align: center; }
 
+  /* Pills: a 12px capital is 9px tall, which is odd, so an even pill height can only put the
+     ink half a pixel either side of the middle. A 25px pill puts the middle on a whole pixel. */
+  .badge-pill { height: 25px; }
+  /* An all-caps label has no descenders, so its ink reads high in a pill. Trim the line box to the
+     cap height where the browser can: DaisyUI's inline-flex badge ignores it, so the odd pill
+     height is what lands the ink today. */
+  @supports (text-box: trim-both cap alphabetic) {
+    .badge { text-box: trim-both cap alphabetic; }
+  }
+
   /* Two components. Every panel and stat card is .card-custom. Each changed file's diff sits in a .diffbox. */
   .card-custom { background-color: #161b22; border: 1px solid #30363d; border-radius: 0.5rem; padding: 1.25rem; }
   .diffbox, .kp-diff { border-radius: .5rem; overflow: hidden; border: 1px solid #30363d; margin-top: 0.5rem; }
@@ -77,9 +87,9 @@
 
   <!-- Badge row: task id, status, branch. Add a PR badge once there is one. -->
   <div class="flex gap-2 items-center flex-wrap">
-    <span class="badge badge-primary font-mono text-xs">kp-000-example-task</span>
-    <span class="badge badge-success font-semibold text-xs">READY FOR REVIEW</span>
-    <span class="badge badge-outline text-xs">Branch: kingpin/kp-000-example-task</span>
+    <span class="badge badge-primary badge-pill font-mono text-xs">kp-000-example-task</span>
+    <span class="badge badge-success badge-pill font-semibold text-xs">READY FOR REVIEW</span>
+    <span class="badge badge-outline badge-pill text-xs">Branch: kingpin/kp-000-example-task</span>
   </div>
 
   <!-- REPLACE: an h1 that states the outcome in plain words, then the issue link and a one or two sentence summary. -->

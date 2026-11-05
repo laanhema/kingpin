@@ -35,6 +35,16 @@
   td code, td .font-mono { line-height: 1; }
   td > .badge { vertical-align: top; margin-top: .15rem; white-space: normal; max-width: 100%; height: auto; min-height: var(--size); line-height: 1.4; text-align: center; }
 
+  /* Pills: a 12px capital is 9px tall, which is odd, so an even pill height can only put the
+     ink half a pixel either side of the middle. A 25px pill puts the middle on a whole pixel. */
+  .badge-pill { height: 25px; }
+  /* An all-caps label has no descenders, so its ink reads high in a pill. Trim the line box to the
+     cap height where the browser can: DaisyUI's inline-flex badge ignores it, so the odd pill
+     height is what lands the ink today. */
+  @supports (text-box: trim-both cap alphabetic) {
+    .badge { text-box: trim-both cap alphabetic; }
+  }
+
   /* Two components. Every panel and stat card is .card-custom. Each changed file's diff sits in a .diffbox. */
   .card-custom { background-color: #161b22; border: 1px solid #30363d; border-radius: 0.5rem; padding: 1.25rem; }
   .diffbox, .kp-diff { border-radius: .5rem; overflow: hidden; border: 1px solid #30363d; margin-top: 0.5rem; }
@@ -49,7 +59,10 @@
   .q-option { display: flex; gap: .75rem; align-items: flex-start; padding: .75rem 1rem; border: 1px solid #30363d; border-radius: .5rem; background: #0d1117; cursor: pointer; }
   .q-option:hover { border-color: #6e7681; }
   .q-option:has(input:checked) { border-color: #58a6ff; background: #58a6ff14; }
-  .q-option input { margin-top: .2rem; flex: none; }
+  /* In a flex row, aligning the control to its title matches boxes, but the text's last line
+     carries descender space with no ink, so the control reads high. Nudge it onto the title's
+     ink: 1px is the measured correction on these rows, not the comparison page's 2px. */
+  .q-option input { margin-top: calc(.2rem + 1px); flex: none; }
   .callout { border-left: 4px solid #58a6ff; background: #58a6ff10; border-radius: 0 .5rem .5rem 0; padding: .75rem 1rem; }
   .callout.rec { border-left-color: #3fb950; background: #3fb95010; }
   .callout.warn { border-left-color: #d29922; background: #d2992210; }
@@ -92,9 +105,9 @@
   </div>
 
   <div class="flex gap-2 items-center flex-wrap">
-    <span class="badge badge-primary font-mono text-xs">PROPOSAL</span>
-    <span class="badge badge-warning font-semibold text-xs">DECISION NEEDED</span>
-    <span class="badge badge-outline text-xs">Area: landing</span>
+    <span class="badge badge-primary badge-pill text-xs">PROPOSAL</span>
+    <span class="badge badge-warning badge-pill font-semibold text-xs">DECISION NEEDED</span>
+    <span class="badge badge-outline badge-pill text-xs">Area: landing</span>
   </div>
 
   <!-- REPLACE: an h1 that states the point in plain words, then a two or three sentence lede. -->
@@ -190,7 +203,7 @@
       <ul class="list-disc list-inside space-y-1 text-sm text-gray-300"><li>Landings that move under us keep stopping</li><li>You re-run them by hand</li><li>No code to maintain</li></ul>
     </div>
     <div class="card-custom space-y-2 border-emerald-700/60">
-      <div class="flex flex-wrap items-center gap-2"><span class="badge badge-success badge-sm">RECOMMENDED</span> <span class="badge badge-outline badge-sm">Option B</span></div>
+      <div class="flex flex-wrap items-center gap-2"><span class="badge badge-outline badge-sm">Option B</span> <span class="badge badge-success badge-sm">RECOMMENDED</span></div>
       <h3 class="text-base font-semibold text-white">Retry once, then ask</h3>
       <ul class="list-disc list-inside space-y-1 text-sm text-gray-300"><li>One retry after fetching <code>main</code></li><li>A second failure becomes <code>needs-input:</code></li><li>Smallest change that fixes 5 of 6 cases</li></ul>
     </div>
@@ -330,9 +343,9 @@
   <form class="card-custom space-y-3" data-lavish-question="followups" data-label="Follow-ups" data-kind="batch" onsubmit="kpAnswer(event)">
     <h3 class="text-base font-semibold text-white">3. Which follow-ups should I file as issues? (tick any)</h3>
     <div class="space-y-2">
-      <label class="q-option"><input type="checkbox" class="checkbox checkbox-sm" name="items" value="F-1" data-label="Show a retry count in &lt;code&gt;kingpin list&lt;/code&gt;"><span><span class="font-mono text-xs text-gray-400">F-1</span> <span class="text-sm text-gray-200">Show a retry count in <code>kingpin list</code></span></span></label>
-      <label class="q-option"><input type="checkbox" class="checkbox checkbox-sm" name="items" value="F-2" data-label="Log the merge output next to the status line"><span><span class="font-mono text-xs text-gray-400">F-2</span> <span class="text-sm text-gray-200">Log the merge output next to the status line</span></span></label>
-      <label class="q-option"><input type="checkbox" class="checkbox checkbox-sm" name="items" value="F-3" data-label="Report how often retries succeed, once a month"><span><span class="font-mono text-xs text-gray-400">F-3</span> <span class="text-sm text-gray-200">Report how often retries succeed, once a month</span></span></label>
+      <label class="q-option"><input type="checkbox" class="checkbox checkbox-sm" name="items" value="F-1" data-label="Show a retry count in &lt;code&gt;kingpin list&lt;/code&gt;"><span><span class="text-sm font-semibold text-white">F-1: Show a retry count in <code>kingpin list</code></span><span class="block text-xs text-gray-400">One more column on the task row.</span></span></label>
+      <label class="q-option"><input type="checkbox" class="checkbox checkbox-sm" name="items" value="F-2" data-label="Log the merge output next to the status line"><span><span class="text-sm font-semibold text-white">F-2: Log the merge output next to the status line</span><span class="block text-xs text-gray-400">The merge output beside the line that reports it.</span></span></label>
+      <label class="q-option"><input type="checkbox" class="checkbox checkbox-sm" name="items" value="F-3" data-label="Report how often retries succeed, once a month"><span><span class="text-sm font-semibold text-white">F-3: Report how often retries succeed, once a month</span><span class="block text-xs text-gray-400">One summary line a month, read from the status files.</span></span></label>
     </div>
       <textarea class="textarea textarea-bordered w-full text-sm bg-transparent" name="note" rows="2" placeholder="Anything to add? (optional)"></textarea>
     <div class="flex flex-wrap items-center gap-3">

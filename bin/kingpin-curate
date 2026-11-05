@@ -111,11 +111,11 @@ CURATOR_PROMPT_MAX=8388608
 
 # skills_origin_slug
 # The "owner/repo" the skills checkout's origin names, lowercased so it compares
-# with gh's baseRepository.nameWithOwner. The URL is read as configured
-# (`git config --get`), not through `git remote get-url`: an `insteadOf` rewrite
-# would otherwise report the local path the remote is fetched through. Prints
-# nothing when the origin names no owner/repo (a plain local path), which no
-# baseRepository can equal.
+# with the `base.repo.full_name` the target check reads. The URL is read as
+# configured (`git config --get`), not through `git remote get-url`: an
+# `insteadOf` rewrite would otherwise report the local path the remote is fetched
+# through. Prints nothing when the origin names no owner/repo (a plain local
+# path), which no base repository can equal.
 skills_origin_slug() {
   local url
   url=$(git -C "$SKILLS_DIR" config --get remote.origin.url 2>/dev/null || true)
@@ -144,20 +144,78 @@ skills_origin_slug() {
   printf '%s\n' "$url" | tr '[:upper:]' '[:lower:]'
 }
 
+# pr_api_path <pr-url>
+# Prints the host and the REST path for a pull request URL, separated by one
+# space ("<host> repos/<owner>/<repo>/pulls/<n>"). Accepts the
+# https://<host>/<owner>/<repo>/pull/<n> form `gh pr create` prints and refuses
+# anything else, so a URL that is not a pull request is never guessed at. The
+# host travels with the path because `gh api` reaches github.com unless it is
+# told otherwise, whatever host the URL names.
+pr_api_path() {
+  local url=${1:-} rest host path owner repo tail number
+  case "$url" in
+    https://*) rest=${url#https://} ;;
+    *) return 1 ;;
+  esac
+  host=${rest%%/*}
+  [ -n "$host" ] && [ "$host" != "$rest" ] || return 1
+  case "$host" in
+    *[[:space:]]*) return 1 ;;
+  esac
+  path=${rest#*/}
+  owner=${path%%/*}
+  [ -n "$owner" ] && [ "$owner" != "$path" ] || return 1
+  path=${path#*/}
+  repo=${path%%/*}
+  [ -n "$repo" ] && [ "$repo" != "$path" ] || return 1
+  tail=${path#*/}
+  case "$tail" in
+    pull/*) number=${tail#pull/} ;;
+    *) return 1 ;;
+  esac
+  case "$number" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  printf '%s repos/%s/%s/pulls/%s\n' "$host" "$owner" "$repo" "$number"
+}
+
 # verify_pr_target <pr-url> <branch> <what>
 # Refuse unless gh reports the PR's base repository as the skills checkout's
 # origin and, when <branch> is recorded, its head as that branch. A person
 # approves the dossier's skills diff, not the merge target, so the target is
 # checked here too. <what> finishes the refusal ("refusing to <what>").
+#
+# The read goes through the REST call rather than `gh pr view --json`: the
+# `baseRepository` field does not exist on every gh the fleet runs (2.97.0 has
+# none), and a successful curator run must not fail because a `--json` field
+# moved. The REST response carries the same base and head under `.base.repo` and
+# `.head`, and `gh api` answers on every version. `--hostname` names the host
+# the URL parsed, because `gh api` reaches github.com otherwise, even when the
+# PR URL and the skills origin name a GitHub Enterprise host.
 verify_pr_target() {
-  local url=${1:?} branch=${2:-} what=${3:-use} fields base head origin
+  local url=${1:?} branch=${2:-} what=${3:-use} api_target api_host api_path err_file fields gh_err base head origin rc
   origin=$(skills_origin_slug)
   [ -n "$origin" ] \
     || die "cannot read the origin remote of $SKILLS_DIR; refusing to $what"
+  api_target=$(pr_api_path "$url") \
+    || die "$url is not a pull request URL; refusing to $what"
+  api_host=${api_target%% *}
+  api_path=${api_target#* }
+  err_file=$(mktemp "${TMPDIR:-/tmp}/kingpin-curate-pr.XXXXXX") \
+    || die "cannot create a temporary file for the gh error; refusing to $what"
+  # Stderr goes to its own file, so a warning on a successful read cannot land in
+  # the parsed fields, and a failed read keeps gh's own words for the refusal.
+  rc=0
   fields=$( cd "$SKILLS_DIR" \
-    && "$GH_CMD" pr view "$url" --json baseRepository,headRefName \
-      --jq '.baseRepository.nameWithOwner + " " + .headRefName' 2>/dev/null ) \
-    || die "cannot read $url with $GH_CMD; refusing to $what"
+    && "$GH_CMD" api "$api_path" \
+      --jq '.base.repo.full_name + " " + .head.ref' \
+      --hostname "$api_host" 2>"$err_file" ) || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    gh_err=$(head -n 1 "$err_file" 2>/dev/null || true)
+    rm -f "$err_file"
+    die "cannot read $url with $GH_CMD: ${gh_err:-no error output}; refusing to $what"
+  fi
+  rm -f "$err_file"
   case "$fields" in
     *' '*) ;;
     *) die "gh reported no base repository and head for $url; refusing to $what" ;;
