@@ -14,6 +14,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_BIN/../lib/tmux.sh"
 # shellcheck source=../lib/browser.sh
 . "$KP_BIN/../lib/browser.sh"
+# shellcheck source=../lib/dossier.sh
+. "$KP_BIN/../lib/dossier.sh"
 
 usage() {
   cat << 'HELP'
@@ -248,7 +250,9 @@ case "$cmd" in
         fi
       fi
       if [ -z "$suffix" ] && [ -f "$d/report.html" ]; then
-        listen_info=""
+        # A dossier nobody listens to is named as such (issue #186): an open page with no
+        # listener behind it answers no click, and before this it read like a live review.
+        listen_info=" (no listener)"
         # The URL the listener recorded when it opened the page (issue #146): handing it
         # over opens no second tab. Without one, the command that opens the page is the
         # only way in, so it stays as the fallback.
@@ -329,6 +333,27 @@ case "$cmd" in
       done
     }
 
+    # Dossiers left open on finished tasks (issue #186). A finished row is hidden from
+    # the table unless --all, and with it the review line that shows a session, so a tab
+    # a reviewer left open would be invisible on the board. One line per record that still
+    # has an open session, archived or merely finished; `kingpin watch` ends it on its
+    # next sweep, and the line is what an operator reads before that happens.
+    print_open_dossiers() {
+      local d id url rows=''
+      for d in "$KP_HOME"/tasks/* "$KP_HOME"/archive/*; do
+        [ -d "$d" ] || continue
+        case "$d" in
+          "$KP_HOME"/tasks/*) kp_task_is_live "$d" || continue ;;
+        esac
+        kp_dossier_open "$KP_HOME" "$d" || continue
+        id=$(basename "$d")
+        url=$(head -n 1 "$d/dossier.url" 2>/dev/null || true)
+        rows="${rows}$(printf '  %-22s %s\n' "$id" "$url")"$'\n'
+      done
+      [ -n "$rows" ] || return 0
+      printf '\nDossiers left open on finished tasks (kingpin watch ends them):\n%s' "$rows"
+    }
+
     # The attach command comes from lib/tmux.sh, the one place that knows how a socket
     # is named: the default server is the operator's own and takes a plain `tmux
     # attach`, a name takes `-L`, and a socket path takes `-S` (issue #191). A
@@ -367,6 +392,7 @@ case "$cmd" in
     if [ "${dead_count:-0}" -gt 0 ]; then
       printf 'Fleet: %s live task(s) have no live window; run kingpin restore\n' "$dead_count"
     fi
+    print_open_dossiers
     warn_unreachable_sockets
     printf '\n'
     print_socket_footer

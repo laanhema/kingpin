@@ -67,6 +67,9 @@ nothing uses it by default.
 - **Annotation starts off.** `data-lavish-annotate="off"` is the reading default the worker contract asks for, so a stray click leaves no annotation card. The Lavish toolbar still turns annotation on when the boss wants to comment. The two action buttons are native buttons, so they work either way.
 - **Buttons degrade.** Approve & Land and Request Changes call `window.lavish.queuePrompt` and fall
   back to copying the text when the page is opened as a plain file.
+- **A finished page drops the decision chrome.** The action bar and the READY FOR REVIEW badge carry
+  `data-kp-finished-hide`; the finished banner's stylesheet hides every element with that hook. Leave
+  the hook on them when you copy the template.
 
 ## Using it
 
