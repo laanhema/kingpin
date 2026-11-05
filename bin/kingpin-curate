@@ -29,19 +29,21 @@ GH_CMD="${KINGPIN_GH:-gh}"
 
 # The curator is a worker: it runs on the fleet's mux, the tmux server (issue
 # #142) or a Herdr session (issue #144), and the task record names which.
-fleet_socket=$(kp_tmux_socket_name)
 if ! mux=$(kp_mux_name); then
   exit 1
 fi
+KP_MUX=$mux
 herdr_session=''
+fleet_socket=''
+curator_session=''
+tmux_target=''
+fleet_server_started=0
+mux_label=''
 if [ "$mux" = herdr ]; then
   herdr_session=$(kp_mux_session_name)
   # Before a pane exists the only handle is the label the launch will use.
   mux_label="herdr --session $herdr_session curator"
-else
-  mux_label="tmux -L $fleet_socket kingpin:curator"
 fi
-KP_MUX=$mux
 
 die() { echo "kingpin-curate: $*" >&2; exit 1; }
 info() { echo "kingpin-curate: $*" >&2; }
@@ -360,6 +362,25 @@ reconcile_curator_task() {
   esac
 }
 
+# curator_record_unarchived
+# Exit 0 and print the last status line when tasks/curator is still a real curator
+# record with a terminal line after `reconcile_curator_task`, which means
+# `kingpin done curator` failed without recording its refusal: a record missing
+# WORKTREE or PROJECT_PATH, a failed archive move, or a cleanup lock that could
+# not be created. The status, the PR file and the report are the only evidence of
+# that run, and the launch would truncate them in place, so the caller stops. A
+# record with no status line is not this case: it is a launch that died before its
+# first line.
+curator_record_unarchived() {
+  local dir="$curator_task_dir" last
+  kp_task_is_live "$dir" || return 1
+  [ -f "$dir/task.env" ] || return 1
+  [ "$(kp_env_get "$dir/task.env" CURATOR)" = "1" ] || return 1
+  last=$(kp_status_last "$dir/status")
+  kp_status_is_terminal "$last" || return 1
+  printf '%s\n' "$last"
+}
+
 # curator_record_hold
 # Exit 0 when tasks/curator holds a live, non-terminal curator record, which is a
 # run nobody has landed or closed yet; prints its last status line and the PR it
@@ -378,15 +399,18 @@ curator_record_hold() {
   return 0
 }
 
-# report_curator_hold
-# One stderr line when the idle gate failed because tasks/curator holds a live,
-# non-terminal curator record; nothing on any other path. Without it the
-# automatic run stops for a record a person has to land, and the fleet log says
-# nothing about why.
-report_curator_hold() {
+# report_idle_hold
+# One stderr line when the idle gate failed, naming what held it: a live,
+# non-terminal curator record (with its last status line and PR), or else the
+# first task record that is still in flight (with its last status). Nothing on
+# any other path. Without it the automatic run stops for a record a person has to
+# land, and the fleet log says nothing about why.
+report_idle_hold() {
   local hold
   if hold=$(curator_record_hold); then
     info "task curator is still live (last status: ${hold%$'\n'*}; pr=${hold##*$'\n'}); the automatic run skipped"
+  elif hold=$(kp_curate_in_flight_task "$KP_HOME"); then
+    info "task ${hold%%$'\n'*} is still in flight (last status: ${hold#*$'\n'}); the automatic run skipped"
   fi
   return 0
 }
@@ -404,6 +428,67 @@ if [ "$DRY_RUN" -eq 0 ] && [ -f "$curator_task_dir/task.env" ] \
   die "task id curator belongs to a user's task in $curator_task_dir; refusing to overwrite it"
 fi
 
+# resolve_curator_target
+# Where the curator's window will live (issue #191): the same resolver a spawn uses,
+# so TMUX_SOCKET/TMUX_SESSION in config.env and a caller's own tmux client apply to
+# the curator too. Called only once a run is committed: the fallback creates a
+# session, and with it the tmux server, so a dry run, a settle probe, a manual run
+# with nothing to do and every refusal above must never reach it.
+resolve_curator_target() {
+  local target_line
+  if [ "$mux" != herdr ]; then
+    target_line=$(kp_tmux_resolve_target "$KP_HOME") || {
+      if [ "$AUTO" -eq 1 ]; then
+        info "$target_line; the automatic run skipped"
+        exit 0
+      fi
+      die "$target_line"
+    }
+    IFS=$'\t' read -r fleet_socket curator_session _ fleet_server_started <<<"$target_line"
+    tmux_target="$curator_session:curator"
+    mux_label="$(kp_tmux_label "$fleet_socket") $tmux_target"
+  fi
+}
+
+# settle_curator_window
+# Settle the window the launch is about to use, now that the target is resolved. The
+# read-only probe above ran before a target existed, so the window it matched comes
+# from the record; the server and the session here are the ones the resolver chose,
+# and the two can name different windows when the record is stale and config.env has
+# moved on. The probe's verdict therefore says nothing about this window, and the
+# launch would replace whatever it finds: a live window here is a curator run this one
+# must not touch, and a dead pane here is the leftover the probe promised to reap.
+settle_curator_window() {
+  local saved_socket=${KP_WINDOW_SOCKET:-} state
+  KP_WINDOW_SOCKET=$fleet_socket
+  state=$(kp_mux_target_state "$tmux_target" 2>/dev/null) || state=none
+  KP_WINDOW_SOCKET=$saved_socket
+  case $state in
+    alive)
+      # The settle probe above refuses the same state, and a tick that claimed nothing
+      # would repeat this line on every sweep, so the automatic run claims the day.
+      if [ "$AUTO" -eq 1 ]; then
+        kp_curate_stamp "$KP_HOME" || true
+        info "curator window $mux_label is already active; the automatic run skipped"
+        exit 0
+      fi
+      die "curator window $mux_label is already active"
+      ;;
+    dead)
+      if kp_tmux "$fleet_socket" kill-window -t "$tmux_target" 2>/dev/null; then
+        info "reaped dead curator window $tmux_target"
+      else
+        # A reap that fails is not reported as done (issue #182).
+        info "could not reap dead curator window $tmux_target; a later run tries again"
+      fi
+      ;;
+    *) : ;;
+  esac
+  return 0
+}
+
+curator_label=$(kp_curate_window_label "$KP_HOME")
+
 if [ "$DRY_RUN" -eq 0 ]; then
   if [ "$AUTO" -eq 1 ]; then
     # One attempt, no waiting: a held mutex means a curator run is already
@@ -413,16 +498,15 @@ if [ "$DRY_RUN" -eq 0 ]; then
     fi
     # Settle the shared window name before reconciling: reconcile closes a terminal
     # record through `kingpin done curator`, and done resolves the window by name, so
-    # reconciling first would take down a live run that already owns kingpin:curator.
+    # reconciling first would take down a live run that already owns the curator window.
+    # The probe reads the record (and the configured session), never the resolver, so a
+    # tick that launches nothing starts no server. A dead pane at the record's target is
+    # left to settle_curator_window below, which probes the window the launch will use.
     case "$(kp_curate_window_state "$KP_HOME")" in
       alive)
         kp_curate_stamp "$KP_HOME" || true
-        echo "kingpin-curate: curator window kingpin:curator is already active; the automatic run skipped"
+        echo "kingpin-curate: curator window $curator_label is already active; the automatic run skipped"
         exit 0
-        ;;
-      dead)
-        kp_tmux "$fleet_socket" kill-window -t kingpin:curator 2>/dev/null || true
-        info "reaped dead curator window kingpin:curator"
         ;;
       unknown)
         echo "kingpin-curate: the curator record names a mux this run cannot read; the automatic run skipped"
@@ -435,7 +519,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
       exit 0
     fi
     if ! kp_curate_idle "$KP_HOME"; then
-      report_curator_hold
+      report_idle_hold
       exit 0
     fi
     collect_critiques
@@ -452,7 +536,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
       exit 0
     fi
     if ! kp_curate_idle "$KP_HOME"; then
-      report_curator_hold
+      report_idle_hold
       exit 0
     fi
     if [ "$(kp_curate_window_state "$KP_HOME")" = "alive" ]; then
@@ -476,19 +560,16 @@ if [ "$DRY_RUN" -eq 0 ]; then
     fi
   fi
 
-  # The window named kingpin:curator is shared by every run, so settle it before
+  # The window named $curator_label is shared by every run, so settle it before
   # reconciling a stale record: reconcile closes a terminal record through
   # `kingpin done curator`, and done resolves the window by name now, which would
   # take down a live run that already owns the name. A live window refuses; a dead
-  # pane is reaped first so the reconcile has nothing left to close.
+  # pane is left for the launch's own settle step after the target resolves, so this
+  # probe starts no server on a run that refuses below.
   if [ "$AUTO" -eq 0 ]; then
     case "$(kp_curate_window_state "$KP_HOME")" in
       alive)
-        die "curator window kingpin:curator is already active"
-        ;;
-      dead)
-        kp_tmux "$fleet_socket" kill-window -t kingpin:curator 2>/dev/null || true
-        echo "kingpin-curate: reaped dead curator window kingpin:curator"
+        die "curator window $curator_label is already active"
         ;;
       unknown)
         die "the curator record names a mux this command cannot read"
@@ -499,17 +580,33 @@ if [ "$DRY_RUN" -eq 0 ]; then
 
   reconcile_curator_task
 
+  # reconcile_curator_task ignores `kingpin done`'s exit status: a finished curator
+  # record it could not archive is still a real directory here, and everything
+  # below would overwrite its status, task.env and report in place. Stop instead.
+  if unarchived=$(curator_record_unarchived); then
+    if [ "$AUTO" -eq 1 ]; then
+      info "the finished curator record could not be archived (last status: $unarchived); the automatic run skipped"
+      exit 0
+    fi
+    die "the finished curator record could not be archived (last status: $unarchived); run kingpin done curator to see why, then repair the record"
+  fi
+
   # A manual run would replace the record, the status and the PR URL of a curator
   # nobody has landed yet: refuse instead of truncating them. A terminal record
   # was reconciled just above, and a record with no status at all is a launch
-  # that died before its first line: its dead window was reaped above and the run
-  # goes ahead, so only a real waiting state refuses.
+  # that died before its first line: its dead window is settled before the launch
+  # and the run goes ahead, so only a real waiting state refuses.
   if [ "$AUTO" -eq 0 ] && hold=$(curator_record_hold); then
     last_line=${hold%$'\n'*}
     if [ "$last_line" != "none" ]; then
       die "task curator is still live (last status: $last_line; pr=${hold##*$'\n'}); land or close its PR first"
     fi
   fi
+
+  # Every gate passed: resolve the target now, so a run that refuses above starts
+  # no server, and settle the window the launch is about to use.
+  resolve_curator_target
+  settle_curator_window
 
   # claude stops at the folder-trust dialog in a directory it has not been trusted
   # in, and a curator parked there writes no result and holds the window open. Record
@@ -672,7 +769,7 @@ EOF_ENV
     if [ "$mux" = herdr ]; then
       printf 'MUX_SESSION=%s\nMUX_LABEL=curator\n' "$herdr_session"
     else
-      printf 'TMUX_SOCKET=%s\nTMUX_TARGET=kingpin:curator\nMUX_TARGET=kingpin:curator\n' "$fleet_socket"
+      printf 'TMUX_SOCKET=%s\nTMUX_TARGET=%s\nMUX_TARGET=%s\n' "$fleet_socket" "$tmux_target" "$tmux_target"
     fi
   } > "$curator_task_dir/task.env"
   : > "$curator_task_dir/status"
@@ -683,7 +780,7 @@ EOF_ENV
   # and kp_mux_create refuses the Herdr backend in this change anyway, with the
   # one line that names the mux and the way back (issue #144 phase E).
   if [ "$mux" != herdr ]; then
-    kp_mux_ensure_session kingpin || {
+    KP_MUX_SOCKET=$fleet_socket kp_mux_ensure_session "$curator_session" || {
       rm -rf "$curator_task_dir"
       if [ "$AUTO" -eq 1 ]; then
         info "could not reach the fleet mux for $mux_label; the automatic run skipped"
@@ -692,7 +789,7 @@ EOF_ENV
       die "could not reach the fleet mux for $mux_label"
     }
   fi
-  window_id=$(kp_mux_create "$curator_task_dir" kingpin curator "$SKILLS_DIR" "$launch_file") || {
+  window_id=$(kp_mux_create "$curator_task_dir" "$curator_session" curator "$SKILLS_DIR" "$launch_file") || {
     # The record was written before the window existed, so without a window it is
     # a half-made task that would hold the idle gate forever: remove it. The day
     # is not claimed either, so the next tick tries the launch again.
@@ -717,12 +814,17 @@ EOF_ENV
   # trigger does not start a second curator later the same day.
   kp_curate_stamp "$KP_HOME" || true
 
+  server_note=''
+  if [ "$fleet_server_started" = 1 ]; then
+    server_note=", started the tmux server on socket '$fleet_socket' (it was not running)"
+  fi
+
   if [ "$AUTO" -eq 1 ]; then
-    echo "OK: started the curator for $count pending critique(s) in $mux_label"
+    echo "OK: started the curator for $count pending critique(s) in $mux_label$server_note"
     exit 0
   fi
 
-  echo "OK: spawned curator in $mux_label for $count task critique(s)"
+  echo "OK: spawned curator in $mux_label for $count task critique(s)$server_note"
   exit 0
 fi
 

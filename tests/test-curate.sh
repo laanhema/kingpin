@@ -162,6 +162,12 @@ tmux list-panes -t kingpin:curator >/dev/null 2>&1 && pass "live curator window 
 [ -d "$KINGPIN_HOME/tasks/curator" ] && pass "the refused run left the stale curator record for a later reconcile" || fail "the refused run reconciled the stale record away"
 tmux kill-window -t kingpin:curator 2>/dev/null || true
 
+# curator_pane_dead: the staged curator window's pane has exited. remain-on-exit
+# keeps the window, which is what lets the guard see a dead pane at all.
+curator_pane_dead() {
+  [ "$(tmux list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null || echo 0)" = "1" ]
+}
+
 # 8.2d A curator whose launch.sh exited is reaped instead of blocking the next run
 cat > "$T/fake-curator-reap" << EOF_REAP
 #!/usr/bin/env bash
@@ -174,24 +180,73 @@ export KINGPIN_CURATOR_CMD="$T/fake-curator-reap"
 # it tmux closes the window and the guard never sees it.
 tmux set-option -g remain-on-exit on
 tmux new-window -d -t kingpin: -n curator "bash -c 'exit 3'"
-dead=0
-for _ in $(seq 1 40); do
-  dead=$(tmux list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null || echo 0)
-  [ "$dead" = "1" ] && break
-  sleep 0.1
-done
-[ "$dead" = "1" ] && pass "dead curator pane staged (pane_dead=1)" || fail "could not stage a dead curator pane"
+kp_wait_until 4 curator_pane_dead \
+  && pass "dead curator pane staged (pane_dead=1)" || fail "could not stage a dead curator pane"
 reap_rc=0
 reap_out=$("$KP_BIN/kingpin" curate 2>&1) || reap_rc=$?
-[ "$reap_rc" -eq 0 ] && pass "curate reaped the dead curator window and continued" || fail "curate after a dead window exit=$reap_rc: $reap_out"
-echo "$reap_out" | grep -q "reaped dead curator window" && pass "dead-window reap is reported" || fail "reap not reported: $reap_out"
-for _ in $(seq 1 40); do
-  [ -f "$T/curator-reap-received.txt" ] && break
-  sleep 0.1
-done
-[ -f "$T/curator-reap-received.txt" ] && grep -qF "$tricky_critique" "$T/curator-reap-received.txt" && pass "new curator launched after the reap" || fail "no curator launched after the reap"
+[ "$reap_rc" -eq 0 ] && pass "curate cleared the dead curator window and continued" || fail "curate after a dead window exit=$reap_rc: $reap_out"
+kp_wait_until 4 test -f "$T/curator-reap-received.txt" \
+  && grep -qF "$tricky_critique" "$T/curator-reap-received.txt" \
+  && pass "new curator launched after the reap" || fail "no curator launched after the reap"
 tmux set-option -g remain-on-exit off
 tmux kill-window -t kingpin:curator 2>/dev/null || true
+
+# 8.2d2 The reap reports only a window it really closed (issue #191 review M4). The
+# record from 8.2d ends in a terminal `failed:` line, so the run above reconciled it
+# through `kingpin done`, which closes its window by name: that run had nothing left
+# to reap and says nothing. A dead pane no record can claim is still reaped, and the
+# line names it.
+rm -rf "$KINGPIN_HOME/tasks/curator"
+tmux set-option -g remain-on-exit on
+tmux new-window -d -t kingpin: -n curator "bash -c 'exit 3'"
+reap_pane_dead() { [ "$(tmux list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null)" = 1 ]; }
+kp_wait_until 4 reap_pane_dead && pass "record-free dead curator pane staged" || fail "could not stage a record-free dead curator pane"
+rm -f "$T/curator-reap-received.txt"
+reap2_rc=0
+reap2_out=$("$KP_BIN/kingpin" curate 2>&1) || reap2_rc=$?
+[ "$reap2_rc" -eq 0 ] && pass "a record-free dead pane is reaped and the run continues" || fail "curate after a record-free dead window exit=$reap2_rc: $reap2_out"
+echo "$reap2_out" | grep -q "reaped dead curator window" && pass "dead-window reap is reported" || fail "reap not reported: $reap2_out"
+tmux set-option -g remain-on-exit off
+tmux kill-window -t kingpin:curator 2>/dev/null || true
+
+# 8.2d3 A reap that fails is not reported as done (issue #182)
+rm -rf "$KINGPIN_HOME/tasks/curator"
+mkdir -p "$KINGPIN_HOME/tasks/test-curate-reap-fail"
+echo "Refused reap critique" > "$KINGPIN_HOME/tasks/test-curate-reap-fail/critique"
+cat > "$T/fake-curator-reap-fail" << 'EOF_REAP_FAIL'
+#!/usr/bin/env bash
+exit 0
+EOF_REAP_FAIL
+chmod +x "$T/fake-curator-reap-fail"
+export KINGPIN_CURATOR_CMD="$T/fake-curator-reap-fail"
+tmux set-option -g remain-on-exit on
+tmux new-window -d -t kingpin: -n curator "bash -c 'exit 3'"
+kp_wait_until 4 curator_pane_dead \
+  && pass "a dead curator pane is staged for the refused reap" \
+  || fail "could not stage a dead pane for the refused reap"
+mkdir -p "$T/failbin"
+cat > "$T/failbin/tmux" << FAILTMUX
+#!/usr/bin/env bash
+case " \$* " in
+  *" kill-window "*curator*) echo "tmux: refusing kill-window from the suite" >&2; exit 1 ;;
+esac
+exec "$T/bin/tmux" "\$@"
+FAILTMUX
+chmod +x "$T/failbin/tmux"
+reap_fail_out='' reap_fail_rc=0
+kp_run reap_fail_out reap_fail_rc env PATH="$T/failbin:$PATH" "$KP_BIN/kingpin" curate
+[ "$reap_fail_rc" -eq 0 ] && pass "a refused reap does not fail the run" \
+  || fail "curate after a refused reap exit=$reap_fail_rc: $reap_fail_out"
+echo "$reap_fail_out" | grep -q "could not reap dead curator window" \
+  && pass "a refused reap is reported" || fail "refused reap not reported: $reap_fail_out"
+echo "$reap_fail_out" | grep -q "reaped dead curator window" \
+  && fail "a refused reap was reported as done: $reap_fail_out" \
+  || pass "a refused reap is not reported as done"
+tmux list-windows -t kingpin -F '#{window_id} #{window_name}' \
+  | awk '$2 == "curator" { print $1 }' \
+  | while read -r w; do tmux kill-window -t "$w" 2>/dev/null || true; done
+tmux set-option -g remain-on-exit off
+rm -rf "$KINGPIN_HOME/tasks/test-curate-reap-fail"
 
 # 8.2e A curator reaped mid-run leaves its critiques pending
 mkdir -p "$KINGPIN_HOME/tasks/test-curate-reaped"
@@ -314,5 +369,145 @@ finish_curator_record
 # 8.4 Empty check
 empty_curate_out=$("$KP_BIN/kingpin" curate)
 echo "$empty_curate_out" | grep -q "no pending skill critiques" && pass "curate reports no pending skill critiques" || fail "curate did not report empty"
+
+# 8.5 A manual run with nothing to do starts no server either (issue #191 review M3):
+# the old resolve ran before the no-op check and created `kingpin` on a dead server.
+tmux kill-server 2>/dev/null || true
+tmux list-sessions >/dev/null 2>&1 \
+  && fail "the fleet server survived the reset" \
+  || pass "the fleet server is down before an empty manual run"
+empty_dead_out=$("$KP_BIN/kingpin" curate 2>&1 || true)
+echo "$empty_dead_out" | grep -q "no pending skill critiques" \
+  && pass "curate reports no pending skill critiques on a dead server" \
+  || fail "curate did not report empty on a dead server: $empty_dead_out"
+tmux list-sessions >/dev/null 2>&1 \
+  && fail "an empty manual run started the tmux server" \
+  || pass "an empty manual run starts no tmux server"
+# The rest of the suite expects the suite's fleet server.
+tmux new-session -d -s kingpin -n home
+
+# Test 9: the curator window lands where the fleet says (issue #191). It resolves the
+# same target a spawn does: TMUX_SOCKET/TMUX_SESSION in config.env, and the env still
+# wins. The config is removed afterwards so nothing later reads it.
+echo "=== Test 9: curate follows the fleet-wide tmux target ==="
+tmux new-session -d -s S1 -n home
+printf 'TMUX_SOCKET=kingpin\nTMUX_SESSION=S1\n' > "$KINGPIN_HOME/config.env"
+mkdir -p "$KINGPIN_HOME/tasks/test-curate-target"
+echo "Target critique" > "$KINGPIN_HOME/tasks/test-curate-target/critique"
+cat > "$T/fake-curator-target" << 'EOF_TARGET'
+#!/usr/bin/env bash
+sleep 300
+EOF_TARGET
+chmod +x "$T/fake-curator-target"
+export KINGPIN_CURATOR_CMD="$T/fake-curator-target"
+
+curate_config=$(TMUX='' env -u KINGPIN_TMUX_SOCKET "$KP_BIN/kingpin" curate 2>&1 || true)
+grep -qx 'TMUX_SOCKET=kingpin' "$KINGPIN_HOME/tasks/curator/task.env" \
+  && grep -qx 'TMUX_TARGET=S1:curator' "$KINGPIN_HOME/tasks/curator/task.env" \
+  && pass "curate records the configured socket and session" \
+  || fail "curate record does not follow the config: $(cat "$KINGPIN_HOME/tasks/curator/task.env" 2>/dev/null): $curate_config"
+tmux list-panes -t S1:curator >/dev/null 2>&1 \
+  && pass "the curator window is in the configured session" \
+  || fail "no curator window in S1: $curate_config"
+finish_curator_record
+
+# KINGPIN_TMUX_SOCKET wins over TMUX_SOCKET in the config.
+printf 'TMUX_SOCKET=no-such-socket\nTMUX_SESSION=S1\n' > "$KINGPIN_HOME/config.env"
+curate_env=$(TMUX='' KINGPIN_TMUX_SOCKET=kingpin "$KP_BIN/kingpin" curate 2>&1 || true)
+grep -qx 'TMUX_SOCKET=kingpin' "$KINGPIN_HOME/tasks/curator/task.env" \
+  && grep -qx 'TMUX_TARGET=S1:curator' "$KINGPIN_HOME/tasks/curator/task.env" \
+  && pass "curate follows KINGPIN_TMUX_SOCKET over the configured socket" \
+  || fail "curate record followed the config socket: $(cat "$KINGPIN_HOME/tasks/curator/task.env" 2>/dev/null): $curate_env"
+finish_curator_record
+
+rm -f "$KINGPIN_HOME/config.env"
+rm -rf "$KINGPIN_HOME/tasks/test-curate-target"
+tmux kill-session -t S1 2>/dev/null || true
+
+# The reap must follow the window it probed (issue #191 review M4). A stale record
+# names a dead pane in S1 while the configured session is S2, where a live curator
+# window sits: the resolved session wins, the live window survives, and the run
+# refuses instead of killing an unprobed window and launching over it.
+echo "=== Test 10: the curate reap never kills an unprobed window ==="
+rm -f "$KINGPIN_HOME/tasks/curator"
+mkdir -p "$KINGPIN_HOME/tasks/curator" "$KINGPIN_HOME/tasks/test-curate-m4"
+echo "Stale record critique" > "$KINGPIN_HOME/tasks/test-curate-m4/critique"
+printf 'TMUX_SOCKET=kingpin\nTMUX_SESSION=S2\n' > "$KINGPIN_HOME/config.env"
+tmux new-session -d -s S1 -n home
+tmux new-session -d -s S2 -n home
+tmux set-option -g remain-on-exit on
+tmux new-window -d -t S1: -n curator "bash -c 'exit 3'"
+m4_pane_dead() { [ "$(tmux list-panes -t S1:curator -F '#{pane_dead}' 2>/dev/null)" = 1 ]; }
+kp_wait_until 4 m4_pane_dead && pass "dead pane staged in the record's session" || fail "could not stage a dead pane in S1:curator"
+tmux new-window -d -t S2: -n curator "sleep 300"
+live_pid=$(tmux list-panes -t S2:curator -F '#{pane_pid}')
+cat > "$KINGPIN_HOME/tasks/curator/task.env" <<EOF_STALE
+TASK_ID=curator
+PROJECT=curator
+PROJECT_PATH=$T/skills
+HARNESS=claude
+MODE=review
+BRANCH=curator/2026-01-01
+WORKTREE=$T/skills
+MUX=tmux
+NO_LEASE=1
+CURATOR=1
+TMUX_SOCKET=kingpin
+TMUX_TARGET=S1:curator
+MUX_TARGET=S1:curator
+EOF_STALE
+: > "$KINGPIN_HOME/tasks/curator/status"
+cat > "$T/fake-curator-m4" << EOF_M4
+#!/usr/bin/env bash
+printf 'launched\n' > "$T/curator-m4-launched.txt"
+sleep 300
+EOF_M4
+chmod +x "$T/fake-curator-m4"
+export KINGPIN_CURATOR_CMD="$T/fake-curator-m4"
+m4_out='' m4_rc=0
+kp_run m4_out m4_rc env -u KINGPIN_TMUX_SOCKET TMUX= "$KP_BIN/kingpin" curate
+[ "$m4_rc" -eq 1 ] && pass "a live window under the resolved session refuses the run" || fail "M4 refusal exit=$m4_rc: $m4_out"
+echo "$m4_out" | grep -q "already active" && pass "the refusal names the live window under the resolved session" || fail "M4 refusal stderr: $m4_out"
+tmux list-panes -t S2:curator -F '#{pane_pid}' 2>/dev/null | grep -qxF -- "$live_pid" \
+  && pass "the live window under the resolved session survived the reap" \
+  || fail "the reap killed the live window under the resolved session: $m4_out"
+[ ! -f "$T/curator-m4-launched.txt" ] && pass "the refused run launched no curator" || fail "the refused M4 run still launched a curator"
+grep -qx 'MUX_TARGET=S1:curator' "$KINGPIN_HOME/tasks/curator/task.env" 2>/dev/null \
+  && pass "the refused run left the stale record untouched" \
+  || fail "the refused run rewrote the stale record: $(cat "$KINGPIN_HOME/tasks/curator/task.env" 2>/dev/null)"
+tmux kill-window -t S2:curator 2>/dev/null || true
+tmux kill-window -t S1:curator 2>/dev/null || true
+tmux set-option -g remain-on-exit off
+rm -f "$KINGPIN_HOME/config.env"
+rm -rf "$KINGPIN_HOME/tasks/curator" "$KINGPIN_HOME/tasks/test-curate-m4"
+tmux kill-session -t S1 2>/dev/null || true
+tmux kill-session -t S2 2>/dev/null || true
+
+# Test 11: curate matches a configured session exactly (issue #181, with the
+# fleet-wide target of issue #191). A server holding only `kingpin-workers` must
+# not satisfy a configured `TMUX_SESSION=kingpin`: the run refuses by name and
+# leaves the same-named window there alone, instead of silently joining a session
+# nobody named.
+echo "=== Test 11: a configured session is matched exactly ==="
+finish_curator_record
+tmux kill-session -t '=kingpin' 2>/dev/null || true
+tmux new-session -d -s kingpin-workers -n home
+tmux new-window -d -t '=kingpin-workers:' -n curator "sleep 300"
+mkdir -p "$KINGPIN_HOME/tasks/test-curate-session"
+echo "Session placement critique" > "$KINGPIN_HOME/tasks/test-curate-session/critique"
+printf 'TMUX_SESSION=kingpin\n' > "$KINGPIN_HOME/config.env"
+export KINGPIN_CURATOR_CMD="$T/fake-curator-sleep"
+session_out='' session_rc=0
+kp_run session_out session_rc env -u KINGPIN_TMUX_SOCKET TMUX= "$KP_BIN/kingpin" curate
+[ "$session_rc" -ne 0 ] && pass "t11: a configured kingpin is refused when only kingpin-workers exists" || fail "t11: curate exit=$session_rc: $session_out"
+echo "$session_out" | grep -qF "does not exist" && pass "t11: the refusal says the session does not exist" || fail "t11: refusal wording: $session_out"
+echo "$session_out" | grep -qF "kingpin" && pass "t11: the refusal names the configured session" || fail "t11: refusal did not name kingpin: $session_out"
+tmux has-session -t '=kingpin' 2>/dev/null && fail "t11: curate created a kingpin session it was meant to match, not guess" || pass "t11: no session named exactly kingpin was created"
+tmux list-windows -t '=kingpin-workers' -F '#{window_name}' 2>/dev/null | grep -qx curator && pass "t11: the same-named window in kingpin-workers was left alone" || fail "t11: curate touched the kingpin-workers window"
+tmux list-panes -t '=kingpin-workers:curator' -F '#{pane_dead}' 2>/dev/null | grep -qx 0 && pass "t11: the live window in kingpin-workers survived" || fail "t11: the window in kingpin-workers was reaped"
+tmux kill-window -t '=kingpin-workers:=curator' 2>/dev/null || true
+tmux kill-session -t '=kingpin-workers' 2>/dev/null || true
+rm -f "$KINGPIN_HOME/config.env"
+rm -rf "$KINGPIN_HOME/tasks/curator" "$KINGPIN_HOME/tasks/test-curate-session"
 
 kp_test_finish CURATE

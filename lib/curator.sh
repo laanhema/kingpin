@@ -71,15 +71,38 @@ kp_curate_pending_count() {
   printf '%s\n' "$n"
 }
 
-# kp_curate_idle <kp-home>
-# Exit 0 only when the fleet is idle: no live task record under tasks/, every
-# projects/*.landing_queue is empty, and every project's landing holder is no
-# longer live. A landing in flight is never touched by the trigger.
-kp_curate_idle() {
-  local home=${1:?} dir q lock project holder
+# kp_curate_in_flight_task <kp-home>
+# Prints the fleet's first task record whose work is not over, as two lines: its
+# id and its last worker status line (or `none`), and exits 0. Prints nothing and
+# exits 1 when every live record is finished. An archived record's dossier link
+# is not a record, a record carrying `done_cleaned` or a last line of
+# `merged:`/`failed:` is finished, and everything else, `cleanup-refused:`
+# included, is still in flight.
+kp_curate_in_flight_task() {
+  local home=${1:?} dir id last
   for dir in "$home"/tasks/*; do
-    kp_task_is_live "$dir" && return 1
+    kp_task_is_live "$dir" || continue
+    kp_task_is_finished "$dir" && continue
+    id=$(basename "$dir")
+    last=$(kp_status_last "$dir/status")
+    printf '%s\n%s\n' "$id" "${last:-none}"
+    return 0
   done
+  return 1
+}
+
+# kp_curate_idle <kp-home>
+# Exit 0 only when the fleet is idle: every live task record under tasks/ is
+# finished (it carries `done_cleaned` or its last worker status line is `merged:`
+# or `failed:`; a `cleanup-refused:` record is still in flight, because
+# kingpin-watch retries it), every projects/*.landing_queue is empty, and every
+# project's landing holder is no longer live. A landing in flight is never
+# touched by the trigger.
+kp_curate_idle() {
+  local home=${1:?} q lock project holder
+  if kp_curate_in_flight_task "$home" >/dev/null; then
+    return 1
+  fi
   for q in "$home"/projects/*.landing_queue; do
     [ -f "$q" ] || continue
     [ -s "$q" ] && return 1
@@ -120,6 +143,24 @@ kp_curate_stamp() {
   fi
 }
 
+# kp_curate_window_label <kp-home>
+# Prints the `<session>:curator` window the curator probe names, read-only: the
+# `MUX_TARGET` the record holds, or, with no record yet, the configured
+# `TMUX_SESSION` (issue #191) or `<kingpin>:curator`. A caller prints it in a skip
+# or refusal message before the launch target is resolved, so the probe and the
+# message name the same window without starting a server.
+kp_curate_window_label() {
+  local home=${1:?} env_file target configured=''
+  env_file="$home/tasks/curator/task.env"
+  if [ -f "$env_file" ]; then
+    target=$(kp_env_get "$env_file" MUX_TARGET)
+    printf '%s\n' "${target:-kingpin:curator}"
+    return 0
+  fi
+  [ -f "$home/config.env" ] && configured=$(kp_env_get "$home/config.env" TMUX_SESSION)
+  printf '%s\n' "${configured:-kingpin}:curator"
+}
+
 # kp_curate_window_state <kp-home>
 # Prints alive, dead, none or unknown for the curator terminal. The mux and the
 # target come from the curator record (`tasks/curator/task.env`), like every other
@@ -136,18 +177,19 @@ kp_curate_stamp() {
 kp_curate_window_state() {
   local home=${1:?} env_file mux sock target session state
   env_file="$home/tasks/curator/task.env"
-  target='kingpin:curator'
+  target=$(kp_curate_window_label "$home")
   sock=''
   session=''
   if [ -f "$env_file" ]; then
     mux=$(kp_mux_record "$home/tasks/curator" 2>/dev/null) || mux=unknown
     sock=$(kp_tmux_socket_from_env "$env_file")
-    target=$(kp_env_get "$env_file" MUX_TARGET)
-    [ -n "$target" ] || target=kingpin:curator
     session=$(kp_env_get "$env_file" MUX_SESSION)
   else
     mux=$(kp_mux_name 2>/dev/null) || mux=unknown
-    sock=$(kp_tmux_socket_name)
+    # No record yet: name the server the launch will use, without starting anything
+    # (the fallback session is the launch's to create). A caller's own tmux client is
+    # not consulted, because this gate must stay read-only.
+    sock=$(kp_tmux_socket_for "$home")
   fi
   # The mux is published before the session fallback reads it, so a Herdr record
   # without MUX_SESSION resolves the Herdr session, not the tmux socket. An
@@ -160,6 +202,13 @@ kp_curate_window_state() {
     tmux)
       KP_MUX=$mux
       [ -n "$session" ] || session=$sock
+      # `kingpin:curator` is a session prefix, so a `kingpin-workers` session beside
+      # `kingpin` answers for it and this probe would read, reap or refuse another
+      # session's window (issues #149, #181). Both halves are pinned to an exact
+      # match; a target with no colon (a window id) is left alone.
+      case $target in
+        *:*) target="=${target%%:*}:=${target#*:}" ;;
+      esac
       ;;
     *)
       printf 'unknown\n'

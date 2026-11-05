@@ -165,6 +165,10 @@ kp_test_setup() {
   # server. A bare `tmux` call in a suite lands on the fleet server, which is the
   # socket a task record from `kingpin spawn` names; a suite that needs a second
   # server names it with an explicit `-L`, which wins because it comes last.
+  # The wrapper names the fleet socket at call time rather than baking it in: a spawn
+  # branch unsets KINGPIN_TMUX_SOCKET to reach the config and caller paths, and a bare
+  # `tmux` must still land on the suite's fleet server. A `-S` path passed by
+  # lib/tmux.sh wins over the wrapper's `-L`, because it comes after it.
   export TMUX_TMPDIR="$T/tmux-tmp"
   mkdir -p "$TMUX_TMPDIR" "$T/bin"
   TEST_SOCKET="kingpin-test-$suite-$$"
@@ -172,7 +176,7 @@ kp_test_setup() {
   REAL_TMUX=$(command -v tmux)
   cat > "$T/bin/tmux" << EOF
 #!/usr/bin/env bash
-exec "$REAL_TMUX" -L "$KINGPIN_TMUX_SOCKET" "\$@"
+exec "$REAL_TMUX" -L "\${KINGPIN_TMUX_SOCKET:-kingpin}" "\$@"
 EOF
   chmod +x "$T/bin/tmux"
   export PATH="$T/bin:$PATH"

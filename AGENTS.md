@@ -10,7 +10,7 @@ each task back as a visual review dossier. This file describes the repository.
 |---|---|
 | `bin/` | One executable per command (`kingpin-spawn`, `kingpin-guard`, `kingpin-wait`, ...), plus `bin/kingpin`, the dispatcher that maps `kingpin <cmd>` to them |
 | `lib/` | Shared helpers: `status.sh` (the status-file protocol and the live-versus-archived task path readers), `tmux.sh`, `browser.sh` (the browser-daemon table, its working-directory ownership rule, the process-tree stop and the size formatter), `landing.sh`, `mutex.sh` (the mutex sequence, plus the non-blocking `kp_mutex_try` the auto-curate gate uses), `curator.sh` (the automatic daily curator gate, applied-critique marker and trigger), `supervisor.sh` (the fleet supervisor's pidfile), `afk.sh` (the session-scoped AFK state), `session.sh` (the session-pid detection), `exclude.sh` (the per-worktree exclude file a spawn points at, and the guard-owned block of the main checkout's exclude file), `portable.sh` (the GNU-then-BSD clock and file-mtime readers), `gitdir.sh` (the git-dir, common-dir and git-path readers the linked-worktree checks use, which read the plain `git rev-parse` form so they work on git 2.30), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, `codex-trust`, ...) |
-| `lib/tmux.sh` | The fleet's tmux socket (`KINGPIN_TMUX_SOCKET`, default `kingpin`), the one `kp_tmux` helper every command reaches tmux through, the two socket-health readers (`kp_tmux_socket_reachable`, whether a server answers, and `kp_tmux_socket_warn_line`, the one stderr line a dead server prints for the tasks on it), and the one window resolver: finds a task's window by name first and by the recorded id second, decides whether the harness really runs in it (`harness.pid` against the pane pid), records a new id, and is the only place that creates or respawns a window |
+| `lib/tmux.sh` | The fleet's tmux socket (`KINGPIN_TMUX_SOCKET`, default `kingpin`), the one `kp_tmux` helper every command reaches tmux through (a name takes `-L`, a value holding a `/` takes `-S`), `kp_tmux_resolve_target`, the one place a new worker's socket and session are resolved (issue #191), the exact session check (`kp_tmux_has_session`) and the one prefix resolver (`kp_tmux_resolve_session`, which only a user-typed target such as `--tmux-session` uses), the spellers `kp_tmux_label`/`kp_tmux_attach_cmd` every message and attach hint uses, the two socket-health readers (`kp_tmux_socket_reachable`, whether a server answers, and `kp_tmux_socket_warn_line`, the one stderr line a dead server prints for the tasks on it), and the one window resolver: finds a task's window by name first and by the recorded id second, decides whether the harness really runs in it (`harness.pid` against the pane pid), records a new id, and is the only place that creates or respawns a window |
 | `lib/mux.sh` | The one terminal contract every command calls (issue #144): selects the backend from `KINGPIN_MUX` or from the task record's `MUX=` line, and delegates every verb (find, capture, send, activity, rename, kill, ensure-session, create, record-id) to `lib/tmux.sh` or to the Herdr backend. The tmux delegations are today's `kp_tmux`/`kp_window_*` calls unchanged, and the Herdr file is loaded only when a record or `KINGPIN_MUX` selects it |
 | `lib/mux-herdr.sh` | The Herdr backend of `lib/mux.sh`: the one place the `herdr` binary is reached, session resolution (`KINGPIN_HERDR_SESSION`, then the inherited `HERDR_SESSION`), the label-first pane resolver with its pane-id fallback, and the verbs written against herdr 0.9.3 (`pane read` prints plain text, `pane list`/`pane get` print JSON). It refuses to create a terminal until the spawn path is migrated (issue #144 phase E) |
 | `lib/launch.sh` | The worker preamble and the per-harness `launch.sh` generator, shared by `kingpin-spawn` and `kingpin-restore`, so a restored worker gets the preamble and harness wiring a spawned one does |
@@ -48,7 +48,9 @@ A rule that only a person keeps is one that goes stale; each rule below names wh
 | no page the citation check reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md`, `worker/*.md`) cites a source file by line number | `tests/doc-citations.sh` |
 | nothing under `.agents/` is tracked | `tests/lint.sh` |
 | `tmux` is reached only through `lib/tmux.sh` and `herdr` only through `lib/mux-herdr.sh` | the static checks in `tests/test-tmux-isolation.sh` and `tests/test-mux.sh` |
+| a tmux session is matched exactly: a session check goes through `kp_tmux_has_session`, never a raw `has-session`, and only a user-typed target (`--tmux-session` or `KINGPIN_TMUX_SESSION`, for a spawn or the curator) accepts a prefix, through `kp_tmux_resolve_session` | the static check in `tests/test-tmux-isolation.sh` for the raw `has-session`, and review for the prefix resolver |
 | a dossier or handover page passes the prose, layout and palette `check` | `bin/kingpin-report check` |
+| a message or marker that reports a step is written only after the step's status is checked | review |
 | a test never silences a status it claims to check with `\|\| true` (reviews of #5, #75), and never runs an unbounded `wait` that hangs instead of failing (reviews of #99, #145) | review |
 
 ## Lavish Artifacts
@@ -74,10 +76,12 @@ PR. `./tests/lint.sh` fails when a suite has no leg, so add both together.
 
 The suites need `git`, `tmux`, `node`, `treehouse` and a git identity; they set their
 own identity, run a private tmux server on a temporary socket, and use fake agents,
-so no harness binary is needed. The fleet's own tmux socket is `kingpin` (`tmux -L
-kingpin`, overridable with `KINGPIN_TMUX_SOCKET`), and `lib/tmux.sh` is the one place
-a command reaches tmux: a raw `tmux` call in `bin/` or `lib/` reads the default server,
-where no worker lives. Commands reach a worker terminal through `lib/mux.sh`, which picks
+so no harness binary is needed. The fleet's tmux target is a socket plus a session
+resolved by `lib/tmux.sh`: `kingpin` (`tmux -L kingpin`) unless `KINGPIN_TMUX_SOCKET`
+or `TMUX_SOCKET` in `config.env` says otherwise, or the caller's own socket path when a
+spawn runs inside tmux. `lib/tmux.sh` is still the one place a command reaches tmux: a
+raw `tmux` call in `bin/` or `lib/` reads the default server, which may not be the one a
+record names. Commands reach a worker terminal through `lib/mux.sh`, which picks
 `lib/tmux.sh` or `lib/mux-herdr.sh` from the task record (issue #144), and `herdr` is
 reached only inside `lib/mux-herdr.sh`. The `test-tmux-isolation.sh` static check fails on
 `tmux` in command position there (the start of a line or of a `$(...)`, or after `;`, `&&`,
@@ -179,18 +183,33 @@ holder pid is gone, and `kingpin lock release` clears it.
 
 ## Worker placement
 
-A spawn's tmux session on the fleet's own server is resolved, never guessed (issue #152):
-`--tmux-session <name>`, then `KINGPIN_TMUX_SESSION`, then the one attached session on that
-server, then the only session it holds. A named session must already exist, so a typo is refused
-rather than starting a second silent session. Several unattached sessions, or more than one
-attached session, are refused with every candidate named and both ways to name a target. Only a
-server with no session at all gets the `kingpin` fallback, and the spawn says on stderr that it
-created one. The caller's own tmux client belongs to the operator's server, not the fleet's, so
-its session is never a target (issue #142). The resolution runs before the worktree lease, so a
-refusal costs no worktree and leaves no task record, and the `OK:` line names the chosen session
-and where it came from.
+A spawn's or curator's tmux target is resolved, never guessed, in one place
+(`kp_tmux_resolve_target` in `lib/tmux.sh`, issues #152 and #191). A named session wins first:
+`--tmux-session <name>`, then `KINGPIN_TMUX_SESSION`, then `TMUX_SESSION` in
+`$KINGPIN_HOME/config.env`, resolved on the chosen socket, and it must already exist, so a typo is
+refused rather than starting a second silent session. A user-typed target (`--tmux-session` or
+`KINGPIN_TMUX_SESSION`) may be an unambiguous prefix, and the resolved name is recorded; a
+`TMUX_SESSION` from the config file is matched exactly, so a `kingpin-workers` session is never
+taken for `kingpin` (issues #181 and #191). With no name, a spawn started inside tmux
+follows the caller's own session and socket, so a worker lands beside the orchestrator. A named
+socket suppresses that caller default only, because the caller's session lives on another server:
+`KINGPIN_TMUX_SOCKET` or `TMUX_SOCKET` in the config does not hide a configured `TMUX_SESSION`,
+and a configured session missing from the chosen socket is refused with both sources named.
+Outside tmux, or with a socket named, the one attached session on that server is used, then the
+only session it holds; several unattached sessions, or more than one attached session, are refused
+with every candidate named. Only a server with no session at all gets the `kingpin` fallback, and
+the command says on stderr that it created one. A socket is a `-L` name, or a socket path when the
+value holds a `/`, which is how the caller's own server is recorded; every message and attach hint
+spells it through `kp_tmux_label`/`kp_tmux_attach_cmd`. The resolution runs before the worktree
+lease, so a refusal costs no worktree and leaves no task record, and the `OK:` line names the
+chosen session and where it came from.
 `kingpin list` prints it in a `SESSION` column read from the live window through the record's
 socket, so a window moved to another session is reported where it really is.
+
+Sharing the operator's own server has a price: `tmux kill-server` there ends every worker on it,
+and `kingpin watch` and `kingpin restore` recreate the session and re-arm the windows from their
+records, including through a recorded socket path. That trade was chosen on purpose in #191, so a
+later reader does not undo it; `KINGPIN_TMUX_SOCKET=kingpin` keeps the isolation of #142.
 
 ## Orchestrating from this repository
 

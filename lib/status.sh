@@ -23,7 +23,8 @@
 # spawn and land must ask a harness for the skill name it really expands.
 #
 # Where a task record lives is decided here too (`kp_task_is_live`,
-# `kp_task_archive_dir`): `kingpin done` leaves a symlink at tasks/<id> for the
+# `kp_task_archive_dir`), and whether a record's work is over
+# (`kp_task_is_finished`): `kingpin done` leaves a symlink at tasks/<id> for the
 # archived task, so every reader that globs tasks/* has to tell the two apart.
 
 # kp_status_last <status-file>
@@ -266,6 +267,30 @@ kp_pane_shows_working() {
 kp_task_is_live() {
   local dir=${1:-}
   [ -n "$dir" ] && [ -d "$dir" ] && [ ! -L "$dir" ]
+}
+
+# kp_task_is_finished <task-dir>
+# Exit 0 when a live task record's own evidence says its work is over, and 1 for
+# every other shape. The evidence is a `done_cleaned` marker, which kingpin-done
+# writes once the cleanup left the record in the archive, or a last worker status
+# line of `merged:` (the worker appends it after the PR merged, at the end of its
+# run) or `failed:` (the worker's or the Stop hook's final event, including
+# `failed: no status:`). `cleanup-refused:` is deliberately not finished: kingpin
+# done writes it when the cleanup failed, and kingpin-watch retries that record,
+# so its work is not over. This is a second question asked after
+# `kp_task_is_live`, not a replacement for it: a dossier link and a missing path
+# are still not records.
+kp_task_is_finished() {
+  local dir=${1:-} last
+  [ -n "$dir" ] || return 1
+  if [ -f "$dir/done_cleaned" ]; then
+    return 0
+  fi
+  last=$(kp_status_last "$dir/status")
+  case $last in
+    merged:*|failed:*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # kp_task_archive_dir <kp-home> <id>

@@ -4,11 +4,20 @@
 # task's window lives on the socket its record names, at its name first and its
 # recorded id second.
 #
-# Workers run on a tmux server of their own, named by `kingpin` unless
-# KINGPIN_TMUX_SOCKET names another socket. The default socket stays the operator's:
-# an operator session kill, or a `tmux kill-server` on the default socket, does not
-# reach a worker. Every command that resolves a worker window goes through `kp_tmux`,
-# so the socket is passed in one place.
+# A new worker lands where the fleet says: `kp_tmux_resolve_target` resolves the socket
+# and the session together, from --tmux-session, KINGPIN_TMUX_SESSION, TMUX_SESSION and
+# TMUX_SOCKET in config.env, the caller's own tmux client, or the fleet server `kingpin`
+# (issue #191). A socket is a `-L` name, or a path when it holds a `/`, which is how the
+# caller's server is recorded. Every command that resolves a worker window goes through
+# `kp_tmux`, so the socket is passed in one place, and `kp_tmux_label` and
+# `kp_tmux_attach_cmd` are the one way a message or an attach hint spells it.
+#
+# A session is matched exactly (issues #149, #181): `kp_tmux_has_session` pins the
+# target with tmux's `=` form, because a bare name is a unique prefix and a server
+# holding only `kingpin-workers` would otherwise answer for `kingpin`. The one
+# deliberate prefix resolver is `kp_tmux_resolve_session`, which a spawn uses for its
+# explicit target (`--tmux-session` or `KINGPIN_TMUX_SESSION`) and then records the
+# name tmux resolved.
 #
 # The window is resolved by name first and by id second (issue #149). Tmux window ids
 # are per server and restart at `@0`, so an id recorded before the server died can
@@ -49,6 +58,21 @@ kp_tmux_socket_name() {
   printf '%s\n' "${KINGPIN_TMUX_SOCKET:-kingpin}"
 }
 
+# kp_tmux_socket_for <kp-home>
+# The socket a new terminal lands on when no session names one: KINGPIN_TMUX_SOCKET,
+# then TMUX_SOCKET in <kp-home>/config.env, then `kingpin`. A `/` in the value makes
+# it a socket path (`tmux -S`), which is how a server started with a custom
+# TMUX_TMPDIR or an explicit -S path is named without guessing where its socket lives.
+kp_tmux_socket_for() {
+  local home=${1:-} sock=''
+  if [ -n "${KINGPIN_TMUX_SOCKET:-}" ]; then
+    printf '%s\n' "$KINGPIN_TMUX_SOCKET"
+    return 0
+  fi
+  [ -n "$home" ] && [ -f "$home/config.env" ] && sock=$(kp_env_get "$home/config.env" TMUX_SOCKET)
+  printf '%s\n' "${sock:-kingpin}"
+}
+
 # kp_tmux_socket_from_env <task-env-file>
 # The socket a task record names, or nothing for a record written before the
 # fleet moved to its own server (those windows live on the default socket).
@@ -62,11 +86,57 @@ kp_tmux_socket_from_env() {
 # where a task record without TMUX_SOCKET points. The default is named
 # explicitly, `-L default`, and never left to a bare `tmux`: a caller inside a
 # tmux pane inherits TMUX, and a bare call would follow that socket instead of
-# the default server the record means.
+# the default server the record means. A value holding a `/` is a socket path and
+# is passed with `-S`, so a record can name the server whose socket lives outside
+# the default directory.
 kp_tmux() {
   local sock=${1:-}
   shift || true
-  tmux -L "${sock:-default}" "$@"
+  case $sock in
+    */*) tmux -S "$sock" "$@" ;;
+    *) tmux -L "${sock:-default}" "$@" ;;
+  esac
+}
+
+# kp_tmux_label <socket>
+# How a message names a server: `tmux`, `tmux -L <name>` or `tmux -S <path>`. An
+# empty or `default` socket reads as a plain `tmux`, the same way attach does.
+kp_tmux_label() {
+  case "${1:-}" in
+    ''|default) printf 'tmux' ;;
+    */*) printf 'tmux -S %s' "$1" ;;
+    *) printf 'tmux -L %s' "$1" ;;
+  esac
+}
+
+# kp_tmux_attach_cmd <socket>
+# The command that attaches a terminal to <socket>: a plain `tmux attach` for the
+# default server, `tmux -S <path> attach` for a socket path, `tmux -L <name>
+# attach` for a name.
+kp_tmux_attach_cmd() {
+  case "${1:-}" in
+    ''|default) printf 'tmux attach' ;;
+    */*) printf 'tmux -S %s attach' "$1" ;;
+    *) printf 'tmux -L %s attach' "$1" ;;
+  esac
+}
+
+# kp_tmux_caller_target
+# Prints `<socket><TAB><session>` for the tmux client this process runs under, and
+# nothing with exit 1 when $TMUX is unset, malformed, or names a session that no
+# longer resolves. $TMUX is `<socket-path>,<server-pid>,<session-id>`, so the socket
+# travels with the session and a server started with a custom TMUX_TMPDIR or with
+# `-S` is recorded as the path it really is.
+kp_tmux_caller_target() {
+  local sock='' sid='' name=''
+  [ -n "${TMUX:-}" ] || return 1
+  sock=${TMUX%%,*}
+  sid=${TMUX##*,}
+  [ -n "$sock" ] && [ "$sock" != "$TMUX" ] || return 1
+  case $sid in ''|*[!0-9]*) return 1 ;; esac
+  name=$(kp_tmux "$sock" display-message -p -t "\$$sid" '#S' 2>/dev/null) || return 1
+  [ -n "$name" ] || return 1
+  printf '%s\t%s\n' "$sock" "$name"
 }
 
 # kp_tmux_socket_reachable <socket>
@@ -91,21 +161,169 @@ kp_tmux_socket_warn_line() {
   for id in "$@"; do ids=${ids:+"$ids, "}$id; done
   [ -n "$ids" ] || return 0
   kp_tmux_socket_reachable "$sock" && return 0
-  case "$sock" in
-    ''|default) hint='tmux attach' ;;
-    *) hint="tmux -L $sock attach" ;;
-  esac
+  hint=$(kp_tmux_attach_cmd "$sock")
   printf "kingpin: the tmux server '%s' is not running; live tasks %s name it and their windows are gone. Attach once it is back: %s; kingpin watch restarts it and runs kingpin restore (or run kingpin restore yourself)\n" \
     "${sock:-default}" "$ids" "$hint" >&2
   return 0
 }
 
+# kp_tmux_resolve_target <kp-home> [<explicit-session> <explicit-source>]
+# Prints `<socket><TAB><session><TAB><source><TAB><server-started>` for the terminal a
+# new task should get, resolving the socket and the session in one place:
+#
+#   socket   KINGPIN_TMUX_SOCKET, then TMUX_SOCKET in <kp-home>/config.env, then the
+#            caller's $TMUX socket when nothing names a socket and a session, then
+#            `kingpin`.
+#   session  <explicit-session> (the caller names its own source), then
+#            KINGPIN_TMUX_SESSION, then TMUX_SESSION in config.env, each resolved on
+#            that socket and refused when it does not exist; then, when nothing named
+#            a socket or a session, the caller's own session; then the one session a
+#            client is attached to; then the only session the socket holds; then a
+#            `kingpin` session that is created. A user-typed target (the explicit
+#            argument or KINGPIN_TMUX_SESSION) may be an unambiguous prefix and is
+#            recorded as the name tmux resolved it to (issues #152, #181); a
+#            TMUX_SESSION from config.env is matched exactly, like every other
+#            session this function reads.
+#
+# <server-started> is 1 when the fallback had to start the tmux server itself. A
+# refusal prints one sentence on stdout and returns 1, so the caller reads the reason
+# from the same substitution and decides its own prefix and exit; a stderr note still
+# rides the fallback paths. The session name tmux resolved is what gets printed, so a
+# prefix never becomes a recorded target.
+kp_tmux_resolve_target() {
+  local home=${1:?kp_tmux_resolve_target needs a kp-home} explicit=${2:-} explicit_source=${3:-}
+  local config_socket='' config_session='' socket='' name='' source='' resolved='' prefix_ok=0
+  local caller='' caller_socket='' caller_session='' started=0
+  local all=() attached_names=() joined='' attached_joined='' measured=''
+  if [ -n "$home" ] && [ -f "$home/config.env" ]; then
+    config_socket=$(kp_env_get "$home/config.env" TMUX_SOCKET)
+    config_session=$(kp_env_get "$home/config.env" TMUX_SESSION)
+  fi
+  socket=$(kp_tmux_socket_for "$home")
+
+  # A named session is resolved on the configured socket, and must already exist:
+  # creating it would put the worker in a session nobody watches (issue #152).
+  if [ -n "$explicit" ]; then
+    name=$explicit source=$explicit_source prefix_ok=1
+  elif [ -n "${KINGPIN_TMUX_SESSION:-}" ]; then
+    name=$KINGPIN_TMUX_SESSION source='KINGPIN_TMUX_SESSION' prefix_ok=1
+  elif [ -n "$config_session" ]; then
+    name=$config_session source="TMUX_SESSION in $home/config.env"
+  fi
+  if [ -n "$name" ]; then
+    if [ "$prefix_ok" -eq 1 ]; then
+      # A user-typed target (--tmux-session, KINGPIN_TMUX_SESSION) accepts an
+      # unambiguous prefix on purpose, and the name tmux resolved it to is recorded
+      # (issues #152, #181). A configured TMUX_SESSION and every other source below
+      # are matched exactly, so a `kingpin-workers` session is never taken for one.
+      resolved=$(kp_tmux_resolve_session "$socket" "$name") || resolved=''
+    else
+      kp_tmux_has_session "$socket" "$name" && resolved=$name || resolved=''
+    fi
+    [ -n "$resolved" ] \
+      || {
+        printf "the session '%s' from %s does not exist on the tmux server '%s' (%s); start it, or name a session that does\n" \
+          "$name" "$source" "${socket:-default}" "$(kp_tmux_label "$socket")"
+        return 1
+      }
+    printf '%s\t%s\tfrom %s\t0\n' "$socket" "$resolved" "$source"
+    return 0
+  fi
+
+  # Nothing named a session. When nothing named a socket either, follow the tmux client
+  # this command runs under: the worker then lands in the orchestrator's own session,
+  # and its socket travels with it. A named socket suppresses this, because that
+  # session lives on another server; KINGPIN_TMUX_SOCKET=kingpin keeps the isolation
+  # of issue #142.
+  if [ -z "${KINGPIN_TMUX_SOCKET:-}" ] && [ -z "$config_socket" ]; then
+    if caller=$(kp_tmux_caller_target); then
+      IFS=$'\t' read -r caller_socket caller_session <<<"$caller"
+      printf '%s\t%s\t%s\t0\n' "$caller_socket" "$caller_session" "the caller's tmux session (\$TMUX)"
+      return 0
+    fi
+    # Only a set-but-stale $TMUX is worth a note: outside tmux is the normal case, and
+    # the fallback is the documented one, so a plain shell gets no warning.
+    if [ -n "${TMUX:-}" ]; then
+      printf "kingpin: \$TMUX names no reachable session; falling back to the fleet tmux server '%s'\n" "${socket:-default}" >&2
+    fi
+  fi
+
+  # Join a session on the fleet socket that cannot be mistaken for another: the one an
+  # operator attached there, then the only one the server holds. One candidate is not
+  # a guess.
+  while IFS=$'\t' read -r name attached; do
+    [ -n "$name" ] || continue
+    all+=("$name")
+    [ "$attached" = 0 ] || attached_names+=("$name")
+  done < <(kp_tmux "$socket" list-sessions -F $'#{session_name}\t#{session_attached}' 2>/dev/null || true)
+  if [ "${#attached_names[@]}" -eq 1 ]; then
+    printf '%s\t%s\t%s\t0\n' "$socket" "${attached_names[0]}" 'the only attached session'
+    return 0
+  fi
+  if [ "${#all[@]}" -eq 1 ]; then
+    printf '%s\t%s\t%s\t0\n' "$socket" "${all[0]}" 'the only session on the server'
+    return 0
+  fi
+  if [ "${#all[@]}" -gt 1 ]; then
+    for name in "${all[@]}"; do joined=${joined:+"$joined, "}$name; done
+    if [ "${#attached_names[@]}" -eq 0 ]; then
+      measured="the tmux server '${socket:-default}' has ${#all[@]} sessions and none has a client attached ($joined)"
+    else
+      for name in "${attached_names[@]}"; do
+        attached_joined=${attached_joined:+"$attached_joined, "}$name
+      done
+      measured="the tmux server '${socket:-default}' has ${#all[@]} sessions and ${#attached_names[@]} of them have a client attached ($attached_joined)"
+    fi
+    printf "no single target session on the tmux server '%s', and %s; name one with --tmux-session <name>, KINGPIN_TMUX_SESSION=<name>, or TMUX_SESSION in %s/config.env\n" \
+      "${socket:-default}" "$measured" "$home"
+    return 1
+  fi
+  # Nothing to join: the one case where a session is created, and the caller says so.
+  kp_tmux_socket_reachable "$socket" || started=1
+  kp_tmux "$socket" new-session -d -s kingpin -n home \
+    || {
+      printf "no session on the tmux server '%s' (%s) and the fallback session 'kingpin' could not be created\n" \
+        "${socket:-default}" "$(kp_tmux_label "$socket")"
+      return 1
+    }
+  printf "kingpin: no session on the fleet tmux server '%s'; created and using \"kingpin\" (name one with --tmux-session or KINGPIN_TMUX_SESSION)\n" "${socket:-default}" >&2
+  printf '%s\t%s\t%s\t%s\n' "$socket" kingpin 'the named fallback (no session existed)' "$started"
+  return 0
+}
+
+# kp_tmux_has_session <socket> <name>
+# Exit 0 when <socket> holds a session named exactly <name>. The target is written
+# `=<name>`, tmux's exact-match form: a bare name is a unique prefix, so a server
+# holding only `kingpin-workers` answers yes for `kingpin` and the caller starts
+# nothing (issues #149, #181). An empty name answers no. Prints nothing.
+kp_tmux_has_session() {
+  local sock=${1:-} name=${2:-}
+  [ -n "$name" ] || return 1
+  kp_tmux "$sock" has-session -t "=$name" 2>/dev/null
+}
+
+# kp_tmux_resolve_session <socket> <target>
+# Print the name of the session <target> names on <socket>, accepting an
+# unambiguous prefix the way tmux does on purpose, which is what a spawn's explicit
+# target (`--tmux-session`, `KINGPIN_TMUX_SESSION`) promises (issue #152). Exit 1
+# when no session matches and print nothing. A caller that must not accept a prefix
+# uses kp_tmux_has_session.
+kp_tmux_resolve_session() {
+  local sock=${1:-} target=${2:-} name=''
+  [ -n "$target" ] || return 1
+  kp_tmux "$sock" has-session -t "$target" 2>/dev/null || return 1
+  name=$(kp_tmux "$sock" display-message -p -t "$target" '#S' 2>/dev/null) || return 1
+  [ -n "$name" ] || return 1
+  printf '%s\n' "$name"
+}
+
 # kp_tmux_ensure_session <socket> <session>
 # Make sure <session> exists on <socket>, creating it detached when it does not.
-# Prints nothing; the caller reports a failure.
+# The check is exact, so a `kingpin-workers` session beside it is never taken for
+# `kingpin` (issue #181). Prints nothing; the caller reports a failure.
 kp_tmux_ensure_session() {
   local sock=${1:-} session=${2:?}
-  kp_tmux "$sock" has-session -t "$session" 2>/dev/null \
+  kp_tmux_has_session "$sock" "$session" \
     || kp_tmux "$sock" new-session -d -s "$session" -n home
 }
 

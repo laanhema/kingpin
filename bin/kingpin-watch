@@ -289,6 +289,33 @@ afk_dispatch_fixed() {
   return 0
 }
 
+# listener_is_live <task-dir>: a background listener is running for the task.
+# `kingpin-listen` writes the child's pid to listener.pid, and its EXIT trap removes
+# the file, so a live pid there is the one thing a launch leaves behind when it
+# really started a listener.
+listener_is_live() {
+  local dir=$1 pid
+  [ -f "$dir/listener.pid" ] || return 1
+  pid=$(cat "$dir/listener.pid" 2>/dev/null || true)
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+
+# start_dossier_listener <task-id> <task-dir>: start a background listener, or
+# confirm the one already running, and report whether one runs afterwards. The
+# launcher's exit status is not that answer: `kingpin-listen --background` exits 0
+# without a listener when lavish-axi is missing, when it cannot take the launch
+# lock, and when its child never writes listener.pid (issue #182 review M1). Its
+# own explanation is discarded by the launch, so it is repeated on stderr when the
+# launch left nothing behind (its child logs the rest to listener.log).
+start_dossier_listener() {
+  local id=$1 dir=$2 out line
+  out=$("$KP_BIN/kingpin-listen" "$id" --background 2>&1) || true
+  listener_is_live "$dir" && return 0
+  line=$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | head -n 1 || true)
+  [ -z "$line" ] || echo "$line" >&2
+  return 1
+}
+
 # Apply one status line. The case is the dispatch table; process_task_event calls
 # it once per unprocessed line, so a worker event batched with a listener note
 # cannot be acknowledged away.
@@ -314,7 +341,11 @@ dispatch_status_line() {
           echo "[kingpin-watch] $id is ready for review (lavish-axi $task_dir/report.html)"
           if [ -f "$task_dir/report.html" ]; then
             warn_report_check "$id" "$task_dir"
-            "$KP_BIN/kingpin-listen" "$id" --background || true
+            if start_dossier_listener "$id" "$task_dir"; then
+              echo "[kingpin-watch] $id: dossier listener started"
+            else
+              echo "[kingpin-watch] $id: could not start the dossier listener; open the page by hand (lavish-axi $task_dir/report.html)" >&2
+            fi
           fi
         fi
       fi
@@ -461,7 +492,7 @@ advance_landing_queues() {
 # Nothing re-armed it before, so the reviewer's clicks queued in a session nobody read.
 # This is a sweep, not an event branch, because the task's ready: line is already acked.
 rearm_listeners() {
-  local dir id pid mode last
+  local dir id mode last
   # Without lavish-axi kingpin-listen only prints a note and exits 0; skip the sweep
   # so a host without it does not relaunch one listener per task per cycle.
   command -v "${KINGPIN_LAVISH:-lavish-axi}" >/dev/null 2>&1 || return 0
@@ -484,11 +515,13 @@ rearm_listeners() {
       *) continue ;;
     esac
     id=$(basename "$dir")
-    pid=''
-    if [ -f "$dir/listener.pid" ]; then pid=$(cat "$dir/listener.pid" 2>/dev/null || true); fi
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then continue; fi
+    listener_is_live "$dir" && continue
     echo "[kingpin-watch] $id: dossier listener is gone; re-arming"
-    "$KP_BIN/kingpin-listen" "$id" --background >/dev/null 2>&1 || true
+    if start_dossier_listener "$id" "$dir"; then
+      echo "[kingpin-watch] $id: dossier listener re-armed"
+    else
+      echo "[kingpin-watch] $id: could not re-arm the dossier listener; open the page by hand (lavish-axi $dir/report.html)" >&2
+    fi
   done
 }
 
