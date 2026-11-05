@@ -71,15 +71,38 @@ kp_curate_pending_count() {
   printf '%s\n' "$n"
 }
 
-# kp_curate_idle <kp-home>
-# Exit 0 only when the fleet is idle: no live task record under tasks/, every
-# projects/*.landing_queue is empty, and every project's landing holder is no
-# longer live. A landing in flight is never touched by the trigger.
-kp_curate_idle() {
-  local home=${1:?} dir q lock project holder
+# kp_curate_in_flight_task <kp-home>
+# Prints the fleet's first task record whose work is not over, as two lines: its
+# id and its last worker status line (or `none`), and exits 0. Prints nothing and
+# exits 1 when every live record is finished. An archived record's dossier link
+# is not a record, a record carrying `done_cleaned` or a last line of
+# `merged:`/`failed:` is finished, and everything else, `cleanup-refused:`
+# included, is still in flight.
+kp_curate_in_flight_task() {
+  local home=${1:?} dir id last
   for dir in "$home"/tasks/*; do
-    kp_task_is_live "$dir" && return 1
+    kp_task_is_live "$dir" || continue
+    kp_task_is_finished "$dir" && continue
+    id=$(basename "$dir")
+    last=$(kp_status_last "$dir/status")
+    printf '%s\n%s\n' "$id" "${last:-none}"
+    return 0
   done
+  return 1
+}
+
+# kp_curate_idle <kp-home>
+# Exit 0 only when the fleet is idle: every live task record under tasks/ is
+# finished (it carries `done_cleaned` or its last worker status line is `merged:`
+# or `failed:`; a `cleanup-refused:` record is still in flight, because
+# kingpin-watch retries it), every projects/*.landing_queue is empty, and every
+# project's landing holder is no longer live. A landing in flight is never
+# touched by the trigger.
+kp_curate_idle() {
+  local home=${1:?} q lock project holder
+  if kp_curate_in_flight_task "$home" >/dev/null; then
+    return 1
+  fi
   for q in "$home"/projects/*.landing_queue; do
     [ -f "$q" ] || continue
     [ -s "$q" ] && return 1
