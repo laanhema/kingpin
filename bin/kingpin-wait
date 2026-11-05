@@ -3,7 +3,9 @@
 #
 # Inspects $KINGPIN_HOME/tasks/ for:
 #   1. New status lines (status line count > seen count). A purely informational
-#      `issue:` line does not wake the waiter; any other new line does.
+#      `issue:` line does not wake the waiter; any other new line does. A status file
+#      rewritten under the cursor (the handled line is gone from its index) is a
+#      status event too, even when the line count did not change (issue #190).
 #   2. Unexpected window termination (tmux window gone without terminal status).
 #      A task whose `launching` marker is fresh (kingpin-spawn has not created the
 #      window yet) is not reported.
@@ -172,6 +174,18 @@ check_task() {
       echo "$id status"
       return 0
     fi
+  fi
+
+  # 1b. A status file rewritten under the cursor (issue #190). A count alone cannot
+  # see this: a worker that removed a handled line and appended one leaves the file
+  # the same length as before, so no count check fires and the appended line never
+  # gets a dispatch. The anchor kingpin-ack records beside the count tells the two
+  # apart, and reporting the rewrite as a status event wakes the supervisor, which
+  # repairs the cursor and dispatches what is left. The repair makes the file read
+  # as intact again, so this fires once per rewrite.
+  if [ "$(kp_status_cursor_resume "$dir")" != "$seen_count" ]; then
+    echo "$id status"
+    return 0
   fi
 
   # Terminal tasks need no further checks

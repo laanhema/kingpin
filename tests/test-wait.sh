@@ -123,6 +123,91 @@ seen_val_all=$(cat "$task_w_dir/seen" 2>/dev/null | tr -d ' ' || echo 0)
 
 rm -rf "$task_w_dir"
 
+# Test 6d: the cursor carries the handled line's text, and only --rewind moves it
+# back; a file shorter than the cursor raises a status event (issue #190).
+echo "=== Test 6d: the cursor anchor and --rewind (#190) ==="
+t6d_dir="$KINGPIN_HOME/tasks/t6d-ack"
+mkdir -p "$t6d_dir"
+t6d_wid=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n t6d-ack)
+cat > "$t6d_dir/task.env" << ENV
+PROJECT=demo-auto
+HARNESS=claude
+MODE=review
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
+TMUX_TARGET=kingpin:t6d-ack
+TMUX_WINDOW_ID=$t6d_wid
+ENV
+printf 'issue: #190\nneeds-input: first\nfailed: second\n' > "$t6d_dir/status"
+"$KP_BIN/kingpin-ack" --through 2 t6d-ack >/dev/null 2>&1 || true
+[ "$(tr -d ' \n' < "$t6d_dir/seen")" = "2" ] \
+  && pass "t6d: --through wrote the cursor" || fail "t6d: seen=$(cat "$t6d_dir/seen" 2>/dev/null || true)"
+[ "$(sed -n 1p "$t6d_dir/seen_line" 2>/dev/null || true)" = "needs-input: first" ] \
+  && pass "t6d: the cursor carries the handled line's own text" \
+  || fail "t6d: anchor='$(sed -n 1p "$t6d_dir/seen_line" 2>/dev/null || true)'"
+"$KP_BIN/kingpin-ack" --through 1 t6d-ack >/dev/null 2>&1 || true
+[ "$(tr -d ' \n' < "$t6d_dir/seen")" = "2" ] \
+  && pass "t6d: --through alone never moves the cursor backwards" \
+  || fail "t6d: a plain --through rewound the cursor to $(cat "$t6d_dir/seen")"
+"$KP_BIN/kingpin-ack" --through 1 --rewind t6d-ack >/dev/null 2>&1 || true
+[ "$(tr -d ' \n' < "$t6d_dir/seen")" = "1" ] \
+  && pass "t6d: --rewind moves the cursor to the line dispatch resumes at" \
+  || fail "t6d: --rewind left seen=$(cat "$t6d_dir/seen")"
+[ "$(sed -n 1p "$t6d_dir/seen_line" 2>/dev/null || true)" = "issue: #190" ] \
+  && pass "t6d: --rewind re-anchors at the line it moved to" \
+  || fail "t6d: rewind anchor='$(sed -n 1p "$t6d_dir/seen_line" 2>/dev/null || true)'"
+kp_run t6d_out t6d_rc "$KP_BIN/kingpin-ack" --rewind t6d-ack
+[ "$t6d_rc" -eq 2 ] && [ "$(tr -d ' \n' < "$t6d_dir/seen")" = "1" ] \
+  && pass "t6d: --rewind without --through exits 2 and touches no cursor" \
+  || fail "t6d: --rewind alone exited $t6d_rc: $t6d_out"
+
+# A file shorter than its cursor is a rewrite, even for a record with no anchor.
+printf 'issue: #190\n' > "$t6d_dir/status"
+printf '3\n' > "$t6d_dir/seen"
+rm -f "$t6d_dir/seen_line"
+t6d_out=$("$KP_BIN/kingpin-wait" --once 2>/dev/null || true)
+echo "$t6d_out" | grep -q "^t6d-ack status" \
+  && pass "t6d: a status file shorter than its cursor raises a status event" \
+  || fail "t6d: the truncated file raised no event (got: $t6d_out)"
+# And the same file with its cursor in range stays quiet.
+printf '1\n' > "$t6d_dir/seen"
+set +e
+t6d_out=$("$KP_BIN/kingpin-wait" --once 2>/dev/null)
+t6d_rc=$?
+set -e
+[ "$t6d_rc" -eq 1 ] && [ -z "$t6d_out" ] \
+  && pass "t6d: a cursor inside the file stays quiet" \
+  || fail "t6d: an intact cursor raised an event (rc=$t6d_rc out=$t6d_out)"
+
+# The anchor's own round trip: a handled line that ends in whitespace or holds a
+# backslash has to match itself on the next pass, or every pass after the ack
+# reports a rewrite and replays the file (issue #190).
+t6d_anchor_case() {
+  local label=$1 body=$2 resume out
+  printf 'issue: #190\n%s\n' "$body" > "$t6d_dir/status"
+  "$KP_BIN/kingpin-ack" --through 2 t6d-ack >/dev/null 2>&1 || true
+  resume=$(bash -c '. "$1/lib/status.sh"; kp_status_cursor_resume "$2"' _ "$KP_ROOT" "$t6d_dir")
+  [ "$resume" = "2" ] \
+    && pass "t6d: $label" \
+    || fail "t6d: $label (resume=$resume, seen_line='$(cat "$t6d_dir/seen_line" 2>/dev/null || true)')"
+  out=$("$KP_BIN/kingpin-wait" --once 2>/dev/null || true)
+  [ -z "$out" ] \
+    && pass "t6d: $label: the next wait pass stays quiet" \
+    || fail "t6d: $label: the next wait pass raised '$out'"
+}
+t6d_anchor_case "an anchor holding a backslash matches its own line" 'feedback: rename \w+ to \d+'
+t6d_anchor_case "an anchor ending in a space matches its own line" 'feedback: use the v2 API '
+
+# ... and the supervisor logs no repair for it, on two consecutive passes.
+t6d_watch_log="$T/t6d-watch.log"
+: > "$t6d_watch_log"
+"$KP_BIN/kingpin-watch" --once >> "$t6d_watch_log" 2>&1 || true
+"$KP_BIN/kingpin-watch" --once >> "$t6d_watch_log" 2>&1 || true
+grep -q "t6d-ack status file was rewritten" "$t6d_watch_log" \
+  && fail "t6d: the handled anchor was repaired on every pass: $(cat "$t6d_watch_log")" \
+  || pass "t6d: a handled anchor logs no repair on later passes"
+tmux kill-window -t "$t6d_wid" 2>/dev/null || true
+rm -rf "$t6d_dir"
+
 # Test 6c: kingpin-wait ignores informational lines, holds repeated quiet, spares a launching window
 echo "=== Test 6c: kingpin-wait wake filtering (#45) ==="
 t45_dir="$KINGPIN_HOME/tasks/t45-wait"

@@ -51,6 +51,10 @@ A worker that reported a status line and whose window is gone before a terminal 
 
 Each cycle also advances a project's landing queue whose holder released or is gone, so an ownerless queue recovers on its own, and re-arms a review task's dossier listener that died (missing or dead `listener.pid`) unless the reviewer ended the session, the task finished, a landing is under way, the task runs in `auto` mode, or its last worker event is not `ready:`/`fixed:`.
 
+### A status file rewritten under its cursor
+
+The cursor is a line count paired with the text of the handled line, so a file a worker rewrote is noticed rather than silently skipped. The supervisor logs `[kingpin-watch] <id> status file was rewritten under its cursor (<n> line(s), seen <m>); resuming at line <k>` on stderr, moves the cursor to the line it resumes at, and dispatches from the next one. This is the only cursor move that goes backwards, and it is a repair: after it the file reads as intact again, so the line appears once per rewrite.
+
 ### A tmux server that died
 
 Before the wait pass of every cycle, and in `--once`, the supervisor checks each socket a live task record names. When one no longer answers it logs `the tmux server '<socket>' is not running; restoring <ids>` and runs `kingpin restore` for the tasks on that socket, which recreates the session (and with it the server) and re-arms each window with a resume brief. Curator tasks and tasks whose last status is terminal are skipped, because restore refuses them by name. Running it before the wait pass means a restored window is back before `exited` would be raised for it. A supervisor that was itself running inside the server that died dies with it, so start `kingpin watch` outside the workers' server; see [Who owns the server](#who-owns-the-server).
@@ -288,19 +292,27 @@ An archived task raises no event: its leftover dossier link is not a live task, 
 
 A live task record that names a tmux server which no longer answers gets one warning on stderr per server, naming it, the tasks whose windows died with it, and the command that attaches once it is back. The warning is printed once per server per process and the check rides every pass, so a server that dies during a long `kingpin wait` is still named. `KINGPIN_SKIP_SOCKET_WARN=1` silences it.
 
+### A status file rewritten under the cursor
+
+A worker is told to append, but a worker that rewrites its `status` file can leave the file the same length as its cursor: remove a handled line, append the next event, and the new line's number is one the cursor already covers, so a count comparison has nothing to see. The waiter compares the anchor `kingpin ack` records beside the count instead, and reports `status` when the handled line is no longer at its index, so the supervisor wakes, repairs the cursor and dispatches what is left. A file shorter than its cursor is the same case and takes the same path.
+
 ### See also
 
 See [Fleet Overview](fleet-overview.md#fleet-overview--visual-review-dossiers).
 
 ## kingpin ack
 
-**Usage:** `kingpin ack <task-id>... | --all | --through <line>`
+**Usage:** `kingpin ack <task-id>... | --all | --through <line> [--rewind]`
 
-**Flags:** `--all`, `--through <line>`
+**Flags:** `--all`, `--through <line>`, `--rewind`
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_MUX`, `KINGPIN_HERDR_SESSION`
 
-The cursor never moves backwards and is clamped to the file. An archived task is a no-op that exits 0 with a note, and no cursor is written into the archive.
+The cursor never moves backwards and is clamped to the file; `--rewind` lets `--through` move it back, and the supervisor is the only caller that asks, when it has found that the status file was rewritten under the cursor. An archived task is a no-op that exits 0 with a note, and no cursor is written into the archive.
+
+### The anchor
+
+Beside the `seen` count every cursor write records the handled line's own text in `seen_line`. A count alone cannot say which line it counted once a writer rewrote the file, so the anchor is what `kingpin wait` and `kingpin watch` compare the file against: another line at that index means the file was rewritten, and `kingpin watch` resumes after the last counted line that still holds the anchor instead of trusting the count. When the anchor is not among the counted lines at all, dispatch resumes at line 1 and the handled lines replay, which the at-least-once rule already allows; a crash between the anchor write and the count write is that shape. A line that is blank leaves no anchor.
 
 ## kingpin land
 
