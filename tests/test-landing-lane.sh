@@ -238,6 +238,41 @@ kp_wait_until 2 pane_has kingpin:lane-next "/issue-flow-done 72" && pass "the ne
 lane_drop lane-dead demo-lane
 lane_drop lane-next demo-lane
 
+# t72b2: a failed send on a Low-findings landing leaves no followups.md either:
+# the file is written before the marker, so the failure path has to remove both.
+echo "=== t72b2: a failed send leaves no followups.md ==="
+lane_task lane-dead-low demo-lane "ready: branch=b review=APPROVE WITH NITS report=.agents/reviews/all-low.md"
+mkdir -p "$T/wt-lane-lane-dead-low/.agents/reviews"
+cat > "$T/wt-lane-lane-dead-low/.agents/reviews/all-low.md" <<'EOF'
+# Code Review: demo
+
+## Issues Found
+
+### Critical
+
+None
+
+### High Priority
+
+None
+
+### Medium Priority
+
+None
+
+### Suggestions (Low)
+
+- **L1** `a.sh:1`: a stale comment. **Why:** it misleads. **Fix:** reword it.
+EOF
+lane_rc=0
+lane_out=$("$KP_BIN/kingpin" land lane-dead-low 2>&1) || lane_rc=$?
+[ "$lane_rc" -ne 0 ] && pass "t72b2: land on a dead window exits $lane_rc (non-zero)" || fail "t72b2: land on a dead window exited 0: $lane_out"
+[ ! -f "$KINGPIN_HOME/tasks/lane-dead-low/landing_sent" ] && pass "t72b2: no landing_sent left behind" || fail "t72b2: landing_sent left behind"
+[ ! -f "$KINGPIN_HOME/tasks/lane-dead-low/followups.md" ] \
+  && pass "t72b2: no followups.md left claiming a landed review" \
+  || fail "t72b2: followups.md survived the failed send: $(cat "$KINGPIN_HOME/tasks/lane-dead-low/followups.md")"
+lane_drop lane-dead-low demo-lane
+
 # t72c: two concurrent lands take the lane exactly once (AC 3)
 echo "=== t72c: two concurrent lands take the lane once (AC 3) ==="
 cp -p "$KP_BIN/kingpin-send" "$T/kingpin-send.orig"
