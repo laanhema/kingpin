@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# One bounded digest of the fleet, for a session that has just started (issue #188).
+#
+# A long orchestrator session compacts and eventually dies, and the session after it
+# has to re-derive the fleet by reading task directories and logs. This command prints
+# that state in one screen and then stops: every live task with its newest status and
+# state, the tasks whose review is waiting on a decision, the review dossiers nobody is
+# listening to, each project's landing-lane holder, the issue queue's pause state, the
+# AFK switch and the supervisor. It never prints a pane, and it is read-only, so a
+# digest costs nothing and starts nothing:
+#
+#   * the record readers and the state classifier are lib/status.sh, the same ones
+#     `kingpin list` calls, so the two commands cannot disagree about a record;
+#   * the supervisor and AFK lines are the ones lib/supervisor.sh and lib/afk.sh print,
+#     and the landing lanes come from lib/landing.sh;
+#   * the queue line comes from lib/queue.sh, the one reader of the operator's
+#     $KINGPIN_HOME/queue directory;
+#   * a worker window is resolved through lib/tmux.sh, so a record naming its own socket
+#     is probed on that server, and a server that is down reads as DEAD without starting.
+#
+# It creates no file and no directory, so it is safe on a read-only fleet home, and an
+# empty or missing fleet is a digest of nothing and exit 0, not an error.
+#
+# Usage: kingpin-brief
+set -euo pipefail
+
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+KP_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=../lib/status.sh
+. "$KP_BIN/../lib/status.sh"
+# shellcheck source=../lib/tmux.sh
+. "$KP_BIN/../lib/tmux.sh"
+# shellcheck source=../lib/supervisor.sh
+. "$KP_BIN/../lib/supervisor.sh"
+# shellcheck source=../lib/afk.sh
+. "$KP_BIN/../lib/afk.sh"
+# shellcheck source=../lib/landing.sh
+. "$KP_BIN/../lib/landing.sh"
+# shellcheck source=../lib/queue.sh
+. "$KP_BIN/../lib/queue.sh"
+
+usage_error() { echo "kingpin-brief: $*" >&2; exit 2; }
+
+usage() {
+  cat <<'HELP'
+usage: kingpin brief
+
+  Print one bounded digest of the fleet on one screen:
+
+    Fleet:    live task count, how many reviews wait on you, how many windows are dead
+    Supervisor, AFK and Queue:  the fleet's switches, read from the files they live in
+    the task table:  one row per live task (id, project, harness, mode, state, newest
+                     status line), the state being the one `kingpin list` prints
+    Waiting for approval:            the ready:/fixed: tasks no landing holds or has
+                                     queued; a fixed: row with High findings left says
+                                     needs re-review
+    Dossiers without a listener:    a report.html whose Lavish listener is not running
+    Landing lanes:                  each project's holder and queue length
+
+  One line per task and no pane dumps, so the digest fits on a screen. It reads
+  $KINGPIN_HOME only and writes nothing, and a missing fleet is an empty digest with
+  exit 0. A task row's state is the one `kingpin list` prints: DEAD (its window is
+  gone), WAITING (blocked on a human), SILENT (stopped without reporting), `Unseen: N`
+  (N status lines arrived since the last ack), or `running` for no flag at all, the
+  `-` the board shows in the same column.
+HELP
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    *) usage_error "unknown argument '$1'" ;;
+  esac
+done
+
+# The live records, collected the way `kingpin list` collects them: a dossier link left
+# at tasks/<id> by kingpin done is not a record, and a cleaned-up record is hidden here
+# as it is there, because the digest answers for the work still in motion.
+live_dirs=()
+for d in "$KP_HOME/tasks"/*; do
+  kp_task_is_live "$d" || continue
+  [ -f "$d/done_cleaned" ] || live_dirs+=("$d")
+done
+live_count=${#live_dirs[@]}
+
+# The ids a project's landing queue already holds. A queued task is not waiting for
+# approval: the lane owns it, and the lane line below reports it. Collected once,
+# before the record pass, so the approval gate reads one answer for the whole run.
+queued_ids=' '
+for q in "$KP_HOME"/projects/*.landing_queue; do
+  [ -f "$q" ] || continue
+  while IFS= read -r qid || [ -n "$qid" ]; do
+    [ -n "$qid" ] || continue
+    queued_ids="$queued_ids$qid "
+  done < "$q"
+done
+
+# The per-record facts and the three action sections, filled in one pass over the live
+# records so every row costs one window probe and no record is read twice.
+dead=0 approvals=0 rereviews=0
+table=''
+approval_rows=''
+dossier_rows=''
+for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
+  id=$(basename "$d")
+  env_file="$d/task.env"
+  proj='-' harness='claude' mode='review'
+  if [ -f "$env_file" ]; then
+    proj=$(kp_env_get "$env_file" PROJECT)
+    [ -n "$proj" ] || proj='-'
+    harness=$(kp_env_get "$env_file" HARNESS)
+    [ -n "$harness" ] || harness='claude'
+    mode=$(kp_env_get "$env_file" MODE)
+    [ -n "$mode" ] || mode='review'
+  fi
+  # Liveness, then the shared classifier (lib/status.sh): the digest never decides a
+  # state of its own, so its rows agree with the board. The `Unseen: N` value and its
+  # precedence are the board's too: a state token wins over it, and it wins over the
+  # "no flag" answer, so an event nobody dispatched stays visible in either command.
+  # `pane` is the window that is still there after its harness exited: DEAD while the
+  # job runs on, SILENT for a finished silent stop, as `kingpin list` reads it.
+  liveness=dead
+  if kp_window_find "$d" >/dev/null 2>&1; then
+    if kp_window_harness_live "$d" >/dev/null 2>&1; then
+      liveness=live
+    else
+      liveness=pane
+    fi
+  fi
+  state=$(kp_task_state "$d/status" "$liveness")
+  if [ "$state" = DEAD ]; then
+    dead=$((dead + 1))
+  fi
+  newest=''
+  unseen=''
+  if [ -f "$d/status" ] && [ -s "$d/status" ]; then
+    newest=$(kp_status_newest "$d/status")
+    lines=$(wc -l < "$d/status" | tr -d ' ')
+    seen=0
+    [ -f "$d/seen" ] && seen=$(tr -d ' ' < "$d/seen" 2>/dev/null || echo 0)
+    case "$seen" in ''|*[!0-9]*) seen=0 ;; esac
+    case "$lines" in ''|*[!0-9]*) lines=0 ;; esac
+    if [ "$lines" -gt "$seen" ]; then
+      unseen="Unseen: $((lines - seen))"
+    fi
+  fi
+  [ -n "$newest" ] || newest='(no status yet)'
+  if [ "$state" = none ]; then
+    state=${unseen:-running}
+  fi
+  table="${table}$(printf '%-22s %-10s %-8s %-12s %-12s %s\n' \
+    "$id" "$proj" "$harness" "$mode" "$state" "$newest")"$'\n'
+
+  last=$(kp_status_last "$d/status")
+  # A review waiting on the operator: the worker reported ready: or fixed:, its window
+  # is still there to land through, and no landing has started on it. landing_sent is
+  # the listener's or the supervisor's send, approve_pending an approval the dossier
+  # queued, and landing_in_progress the marker kingpin land writes before it runs, so a
+  # row with any of them is being handled already and is not waiting. A worker whose
+  # window is gone is the restore hint's business, not an approval's, and an id already
+  # in its project's landing queue waits for the lane, which the lane line reports.
+  queued=0
+  case $queued_ids in *" $id "*) queued=1 ;; esac
+  case $last in
+    ready:*|fixed:*)
+      if [ "$liveness" = live ] && [ "$queued" -eq 0 ] \
+         && [ ! -f "$d/landing_sent" ] && [ ! -f "$d/approve_pending" ] \
+         && [ ! -f "$d/landing_in_progress" ]; then
+        report=$(kp_status_field "$last" report)
+        [ -n "$report" ] || report='-'
+        case $last in
+          fixed:*)
+            # A fix pass that still counts High findings does not land: kingpin-land
+            # asks the worker for another review, so the row is counted apart from the
+            # approvals it cannot join.
+            high=$(kp_status_field "$last" high)
+            case $high in
+              ''|*[!0-9]*) label="fixed: high=?"; approvals=$((approvals + 1)) ;;
+              *)
+                label="fixed: high=$high"
+                if [ "$high" -gt 0 ]; then
+                  label="$label (needs re-review)"
+                  rereviews=$((rereviews + 1))
+                else
+                  approvals=$((approvals + 1))
+                fi
+                ;;
+            esac
+            ;;
+          *)
+            verdict=$(kp_status_verdict "$last")
+            kind=$(kp_verdict_kind "$verdict")
+            case $kind in
+              findings) label="${verdict} (fix pass first)" ;;
+              clean) label=$verdict ;;
+              *)
+                if [ -n "$verdict" ]; then
+                  label="${verdict} (not a known verdict)"
+                else
+                  label='no verdict'
+                fi
+                ;;
+            esac
+            approvals=$((approvals + 1))
+            ;;
+        esac
+        approval_rows="${approval_rows}$(printf '  %-22s %-34s report: %s\n' \
+          "$id" "$label" "$report")"$'\n'
+      fi
+      ;;
+  esac
+
+  # A review dossier the operator can read but nobody is listening to. The URL the
+  # listener recorded is handed over as it is: opening the page again would open a
+  # second tab on the same session (issue #146).
+  if [ -f "$d/report.html" ]; then
+    listening=0
+    if [ -f "$d/listener.pid" ]; then
+      lpid=$(cat "$d/listener.pid" 2>/dev/null || true)
+      if [ -n "$lpid" ] && kill -0 "$lpid" 2>/dev/null; then
+        listening=1
+      fi
+    fi
+    if [ "$listening" -eq 0 ]; then
+      url=''
+      [ -s "$d/dossier.url" ] && url=$(head -n 1 "$d/dossier.url")
+      dossier_rows="${dossier_rows}$(printf '  %-22s %s\n' \
+        "$id" "${url:-lavish-axi $d/report.html}")"$'\n'
+    fi
+  fi
+done
+
+# The landing lanes: one line per project that holds or queues a landing. A lane file
+# with no holder and no queued id describes nothing, so it is skipped.
+lane_rows=''
+lane_projects=' '
+for f in "$KP_HOME"/projects/*.landing "$KP_HOME"/projects/*.landing_queue; do
+  [ -e "$f" ] || continue
+  project=$(basename "$f")
+  case $project in
+    *.landing_queue) project=${project%.landing_queue} ;;
+    *.landing) project=${project%.landing} ;;
+  esac
+  case $lane_projects in *" $project "*) continue ;; esac
+  lane_projects="$lane_projects$project "
+  holder=$(kp_landing_holder "$KP_HOME" "$project")
+  queued=$(kp_landing_queued "$KP_HOME" "$project")
+  if [ -z "$holder" ] && [ "$queued" -eq 0 ]; then
+    continue
+  fi
+  [ -n "$holder" ] || holder='free'
+  lane_rows="${lane_rows}$(printf '  %-22s holder %s, %s queued\n' "$project" "$holder" "$queued")"$'\n'
+done
+
+if [ "$live_count" -eq 0 ]; then
+  printf 'Fleet: no live tasks\n'
+else
+  headline="Fleet: $live_count live task(s), $approvals waiting for approval"
+  [ "$rereviews" -eq 0 ] || headline="$headline, $rereviews need(s) re-review"
+  headline="$headline, $dead dead"
+  [ "$dead" -eq 0 ] || headline="$headline - run kingpin restore"
+  printf '%s\n' "$headline"
+fi
+printf '%s\n' "$(kp_supervisor_line "$KP_HOME")"
+afk_line=$(kp_afk_line "$KP_HOME")
+printf '%s\n' "${afk_line:-AFK: off}"
+printf '%s\n' "$(kp_queue_line "$KP_HOME")"
+
+if [ "$live_count" -gt 0 ]; then
+  printf '\n'
+  printf '%-22s %-10s %-8s %-12s %-12s %s\n' 'TASK ID' 'PROJECT' 'HARNESS' 'MODE' 'STATE' 'NEWEST STATUS'
+  printf '%-22s %-10s %-8s %-12s %-12s %s\n' '-------' '-------' '-------' '----' '-----' '-------------'
+  printf '%s' "$table"
+fi
+if [ -n "$approval_rows" ]; then
+  printf '\nWaiting for approval:\n%s' "$approval_rows"
+fi
+if [ -n "$dossier_rows" ]; then
+  printf '\nDossiers without a listener:\n%s' "$dossier_rows"
+fi
+if [ -n "$lane_rows" ]; then
+  printf '\nLanding lanes:\n%s' "$lane_rows"
+fi

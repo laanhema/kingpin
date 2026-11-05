@@ -61,6 +61,22 @@ kp_landing_queue() {
   printf '%s\n' "${1:?}/projects/${2:?}.landing_queue"
 }
 
+# kp_landing_queued <kp-home> <project>
+# How many task ids the project's landing queue holds, always as a number: the
+# non-empty lines of the queue file, or 0 when the project has no queue. A reader
+# that only reports the lane (kingpin brief) asks this; a drain pops the ids.
+kp_landing_queued() {
+  local queue n
+  queue=$(kp_landing_queue "${1:?}" "${2:?}")
+  [ -f "$queue" ] || {
+    printf '0\n'
+    return 0
+  }
+  n=$(grep -c . "$queue" 2>/dev/null || true)
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  printf '%s\n' "$n"
+}
+
 # kp_landing_holder <kp-home> <project>
 # Prints the holder id; empty when the lane is free.
 kp_landing_holder() {

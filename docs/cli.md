@@ -202,6 +202,93 @@ When a live task record names a tmux server that is not running, `kingpin list` 
 
 A live row whose task holds a browser daemon also gets `↳ Browser: 1 daemon, 412 MB (pid 1234)`: the `chrome-devtools-axi` bridge the task started, with its `chrome-devtools-mcp` child and headless Chrome, summed over the whole process tree. Ownership is the daemon's working directory, so only a daemon started from the task folder or the task's worktree is counted (`lib/browser.sh`), and only a process whose argv runs the bridge script counts: a log tail or an editor that merely names it is neither listed nor stopped. A task that drives no browser gets no line, and an archived row never gets one, because `kingpin done` stops the daemons before it archives the task. A daemon left by a task archived before this change still runs, and no Kingpin command lists or stops it: its record is under `~/.kingpin/archive/<task-id>`, which `kingpin list` does not scan, and `kingpin done` only runs for a live task. Stop one by hand: find its pid, check that its working directory is that archive path (`readlink /proc/<pid>/cwd` on Linux, `lsof -a -p <pid> -d cwd -Fn` on macOS), and kill it. Two or more daemons print as `2 daemons` with their pids comma-separated.
 
+## kingpin brief
+
+**Usage:** `kingpin brief`
+
+**Environment:** `KINGPIN_HOME`
+
+One screen of fleet state for a session that has just started, so a node or an
+orchestrator coming back after a compaction does not have to re-derive the fleet from
+task directories and logs. It reads the records the fleet already writes, prints the
+digest, and exits. It creates no file and no directory, starts no terminal and no
+supervisor, so it is safe on a read-only fleet home, and an unknown argument exits 2.
+
+```
+Fleet: 4 live task(s), 1 waiting for approval, 1 dead - run kingpin restore
+Supervisor: running (pid 4812, since 14:03)
+AFK: on until 16:40 (pid 4790)
+Queue: 4 waiting, paused (queue/pause)
+
+TASK ID                PROJECT    HARNESS  MODE         STATE        NEWEST STATUS
+-------                -------    -------  ----         -----        -------------
+kp-188-todo-5-give     kingpin    claude   review       Unseen: 2    ready: branch=b review=APPROVE report=.agents/reviews/188-review.md
+kp-189-todo-6-add      kingpin    claude   review       WAITING      needs-input: which board column?
+kp-187-todo-4-fix      kingpin    codex    review       DEAD         fixed: high=0 report=.agents/reviews/187-review.md
+kp-190-todo-7-x        kingpin    claude   auto         Unseen: 1    issue: #190 https://github.com/laanhema/kingpin/issues/190
+
+Waiting for approval:
+  kp-188-todo-5-give     APPROVE                            report: .agents/reviews/188-review.md
+
+Dossiers without a listener:
+  kp-188-todo-5-give     http://lenovo-thinkpad:4387/session/9f2c
+
+Landing lanes:
+  kingpin                holder kp-190-todo-7-x, 2 queued
+```
+
+The `Fleet:` line counts the live records: a cleaned-up record and the dossier link
+`kingpin done` leaves at the old task path are not live, the same rule `kingpin list`
+uses. When at least one live record has no window, the line carries the dead count and
+the `kingpin restore` hint.
+
+`Supervisor:` and `AFK:` are the lines `lib/supervisor.sh` and `lib/afk.sh` print
+elsewhere, read from `$KINGPIN_HOME/supervisor.pid` and `$KINGPIN_HOME/afk`; `AFK: off`
+stands in while the switch is not armed.
+
+`Queue:` reads the issue-queue runner's own state under `$KINGPIN_HOME/queue/`: `queue`
+holds one issue number per line, and a `pause` file beside it makes the runner idle. The
+line names the pause file, because removing it is how a pause ends. Kingpin only reads
+that directory and never writes it, so a host with no queue runner prints `Queue: none`.
+
+The table prints one row per live task. Its columns are the task id, the recorded project,
+harness and mode, the state, and the newest status line, listener notes included. The
+state is not the digest's own opinion: `kp_task_state` in `lib/status.sh` decides it for
+`kingpin list` as well, so the board and the digest always agree.
+
+| State | Meaning |
+|---|---|
+| `DEAD` | the worker's window is gone, or the recorded harness no longer runs in it. Run `kingpin restore` |
+| `WAITING` | the window is still there and the newest line blocks on a human: `needs-input:`, the listener's `feedback:`, or the Stop hook's `waiting:` |
+| `SILENT` | the window is still there and the last worker event is the Stop hook's `failed: no status:` |
+| `Unseen: N` | N status lines have arrived since the last `kingpin ack`, so an event nobody dispatched stays visible |
+| `running` | none of the above. `kingpin list` prints `-` in this column for the same answer |
+
+`Waiting for approval:` lists the live reviews whose worker reported `ready:` or `fixed:`
+and which no landing has picked up yet: no `landing_sent`, no `approve_pending` and no
+`landing_in_progress` marker, and no id waiting in its project's landing queue. Each row
+names the review verdict, or the `high=` count of the latest fix pass, and the report
+path the worker handed over. A findings verdict
+(`NEEDS CHANGES`, `APPROVE WITH NITS`) carries `(fix pass first)`, because `kingpin land`
+runs the fix pass before it merges. A `fixed:` row whose `high=` count is not zero
+carries `(needs re-review)` and is counted in the headline's own need-re-review column,
+because `kingpin land` asks the worker for another review instead of merging it. A task
+whose window is gone waits for the restore instead and is not listed here.
+
+`Dossiers without a listener:` lists a live task with a `report.html` and no listener
+behind it: its `listener.pid` is missing or names a dead process. The row is the URL the
+listener recorded in `dossier.url`, or the `lavish-axi <path>` command when it recorded
+none, and that command is the only time to open the page yourself.
+
+`Landing lanes:` lists one row per project that holds or queues a landing, read from
+`$KINGPIN_HOME/projects/<project>.landing` and `.landing_queue` through `lib/landing.sh`:
+the holder, or `free`, and how many task ids wait in the queue. A lane with no holder and
+an empty queue is left out.
+
+The digest is bounded on purpose: one line per task, and no pane capture. It is the
+command `orchestrator/contract.md` tells a fresh orchestrator session to run first, and
+`kingpin list` remains the fuller board with windows, browsers and dossier links.
+
 ## kingpin stats
 
 **Usage:** `kingpin stats [--since <duration>]`
