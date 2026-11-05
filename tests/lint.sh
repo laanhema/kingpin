@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Lint every shell script (bin/*, lib/*.sh, tests/*.sh) and every node module (lib/*.mjs):
 # `bash -n` and `node --check` for syntax, then shellcheck (settings in .shellcheckrc).
-# Every suite has to be a leg of the CI matrix and have a row in docs/testing.md, the fixed
-# sleeps before assertions check and the unguarded `$?` check below have to stay quiet, and no
-# page the citation check reads may cite a source file by line number (tests/doc-citations.sh).
+# Every suite has to be a leg of the CI matrix and have a row in docs/testing.md, the ci-ok
+# merge-gate check below has to find one aggregate job that needs every other job and carries
+# no display `name:`, the fixed sleeps before assertions check and the unguarded `$?` check
+# below have to stay quiet, and no page the citation check reads may cite a source file by
+# line number (tests/doc-citations.sh).
 # The README/docs CLI-reference check runs in both directions: every parsed flag and
 # KINGPIN_* variable has to be documented, and every flag a docs page shows has to reach
 # docs/cli.md.
@@ -62,6 +64,67 @@ disk_suites=$(printf '%s\n' tests/test-*.sh | sed 's|^tests/test-||; s|\.sh$||' 
 if [ "$ci_suites" != "$disk_suites" ]; then
   echo "lint: the 'suite:' matrix in .github/workflows/ci.yml and tests/test-*.sh differ (< ci.yml, > tests/):" >&2
   diff <(echo "$ci_suites") <(echo "$disk_suites") >&2 || true
+  exit 1
+fi
+
+# The merge gate is one aggregate job: `ci-ok` needs every other job in this workflow and
+# runs with `if: always()`, so a failed, cancelled or skipped leg turns the required check
+# red instead of leaving it pending (issue #220). GitHub needs the job to exist before the
+# branch protection setting can require it, and a job added here without joining `needs`
+# would be a leg the gate silently ignores. A display `name:` on the job would replace the
+# `ci-ok` context the protection setting requires, so it is refused too. `needs` may be an
+# inline list or a block sequence, and a trailing comment hides neither a job key nor an
+# entry.
+ci_ok_block=$(awk '
+  /^  [A-Za-z0-9_-]+:/ {
+    injob = (index($1, "ci-ok:") == 1)
+    if (!injob) { next }
+  }
+  injob { print }
+' .github/workflows/ci.yml)
+ci_ok_problems=()
+if [ -z "$ci_ok_block" ]; then
+  ci_ok_problems+=("there is no ci-ok job in .github/workflows/ci.yml")
+else
+  ci_ok_needs=$(printf '%s\n' "$ci_ok_block" | awk '
+    /^    needs:[[:space:]]*(#.*)?$/ { inlist = 1; next }
+    inlist && /^[[:space:]]*-[[:space:]]*/ {
+      entry = $0
+      sub(/^[[:space:]]*-[[:space:]]*/, "", entry)
+      sub(/[[:space:]]*#.*$/, "", entry)
+      if (entry != "") print entry
+      next
+    }
+    inlist { inlist = 0 }
+    /^    needs:/ {
+      entry = $0
+      sub(/^    needs:[[:space:]]*/, "", entry)
+      sub(/[[:space:]]*#.*$/, "", entry)
+      if (entry != "") print entry
+    }
+  ')
+  ci_ok_tokens=$(printf '%s\n' "$ci_ok_needs" | tr -d '[] ' | tr ',' '\n')
+  ci_ok_jobs=$(awk '
+    /^jobs:/ { injobs = 1; next }
+    injobs && /^[^[:space:]#]/ { injobs = 0 }
+    injobs && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ { sub(/:$/, "", $1); print $1 }
+  ' .github/workflows/ci.yml)
+  while IFS= read -r ci_ok_job; do
+    [ -n "$ci_ok_job" ] || continue
+    [ "$ci_ok_job" = ci-ok ] && continue
+    printf '%s\n' "$ci_ok_tokens" | grep -qx "$ci_ok_job" \
+      || ci_ok_problems+=("ci-ok does not need $ci_ok_job, so a failure in that job cannot turn the gate red")
+  done <<< "$ci_ok_jobs"
+  if printf '%s\n' "$ci_ok_block" | grep -qE '^    name:'; then
+    ci_ok_problems+=("ci-ok has a 'name:' key, so GitHub would report that display name instead of the required context")
+  fi
+  printf '%s\n' "$ci_ok_block" | grep -qE '^    if:[[:space:]]*(\$\{\{[[:space:]]*)?always\(\)' \
+    || ci_ok_problems+=("ci-ok has no 'if: always()', so a failed leg would leave it skipped")
+fi
+if [ "${#ci_ok_problems[@]}" -gt 0 ]; then
+  echo "lint: the ci-ok merge gate in .github/workflows/ci.yml is not the aggregate this repository requires:" >&2
+  printf '  %s\n' "${ci_ok_problems[@]}" >&2
+  echo "lint: ci-ok must need every other job, run with 'if: always()', and carry no display name, so one required check covers the whole run" >&2
   exit 1
 fi
 

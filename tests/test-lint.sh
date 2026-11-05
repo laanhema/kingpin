@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# The lint's own checks (issue #81, issue #178): shell syntax, node module syntax, the CI
-# matrix, the docs/testing.md suite table, and the path:line citation rule.
+# The lint's own checks (issue #81, issue #178, issue #220): shell syntax, node module syntax,
+# the CI matrix, the docs/testing.md suite table, the ci-ok merge gate (a gate without
+# `if: always()`, a job it does not need, a gate that carries a display `name:`, and a missing
+# gate), and the path:line citation rule.
 #
 # The checks live in tests/lint.sh, which takes a --root <dir> argument, so this suite runs the
 # real lint against a minimal fixture: only the files the lint reads, built here, with nothing
@@ -71,11 +73,17 @@ F
 
 cat > "$FIX/.github/workflows/ci.yml" << 'F'
 jobs:
+  lint:
+    runs-on: ubuntu-latest
   test:
     strategy:
       fail-fast: false
       matrix:
         suite: [demo]
+  ci-ok:
+    needs: [lint, test]
+    if: always()
+    runs-on: ubuntu-latest
 F
 
 cat > "$FIX/.gitignore" << 'F'
@@ -216,11 +224,17 @@ printf '#!/usr/bin/env bash\nset -euo pipefail\nexit 0\n' > "$FIX/tests/test-ext
 chmod +x "$FIX/tests/test-extra.sh"
 cat > "$FIX/.github/workflows/ci.yml" << 'F'
 jobs:
+  lint:
+    runs-on: ubuntu-latest
   test:
     strategy:
       fail-fast: false
       matrix:
         suite: [demo, extra]
+  ci-ok:
+    needs: [lint, test]
+    if: always()
+    runs-on: ubuntu-latest
 F
 lint
 if [ "$LINT_RC" -ne 0 ] && grep -qF 'test-extra.sh' <<< "$LINT_OUT" && grep -qF 'has no row' <<< "$LINT_OUT"; then
@@ -575,5 +589,79 @@ fi
 rm -f "$FIX/tests/helper.sh"
 lint
 [ "$LINT_RC" -eq 0 ] && pass "removing the helper makes the lint green again" || fail "the lint stayed red after the helper was removed: $LINT_OUT"
+
+echo "=== Test 33: a ci-ok gate without 'if: always()' fails the lint ==="
+cp "$FIX/.github/workflows/ci.yml" "$T/ci.yml.saved"
+grep -v '^    if: always()$' "$T/ci.yml.saved" > "$FIX/.github/workflows/ci.yml"
+lint
+if [ "$LINT_RC" -ne 0 ] && grep -qF "ci-ok has no 'if: always()'" <<< "$LINT_OUT"; then
+  pass "a gate that would be skipped when a leg fails is rejected and named"
+else
+  fail "the lint accepted a ci-ok gate with no 'if: always()' (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/ci.yml.saved" "$FIX/.github/workflows/ci.yml"
+
+echo "=== Test 34: a job the gate does not need fails the lint ==="
+awk '$0 == "  lint:" { print "  docs:"; print "    runs-on: ubuntu-latest" } { print }' "$T/ci.yml.saved" > "$FIX/.github/workflows/ci.yml"
+lint
+if [ "$LINT_RC" -ne 0 ] && grep -qF 'ci-ok does not need docs' <<< "$LINT_OUT"; then
+  pass "a job outside the gate's needs is rejected and named"
+else
+  fail "the lint accepted a job the gate does not need (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/ci.yml.saved" "$FIX/.github/workflows/ci.yml"
+
+echo "=== Test 35: a missing ci-ok job fails the lint, and restoring it goes green ==="
+sed '/^  ci-ok:$/,/^    runs-on: ubuntu-latest$/d' "$T/ci.yml.saved" > "$FIX/.github/workflows/ci.yml"
+lint
+if [ "$LINT_RC" -ne 0 ] && grep -qF 'there is no ci-ok job' <<< "$LINT_OUT"; then
+  pass "a workflow with no aggregate gate is rejected and named"
+else
+  fail "the lint accepted a workflow with no ci-ok job (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/ci.yml.saved" "$FIX/.github/workflows/ci.yml"
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "restoring the aggregate gate makes the lint green again"
+else
+  fail "the lint stayed red after the aggregate gate was restored (rc=$LINT_RC): $LINT_OUT"
+fi
+
+echo "=== Test 36: a job key with an inline comment is still checked against the gate ==="
+awk '$0 == "  lint:" { print "  docs:  # a new job"; print "    runs-on: ubuntu-latest" } { print }' "$T/ci.yml.saved" > "$FIX/.github/workflows/ci.yml"
+lint
+if [ "$LINT_RC" -ne 0 ] && grep -qF 'ci-ok does not need docs' <<< "$LINT_OUT"; then
+  pass "a job key with an inline comment is still named as one the gate does not need"
+else
+  fail "an inline comment on a job key hid the job from the gate check (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/ci.yml.saved" "$FIX/.github/workflows/ci.yml"
+
+echo "=== Test 37: a display 'name:' on the gate fails the lint ==="
+awk '$0 == "  ci-ok:" { print; print "    name: CI gate"; next } { print }' "$T/ci.yml.saved" > "$FIX/.github/workflows/ci.yml"
+lint
+if [ "$LINT_RC" -ne 0 ] && grep -qF "ci-ok has a 'name:' key" <<< "$LINT_OUT"; then
+  pass "a display name that would replace the required ci-ok context is rejected and named"
+else
+  fail "the lint accepted a ci-ok gate with a display name (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/ci.yml.saved" "$FIX/.github/workflows/ci.yml"
+
+echo "=== Test 38: a block-sequence needs and a commented inline list both pass ==="
+awk '$0 == "    needs: [lint, test]" { print "    needs:"; print "      - lint"; print "      - test"; next } { print }' "$T/ci.yml.saved" > "$FIX/.github/workflows/ci.yml"
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "a block-sequence needs passes the lint"
+else
+  fail "the lint rejected the block-sequence form of needs (rc=$LINT_RC): $LINT_OUT"
+fi
+sed 's/^    needs: \[lint, test\]$/    needs: [lint, test]  # every other job/' "$T/ci.yml.saved" > "$FIX/.github/workflows/ci.yml"
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "a trailing comment on the inline needs list passes the lint"
+else
+  fail "the lint rejected a commented inline needs list (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/ci.yml.saved" "$FIX/.github/workflows/ci.yml"
 
 kp_test_finish LINT

@@ -25,14 +25,42 @@ each task back as a visual review dossier. This file describes the repository.
 
 ```bash
 # bash -n, shellcheck, node --check over lib/*.mjs, the CI-matrix and suite-table checks,
-# the fixed-sleep-before-an-assertion check, the unguarded-`$?` check, the README/docs
-# CLI-reference check in both directions, the path:line citation check, and the tracked
-# .agents artifact check
+# the ci-ok merge-gate check, the fixed-sleep-before-an-assertion check, the unguarded-`$?`
+# check, the README/docs CLI-reference check in both directions, the path:line citation
+# check, and the tracked .agents artifact check
 ./tests/lint.sh
 
 # One suite at a time (two suites briefly swap bin/kingpin-send)
 ./tests/test-<suite>.sh
 ```
+
+One check on GitHub is the merge gate: the `ci-ok` job in `.github/workflows/ci.yml` passes
+only when `lint` and every `test` leg passed, and `main` requires it once the command below
+has run. The job is in the tree,
+the requirement is not: branch protection is a repository setting, so a fresh clone or a
+settings reset has no gate no matter what the tree says. Run this once as an admin, after
+`ci-ok` has appeared on a pull request, because requiring a check GitHub has never seen
+blocks every pull request:
+
+```bash
+gh api --method PUT repos/{owner}/{repo}/branches/main/protection \
+  -H 'Accept: application/vnd.github+json' \
+  -F 'required_status_checks[strict]=true' \
+  -F 'required_status_checks[contexts][]=ci-ok' \
+  -F 'enforce_admins=true' \
+  -F 'required_pull_request_reviews=null' \
+  -F 'restrictions=null'
+
+# Read it back: the contexts must be ["ci-ok"], strict true and enforce_admins true.
+gh api repos/{owner}/{repo}/branches/main/protection \
+  --jq '{contexts: .required_status_checks.contexts, strict: .required_status_checks.strict, admins: .enforce_admins}'
+```
+
+`strict=true` means a landing whose branch fell behind `main` merges `main`, pushes, and waits
+for the new `ci-ok` run before merging; the whole matrix costs about a minute (80 s on run
+42057314176), and landings are serialized, so the re-run only happens when `main` moved
+mid-flight. `enforce_admins=true` is what makes the gate bind an admin, so a merge is a plain
+`gh pr merge` and never `--admin`.
 
 ## Rules and their checks
 
@@ -42,6 +70,7 @@ A rule that only a person keeps is one that goes stale; each rule below names wh
 |---|---|
 | `bin/*`, `lib/*.sh` and `tests/*.sh` parse and pass shellcheck 0.11.0, and `lib/*.mjs` parses | `tests/lint.sh` |
 | every `tests/test-*.sh` is a leg of the CI matrix | `tests/lint.sh` |
+| the merge gate is the one `ci-ok` aggregate, which needs every other job and runs with `if: always()`, and `main` requires it once the protection command under Validation has run | `tests/lint.sh` for the job's shape, and the protection command under Validation for the required-check setting |
 | every `tests/test-*.sh` has a row in `docs/testing.md` and every row names a suite that exists | `tests/lint.sh` |
 | a suite waits with `kp_wait_until` or `kp_holds_for`, never a fixed `sleep` before an assertion | `tests/lint.sh` |
 | a test script captures a status with `kp_run`, never on a `NAME=$?` assignment after an unguarded command while errexit is on | `tests/lint.sh` |

@@ -64,6 +64,23 @@ nothing uses it by default.
   `max-width: 100%`, `height: auto` with `min-height: var(--size)` and `line-height: 1.4`, so a short
   badge keeps its 1rem height on the row baseline and a long label grows the pill instead of spilling
   past its border. Badges outside a cell are unchanged, because the selector names `td > .badge`.
+- **Header pills are an odd height.** At 12px the capitals are 9px tall, which is odd, so a 24px
+  pill can only put the ink half a pixel either side of the middle. `.badge-pill` sets 25px, and
+  every pill in the header badge row carries it.
+- **A pill's ink centres on the cap height.** A line box carries the font's ascent and descent, and
+  an all-caps label has no descenders, so the ink reads high. The `@supports (text-box: trim-both
+  cap alphabetic)` block is kept for a browser that trims a pill's line box, but it is inert on
+  today's DaisyUI badge, which lays its label out in an inline-flex box: toggling the trim moves no
+  ink. The odd pill height and the sans face are what land the ink, so keep both.
+- **Kind and status pills use the sans face.** A monospace face reports a taller cap height than it
+  draws, so one correction cannot serve both. Monospace stays for ids and code, which is why the
+  task-id pill keeps it and the `PROPOSAL` kind pill does not.
+- **An option's control sits on its title.** Handover pages only, because the worker dossier has no
+  option rows. Every choice is a bold title over a description, so the radio or checkbox lines up
+  with the title's ink instead of a mixed-size sentence whose last line carries descender space.
+  `calc(.2rem + 1px)` is the measured nudge on these rows.
+- **The option label leads its state pill.** Handover pages only, because the worker dossier has no
+  option cards. `Option B` comes before `RECOMMENDED`, matching the cards that carry no state pill.
 - **Annotation starts off.** `data-lavish-annotate="off"` is the reading default the worker contract asks for, so a stray click leaves no annotation card. The Lavish toolbar still turns annotation on when the boss wants to comment. The two action buttons are native buttons, so they work either way.
 - **Buttons degrade.** Approve & Land and Request Changes call `window.lavish.queuePrompt` and fall
   back to copying the text when the page is opened as a plain file.
