@@ -387,6 +387,69 @@ log_has "[kingpin-watch] t-snapshot cleanup refused: worktree" \
   || fail "t-snapshot seen=$(seen_count t-snapshot), expected 3"
 rm -rf "$KINGPIN_HOME/tasks/t-snapshot" "$snap_wt"
 
+# Test 7k: a line appended after the status file was rewritten shorter or the same
+# length is still dispatched (issue #190). The cursor is a count, so a removed line
+# plus an appended one leaves the count pointing past the new line.
+echo "=== Test 7k: a merged: line after a rewrite is dispatched ==="
+rewrite_wt="$T/wt-rewrite"
+mkdir -p "$rewrite_wt"
+git -C "$rewrite_wt" init -q
+mk_task t-rewrite
+printf 'PROJECT_PATH=%s\nWORKTREE=%s\n' "$T" "$rewrite_wt" >> "$KINGPIN_HOME/tasks/t-rewrite/task.env"
+t_rewrite="$KINGPIN_HOME/tasks/t-rewrite"
+# The incident's shape: the duplicate issue: line is the one the worker removes later.
+printf 'issue: #190 https://example.test/190\nneeds-input: probe\nissue: #190 https://example.test/190\nready: branch=b review=APPROVE report=r.md\napproved: auto (afk)\n' > "$t_rewrite/status"
+"$KP_BIN/kingpin-ack" --through 5 t-rewrite >/dev/null 2>&1 || true
+[ "$(seen_count t-rewrite)" = "5" ] \
+  && pass "the cursor was taken at five lines" \
+  || fail "the fixture cursor is $(seen_count t-rewrite), expected 5"
+# The rewrite: without the duplicate, with merged: appended. Same length as before.
+printf 'issue: #190 https://example.test/190\nneeds-input: probe\nready: branch=b review=APPROVE report=r.md\napproved: auto (afk)\n' > "$t_rewrite/status"
+printf 'merged: pr=https://example.test/pr/190\n' >> "$t_rewrite/status"
+[ "$(wc -l < "$t_rewrite/status" | tr -d ' ')" = "5" ] \
+  && pass "the rewritten file is as long as the cursor, so a count cannot see it" \
+  || fail "the fixture rewrite is not the incident's shape: $(wc -l < "$t_rewrite/status")"
+rewrite_out=$("$KP_BIN/kingpin-wait" --once 2>/dev/null || true)
+echo "$rewrite_out" | grep -q "^t-rewrite status" \
+  && pass "kingpin-wait reports a file rewritten under the cursor" \
+  || fail "the rewrite raised no event (got: $rewrite_out)"
+"$KP_BIN/kingpin-watch" --once >> "$LOG" 2>&1
+log_has "[kingpin-watch] t-rewrite merged; running cleanup..." \
+  && pass "the merged: line past the cursor was dispatched" \
+  || fail "merged: was never dispatched: $(cat "$LOG")"
+log_has "t-rewrite status file was rewritten under its cursor" \
+  && pass "the rewrite is named in the log with the task" \
+  || fail "the rewrite went unreported: $(cat "$LOG")"
+grep -q '^cleanup-refused:' "$t_rewrite/status" \
+  && pass "kingpin done ran for the rewritten task" \
+  || fail "kingpin done never ran: $(cat "$t_rewrite/status")"
+"$KP_BIN/kingpin-watch" --once >> "$LOG" 2>&1
+[ "$(grep -cF 't-rewrite status file was rewritten' "$LOG")" = "1" ] \
+  && pass "the rewrite is reported once, not on every pass" \
+  || fail "the rewrite report repeated: $(grep -cF 't-rewrite status file was rewritten' "$LOG")"
+rm -rf "$t_rewrite" "$rewrite_wt"
+
+# Test 7l: a record written before seen_line existed keeps working. Its cursor has
+# no anchor, so nothing looks rewritten and dispatch starts where the count says.
+echo "=== Test 7l: a record without an anchor keeps its old behaviour ==="
+mk_task t-legacy
+printf 'needs-input: legacy-question\n' >> "$KINGPIN_HOME/tasks/t-legacy/status"
+printf '1\n' > "$KINGPIN_HOME/tasks/t-legacy/seen"
+"$KP_BIN/kingpin-watch" --once >> "$LOG" 2>&1
+log_has "[kingpin-watch] t-legacy needs input" \
+  && pass "an anchor-less record still dispatches its pending line" \
+  || fail "an anchor-less record lost its line: $(cat "$LOG")"
+log_has "t-legacy status file was rewritten" \
+  && fail "an anchor-less record was reported as rewritten" \
+  || pass "an anchor-less record is not reported as rewritten"
+[ -s "$KINGPIN_HOME/tasks/t-legacy/seen_line" ] \
+  && pass "the pass wrote the anchor for the next one" \
+  || fail "the cursor gained no anchor"
+[ "$(sed -n 1p "$KINGPIN_HOME/tasks/t-legacy/seen_line" 2>/dev/null || true)" = "needs-input: legacy-question" ] \
+  && pass "the anchor is the handled line's own text" \
+  || fail "the anchor is '$(sed -n 1p "$KINGPIN_HOME/tasks/t-legacy/seen_line" 2>/dev/null || true)'"
+rm -rf "$KINGPIN_HOME/tasks/t-legacy"
+
 # Test 8: stopping the supervisor clears the pidfile and the list line
 echo "=== Test 8: supervisor stop ==="
 stop_supervisor
@@ -564,6 +627,11 @@ reset_arm_task() {
   printf 'PROJECT=demo\nHARNESS=claude\nMODE=review\nTMUX_TARGET=kingpin:t-arm\nTMUX_WINDOW_ID=%s\n' \
     "$probe_wid" > "$KINGPIN_HOME/tasks/t-arm/task.env"
   printf 'issue: #74\nready: branch=b review=APPROVE report=none\n' > "$KINGPIN_HOME/tasks/t-arm/status"
+  # The ready: line is already handled, so these cases exercise the re-arm sweep
+  # and not the dispatch branch; the cursor and its anchor are left consistent with
+  # the two-line file it now holds (issue #190).
+  printf '2\n' > "$KINGPIN_HOME/tasks/t-arm/seen"
+  rm -f "$KINGPIN_HOME/tasks/t-arm/seen_line"
   echo '<html><body>review</body></html>' > "$KINGPIN_HOME/tasks/t-arm/report.html"
   rm -f "$KINGPIN_HOME/tasks/t-arm/lavish_ended" "$KINGPIN_HOME/tasks/t-arm/landing_sent" \
     "$KINGPIN_HOME/tasks/t-arm/landing_in_progress" "$KINGPIN_HOME/tasks/t-arm/done_cleaned"

@@ -219,11 +219,7 @@ case "$cmd" in
       # archived row's, so neither names one.
       if [ -z "$suffix" ] && [ -f "$env_file" ] && [ "$window_alive" -eq 1 ]; then
         local where
-        if [ -n "$tmux_socket" ]; then
-          where="tmux -L $tmux_socket $live_session"
-        else
-          where="tmux $live_session"
-        fi
+        where="$(kp_tmux_label "$tmux_socket") $live_session"
         printf "  %-20s %s\n" "↳ Window:" "$where ($KP_WINDOW_ID)"
       fi
       # The browser daemons this task holds right now (issue #160), read from the one table
@@ -330,23 +326,22 @@ case "$cmd" in
       done
     }
 
-    # The attach command for one socket: `default` and an empty socket are one case, the
-    # way kp_tmux_socket_warn_line reads them, and the default server is the operator's
-    # own, so it takes a plain `tmux attach`. `tmux -L default attach` works, but a
-    # hardcoded `-t kingpin` does not: the default server holds the operator's sessions,
-    # not the fleet's (issue #165 review M1, L1).
+    # The attach command comes from lib/tmux.sh, the one place that knows how a socket
+    # is named: the default server is the operator's own and takes a plain `tmux
+    # attach`, a name takes `-L`, and a socket path takes `-S` (issue #191). A
+    # hardcoded `-t kingpin` would not do: the default server holds the operator's
+    # sessions, not the fleet's (issue #165 review M1, L1).
     socket_attach_cmd() {
-      case "${1:-}" in
-        ''|default) printf 'tmux attach' ;;
-        *) printf 'tmux -L %s attach' "$1" ;;
-      esac
+      kp_tmux_attach_cmd "${1:-}"
     }
 
     # Where the workers really live, and how to look at them by hand (issue #142). The
     # line is built from the sockets the live records name, not from the caller's
     # KINGPIN_TMUX_SOCKET: a fleet running on the operator's default server used to be
     # told to attach to a server that held no worker (issue #165). With no live task
-    # the fleet's own default is the one a spawn would use, so it is named instead.
+    # the fleet's own socket is named instead, the one a spawn started outside tmux
+    # uses; a spawn inside tmux follows the caller's socket, which this board cannot
+    # predict without resolving a target for it.
     print_socket_footer() {
       local d sock seen=' ' any=0
       for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
@@ -358,7 +353,7 @@ case "$cmd" in
           "${sock:-default}" "$(socket_attach_cmd "$sock")"
       done
       if [ "$any" -eq 0 ]; then
-        sock=$(kp_tmux_socket_name)
+        sock=$(kp_tmux_socket_for "$KP_HOME")
         printf "Workers live on the tmux server '%s': %s (kingpin peek <task-id> reads one pane)\n" \
           "$sock" "$(socket_attach_cmd "$sock")"
       fi

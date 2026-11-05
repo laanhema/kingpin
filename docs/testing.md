@@ -28,12 +28,13 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | Suite | Covers |
 |---|---|
 | `test-lifecycle.sh` | `init`, `list`, `watch` auto-lifecycle, `run`, fleet-server targeting |
-| `test-wait.sh` | `wait` and `ack`: blocking, wake filtering, exit codes |
-| `test-watch-supervisor.sh` | `watch`: single supervisor with a pidfile, stale reclaim, `list` line, `lock acquire` warning, events handled across turns |
+| `test-wait.sh` | `wait` and `ack`: blocking, wake filtering, exit codes, the `seen_line` anchor a written cursor carries, the `--rewind` rules, and the event a file shorter than its cursor raises |
+| `test-watch-supervisor.sh` | `watch`: single supervisor with a pidfile, stale reclaim, `list` line, `lock acquire` warning, events handled across turns, a status file rewritten under the cursor and the one-time repair line it logs |
 | `test-lock.sh` | `lock`: lifecycle, collisions, stale locks, recorded harness, parallel acquire race, atomic publish, release ownership |
 | `test-afk.sh` | `afk`: state lifecycle, the 8-hour default, TTL and dead-pid expiry, the `list` line, `lock release` clearing it, the clean-land path and its note, the listener's no-double-land markers, every refusal, the Stop-hook boundary the note leaves alone, a disarmed fix pass that lands without a note, an auto-mode NITS pass that gains one, and the skipped review listener |
-| `test-curate.sh` | `curate`: lifecycle, quote robustness, and a run on a server that holds only a same-prefix session |
-| `test-curate-auto.sh` | the automatic daily curator trigger: threshold, idle/live-fleet and landing gates, the finished-record shapes that let the run start (`merged:`, `failed: no status:`, `done_cleaned`, a terminal record still carrying `landing_in_progress`), an interrupted `cleanup-refused:` record that holds the run, a finished curator record the reconcile cannot archive that both paths leave intact, the in-flight record named on stderr, once-a-day stamp, existing-window no-op, concurrency, the applied marker, `kingpin land curator`, and no delay to a landing |
+| `test-curate.sh` | `curate`: lifecycle, quote robustness, a run on a server that holds only a same-prefix session, and the curator window following the configured and environment tmux target |
+| `test-curate-auto.sh` | the automatic daily curator trigger: threshold, idle/live-fleet and landing gates, the finished-record shapes that let the run start (`merged:`, `failed: no status:`, `done_cleaned`, a terminal record still carrying `landing_in_progress`), an interrupted `cleanup-refused:` record that holds the run, a finished curator record the reconcile cannot archive that both paths leave intact, the in-flight record named on stderr, once-a-day stamp, existing-window no-op, concurrency, the applied marker, `kingpin land curator`, and no delay to a landing, and a skipped tick that starts no tmux server |
+| `test-curate-prompt.sh` | the curator prompt delivery: a batch past the argument limit reaches the harness on stdin, a multi-word override keeps its flags, a missing prompt and a prompt past Kingpin's read cap each write a named `failed:` line, and an unrunnable command names its cause |
 | `test-land.sh` | `land`: review-gate verdicts, fix pass, re-review, output wording |
 | `test-landing-lane.sh` | land lane: dead worker window, dead queue entry, concurrent lands, append-after-release |
 | `test-done.sh` | `done`: refused cleanup, archive, slot guard, branch cleanup, single-flight, default-branch resolution |
@@ -41,10 +42,10 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-listen.sh` | `listen`: dossier opening, live listener, prompt routing |
 | `test-restore.sh` | `restore` after a tmux server restart, the `DEAD` list state, and the shared window resolver |
 | `test-send-peek.sh` | `send` and `peek` |
-| `test-spawn.sh` | `spawn`: window ID tracking, descriptive slugs, pinned window names |
+| `test-spawn.sh` | `spawn`: window ID tracking, descriptive slugs, pinned window names, and the tmux target precedence (config pair, env and flag over config, the caller-session default, the stale-`$TMUX` and out-of-tmux fallbacks) |
 | `test-stats.sh` | `stats`: the summary counts on a three-task fixture, `--since`, archived records and their dossier links, curator and undated records skipped, the merged and failed precedence rules, and the no-write guarantee |
 | `test-tmux-isolation.sh` | tmux isolation: the operator's session and server killed under a running worker, the static checks that every tmux call goes through `lib/tmux.sh` and every session check goes through `kp_tmux_has_session`, `list` naming the socket and session, and `done` closing the fleet window |
-| `test-fleet-server.sh` | the fleet tmux server: a dead server read as `DEAD`, the socket warning, the supervisor's restore sweep, and the spawn line that says it started the server |
+| `test-fleet-server.sh` | the fleet tmux server: a dead server read as `DEAD`, the socket warning, the supervisor's restore sweep, the spawn line that says it started the server, and the `-S` attach hint and warning a socket-path record gets |
 | `test-mux.sh` | the mux contract: `KINGPIN_MUX` selection, the per-record mux reader, every verb's argv against a fake Herdr, and the two static checks |
 | `test-mux-herdr-real.sh` | the opt-in real-Herdr leg: `lib/mux.sh`'s backend against the installed `herdr`, self-skipping when it is absent |
 | `test-sync.sh` | `sync` |

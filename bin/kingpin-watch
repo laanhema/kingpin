@@ -10,7 +10,9 @@
 # so a worker event that a listener note follows is not lost, and lines appended
 # while a batch runs stay pending for the next pass. A supervisor restart resumes
 # at the first undispatched line; a crash between a dispatch and its ack replays
-# that one line (at-least-once, never lost).
+# that one line (at-least-once, never lost). The count is paired with the handled
+# line's text (`seen_line`), so a status file a worker rewrote under the cursor is
+# noticed and repaired instead of silently skipping the line it covered (issue #190).
 #
 # One supervisor per fleet: it claims $KINGPIN_HOME/supervisor.pid (pid on line 1,
 # start epoch on line 2) and refuses to start a second copy while that pid is live,
@@ -426,6 +428,21 @@ process_task_event() {
   # supervisor spins. With no file the loop below dispatches nothing.
   local i=$seen line
   if [ -f "$status_file" ]; then
+    # A status file rewritten under the cursor (issue #190). kingpin-ack records the
+    # handled line's text beside the count, so a rewrite (a line removed, the file
+    # reordered or truncated) shows up as another line at the cursor's index. The
+    # count then names no line, so dispatch resumes where the anchor still is, and
+    # the one repair that moves the cursor backwards says so on stderr, naming the
+    # task. Replaying handled lines is allowed here, as everywhere in this loop;
+    # losing one is not.
+    local resume
+    resume=$(kp_status_cursor_resume "$task_dir")
+    if [ "$resume" != "$seen" ]; then
+      echo "[kingpin-watch] $id status file was rewritten under its cursor ($(wc -l < "$status_file" | tr -d ' ') line(s), seen $seen); resuming at line $((resume + 1))" >&2
+      "$KP_BIN/kingpin-ack" --through "$resume" --rewind "$id" >/dev/null 2>&1 || true
+      seen=$resume
+      i=$resume
+    fi
     total=$(wc -l < "$status_file" | tr -d ' ')
 
     # Read at most the lines that existed when this pass started. A line a

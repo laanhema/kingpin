@@ -347,4 +347,134 @@ tmux kill-session -t S1 2>/dev/null || true
 tmux kill-session -t S2 2>/dev/null || true
 tmux has-session -t kingpin 2>/dev/null && pass "t20: the suite's kingpin session is left in place" || fail "t20: the suite lost its kingpin session"
 
+# Test 21: the fleet-wide tmux target (issue #191). TMUX_SOCKET and TMUX_SESSION in
+# config.env are the fleet default, the env and --tmux-session still win, and with no
+# name at all a spawn run inside tmux follows the caller's own session and socket.
+echo "=== Test 21: spawn resolves the fleet-wide tmux target ==="
+t21_target() { # <task-id>: the session the task recorded
+  sed -n 's/^TMUX_TARGET=//p' "$KINGPIN_HOME/tasks/$1/task.env" 2>/dev/null | cut -d: -f1 || true
+}
+t21_socket() { # <task-id>: the socket the task recorded
+  sed -n 's/^TMUX_SOCKET=//p' "$KINGPIN_HOME/tasks/$1/task.env" 2>/dev/null || true
+}
+t21_window_in() { # <socket name or path> <session> <window name>
+  if [ "${1#*/}" != "$1" ]; then
+    "$REAL_TMUX" -S "$1" list-windows -t "$2" -F '#{window_name}' 2>/dev/null | grep -qx "$3"
+  else
+    "$REAL_TMUX" -L "$1" list-windows -t "$2" -F '#{window_name}' 2>/dev/null | grep -qx "$3"
+  fi
+}
+t21_write_config() { # <socket value> <session value>
+  printf 'TMUX_SOCKET=%s\nTMUX_SESSION=%s\n' "$1" "$2" > "$KINGPIN_HOME/config.env"
+}
+
+# Case 1: the config pair names the target, and the OK line names the config file.
+t21_write_config kingpin S1
+tmux new-session -d -s S1 -n home
+t21_config=$(TMUX='' env -u KINGPIN_TMUX_SOCKET "$KP_BIN/kingpin" spawn demo-auto --issue 600 --id t21-config --mode review 2>&1 || true)
+[ "$(t21_socket t21-config)" = "kingpin" ] && [ "$(t21_target t21-config)" = "S1" ] && t21_window_in kingpin S1 t21-config \
+  && pass "t21: config.env TMUX_SOCKET/TMUX_SESSION place the window" \
+  || fail "t21: config target is socket $(t21_socket t21-config) session $(t21_target t21-config): $t21_config"
+grep -qF "session from TMUX_SESSION in $KINGPIN_HOME/config.env" <<< "$t21_config" \
+  && pass "t21: the spawn output names TMUX_SESSION in config.env" \
+  || fail "t21: spawn output does not name the config session: $t21_config"
+
+# Case 2: KINGPIN_TMUX_SOCKET wins over TMUX_SOCKET in the config.
+t21_write_config no-such-socket S1
+t21_env_spawn=$(TMUX='' KINGPIN_TMUX_SOCKET=kingpin "$KP_BIN/kingpin" spawn demo-auto --issue 600 --id t21-env-socket --mode review --tmux-session S1 2>&1 || true)
+[ "$(t21_socket t21-env-socket)" = "kingpin" ] && [ "$(t21_target t21-env-socket)" = "S1" ] \
+  && pass "t21: KINGPIN_TMUX_SOCKET wins over the configured socket" \
+  || fail "t21: env socket lost to the config: socket $(t21_socket t21-env-socket): $t21_env_spawn"
+
+# Case 3: --tmux-session wins over a configured session.
+t21_write_config kingpin nope
+t21_flag_spawn=$(TMUX='' env -u KINGPIN_TMUX_SOCKET "$KP_BIN/kingpin" spawn demo-auto --issue 600 --id t21-flag-wins --mode review --tmux-session S1 2>&1 || true)
+[ "$(t21_socket t21-flag-wins)" = "kingpin" ] && [ "$(t21_target t21-flag-wins)" = "S1" ] \
+  && pass "t21: --tmux-session wins over the configured session" \
+  || fail "t21: flag lost to the config session: $(t21_target t21-flag-wins): $t21_flag_spawn"
+grep -qF 'session from --tmux-session' <<< "$t21_flag_spawn" \
+  && pass "t21: the spawn output names the flag as the source" \
+  || fail "t21: spawn output does not name the flag: $t21_flag_spawn"
+
+# Case 4: a configured session that does not exist is refused by name, before a lease.
+t21_missing='' t21_missing_rc=0
+kp_run t21_missing t21_missing_rc env -u KINGPIN_TMUX_SOCKET -u TMUX \
+  "$KP_BIN/kingpin" spawn demo-auto --issue 600 --id t21-missing --mode review
+if [ "$t21_missing_rc" -ne 0 ] && grep -qF 'nope' <<< "$t21_missing" \
+  && grep -qF "$KINGPIN_HOME/config.env" <<< "$t21_missing"; then
+  pass "t21: a missing configured session is refused with the session and the config path"
+else
+  fail "t21: missing configured session not refused as expected (rc=$t21_missing_rc): $t21_missing"
+fi
+[ ! -e "$KINGPIN_HOME/tasks/t21-missing" ] \
+  && pass "t21: the refused config target left no task folder" \
+  || fail "t21: the refused config target left $KINGPIN_HOME/tasks/t21-missing"
+
+for t21_id in t21-config t21-env-socket t21-flag-wins; do
+  "$KP_BIN/kingpin" "done" "$t21_id" --force >/dev/null 2>&1 || true
+done
+
+# Case 5: with no config and no env, the caller's own tmux client decides both the
+# socket and the session.
+rm -f "$KINGPIN_HOME/config.env"
+"$REAL_TMUX" -L caller new-session -d -s orch -n home
+t21_caller_socket=$("$REAL_TMUX" -L caller display-message -p '#{socket_path}')
+t21_caller=$(TMUX="$t21_caller_socket,$$,0" env -u KINGPIN_TMUX_SOCKET "$KP_BIN/kingpin" spawn demo-auto --issue 600 --id t21-caller --mode review 2>&1 || true)
+[ "$(t21_socket t21-caller)" = "$t21_caller_socket" ] && [ "$(t21_target t21-caller)" = "orch" ] \
+  && t21_window_in "$t21_caller_socket" orch t21-caller \
+  && pass "t21: a spawn inside tmux lands in the caller's session on the caller's socket" \
+  || fail "t21: caller target is socket $(t21_socket t21-caller) session $(t21_target t21-caller): $t21_caller"
+grep -qF "session the caller's tmux session (\$TMUX)" <<< "$t21_caller" \
+  && pass "t21: the spawn output names the caller's session" \
+  || fail "t21: spawn output does not name the caller's session: $t21_caller"
+grep -qF "tmux -S $t21_caller_socket orch:t21-caller" <<< "$t21_caller" \
+  && pass "t21: the OK line names the caller's socket path" \
+  || fail "t21: OK line does not name the socket path: $t21_caller"
+t21_list=$("$KP_BIN/kingpin" list 2>/dev/null || true)
+[ "$(printf '%s\n' "$t21_list" | awk '$1=="t21-caller"{print $5}')" = "orch" ] \
+  && pass "t21: kingpin list names the caller's session" \
+  || fail "t21: list row for t21-caller: $(printf '%s\n' "$t21_list" | awk '$1=="t21-caller"')"
+t21_send=$("$KP_BIN/kingpin" send t21-caller "echo t21-ok" 2>&1 || true)
+grep -qF 'OK: sent to orch:t21-caller' <<< "$t21_send" \
+  && pass "t21: kingpin send reaches the caller-socket window" \
+  || fail "t21: kingpin send to the caller-socket window failed: $t21_send"
+"$KP_BIN/kingpin" "done" t21-caller --force >/dev/null 2>&1 || true
+! t21_window_in "$t21_caller_socket" orch t21-caller \
+  && pass "t21: kingpin done closed the caller-socket window" \
+  || fail "t21: kingpin done left the caller-socket window alive"
+
+# S1 was only needed by the named-target cases above; the fallback cases below want
+# the fleet server's one remaining session to be the suite's `kingpin`.
+tmux kill-session -t S1 2>/dev/null || true
+
+# Case 6: a stale $TMUX is not an error. The spawn falls back to the fleet server and
+# says once why it ignored the caller.
+t21_stale_rc=0
+t21_stale=$(TMUX="$T/nope,$$,0" env -u KINGPIN_TMUX_SOCKET "$KP_BIN/kingpin" spawn demo-auto --issue 600 --id t21-stale --mode review 2>"$T/t21-stale.err") || t21_stale_rc=$?
+[ "$t21_stale_rc" -eq 0 ] && [ "$(t21_socket t21-stale)" = "kingpin" ] && [ "$(t21_target t21-stale)" = "kingpin" ] \
+  && pass "t21: a stale \$TMUX falls back to the fleet server" \
+  || fail "t21: stale \$TMUX broke the spawn (rc=$t21_stale_rc, socket $(t21_socket t21-stale)): $t21_stale"
+[ "$(grep -c 'names no reachable session' "$T/t21-stale.err" || true)" = "1" ] \
+  && pass "t21: the stale-\$TMUX fallback prints one stderr line" \
+  || fail "t21: stale-\$TMUX stderr: $(cat "$T/t21-stale.err")"
+"$KP_BIN/kingpin" "done" t21-stale --force >/dev/null 2>&1 || true
+
+# Case 7: outside tmux with no config, the only remaining session is used, and the
+# normal out-of-tmux path prints no fallback note (only a set-but-stale $TMUX does).
+t21_plain_rc=0
+t21_plain=$(env -u KINGPIN_TMUX_SOCKET -u TMUX "$KP_BIN/kingpin" spawn demo-auto --issue 600 --id t21-outside --mode review 2>"$T/t21-plain.err") || t21_plain_rc=$?
+[ "$t21_plain_rc" -eq 0 ] && [ "$(t21_target t21-outside)" = "kingpin" ] && t21_window_in kingpin kingpin t21-outside \
+  && pass "t21: outside tmux the only session on the fleet server is used" \
+  || fail "t21: out-of-tmux target is $(t21_target t21-outside) (rc=$t21_plain_rc): $t21_plain"
+grep -qF 'session the only session on the server' <<< "$t21_plain" \
+  && pass "t21: the spawn output names the single fleet session" \
+  || fail "t21: spawn output does not name the single session: $t21_plain"
+! grep -q 'names no reachable session' "$T/t21-plain.err" \
+  && pass "t21: the out-of-tmux fallback prints no stale-\$TMUX note" \
+  || fail "t21: out-of-tmux stderr: $(cat "$T/t21-plain.err")"
+"$KP_BIN/kingpin" "done" t21-outside --force >/dev/null 2>&1 || true
+
+# The caller server is not kp_test_cleanup's, so this suite kills it itself.
+"$REAL_TMUX" -L caller kill-server 2>/dev/null || true
+
 kp_test_finish SPAWN
