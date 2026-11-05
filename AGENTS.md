@@ -48,7 +48,7 @@ A rule that only a person keeps is one that goes stale; each rule below names wh
 | no page the citation check reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md`, `worker/*.md`) cites a source file by line number | `tests/doc-citations.sh` |
 | nothing under `.agents/` is tracked | `tests/lint.sh` |
 | `tmux` is reached only through `lib/tmux.sh` and `herdr` only through `lib/mux-herdr.sh` | the static checks in `tests/test-tmux-isolation.sh` and `tests/test-mux.sh` |
-| a tmux session is matched exactly: a session check goes through `kp_tmux_has_session`, never a raw `has-session`, and only a spawn's explicit target (`--tmux-session` or `KINGPIN_TMUX_SESSION`) accepts a prefix, through `kp_tmux_resolve_session` | the static check in `tests/test-tmux-isolation.sh` for the raw `has-session`, and review for the prefix resolver |
+| a tmux session is matched exactly: a session check goes through `kp_tmux_has_session`, never a raw `has-session`, and only a user-typed target (`--tmux-session` or `KINGPIN_TMUX_SESSION`, for a spawn or the curator) accepts a prefix, through `kp_tmux_resolve_session` | the static check in `tests/test-tmux-isolation.sh` for the raw `has-session`, and review for the prefix resolver |
 | a dossier or handover page passes the prose, layout and palette `check` | `bin/kingpin-report check` |
 | a message or marker that reports a step is written only after the step's status is checked | review |
 | a test never silences a status it claims to check with `\|\| true` (reviews of #5, #75), and never runs an unbounded `wait` that hangs instead of failing (reviews of #99, #145) | review |

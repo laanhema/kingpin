@@ -185,11 +185,9 @@ kp_wait_until 4 curator_pane_dead \
 reap_rc=0
 reap_out=$("$KP_BIN/kingpin" curate 2>&1) || reap_rc=$?
 [ "$reap_rc" -eq 0 ] && pass "curate cleared the dead curator window and continued" || fail "curate after a dead window exit=$reap_rc: $reap_out"
-for _ in $(seq 1 40); do
-  [ -f "$T/curator-reap-received.txt" ] && break
-  sleep 0.1
-done
-[ -f "$T/curator-reap-received.txt" ] && grep -qF "$tricky_critique" "$T/curator-reap-received.txt" && pass "new curator launched after the reap" || fail "no curator launched after the reap"
+kp_wait_until 4 test -f "$T/curator-reap-received.txt" \
+  && grep -qF "$tricky_critique" "$T/curator-reap-received.txt" \
+  && pass "new curator launched after the reap" || fail "no curator launched after the reap"
 tmux set-option -g remain-on-exit off
 tmux kill-window -t kingpin:curator 2>/dev/null || true
 
