@@ -157,51 +157,189 @@ if [ "${#sleep_hits[@]}" -gt 0 ]; then
   exit 1
 fi
 
-# A `NAME=$?` line that follows a command while errexit is on can never see a non-zero
-# status: `set -e` aborts the suite at the command, so the assertion's fail branch is dead
-# and the run dies without a FAIL line (issue #180). The fix is `kp_run <out-var> <rc-var>
-# <cmd...>` in tests/lib.sh, which captures the status without tripping errexit. The scan
-# tracks `set +e` / `set -e` in file order, because a block that turns errexit off is the
-# one place the bare form is valid, and it skips here-document bodies, which are data. A
-# `set` counts only in command position, so a message that mentions `set -e` does not
-# change the state.
+# A `NAME=$?` assignment that follows a command while errexit is on can never see a
+# non-zero status: `set -e` aborts the suite at the command, so the assertion's fail
+# branch is dead and the run dies without a FAIL line (issue #180). The fix is
+# `kp_run <out-var> <rc-var> <cmd...>` in tests/lib.sh, which captures the status without
+# tripping errexit. The scan reads every `tests/*.sh`, not only the suites, so a helper
+# shared by suites is held to the same rule (review of #180 L1). It tracks `set +e` /
+# `set -e` in file order, because a block that turns errexit off is one place the bare
+# form is valid, and it checks the state at the assignment rather than at end of line, so
+# the compact `set +e; out=$(cmd); rc=$?; set -e` form stays green. A `set` counts only in
+# command position, so a message that mentions `set -e` does not change the state. The
+# assignment may end the line or carry a trailing `;` or redirect (review of #180 M1).
+# `local NAME=$?` is the cleanup-trap idiom and is not matched, and neither is a `NAME=$?`
+# guarded by `||`, `&&` or an `else`/`then` branch of a condition. Here-document bodies
+# are data, so they are skipped: the opener is read outside quotes, a here-string (`<<<`)
+# is not one, and a comment line is not scanned for one (review of #180 M2).
 rc_hits=()
-rc_pattern='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=\$\?[[:space:]]*(#.*)?$'
-heredoc_pattern="<<-?[[:space:]]*[\"']?([A-Za-z_][A-Za-z0-9_]*)"
-for f in tests/test-*.sh; do
+for f in tests/*.sh; do
   [ -f "$f" ] || continue
-  errexit=1
-  heredoc=
-  line_no=0
-  while IFS= read -r line || [ -n "$line" ]; do
-    line_no=$((line_no + 1))
-    if [ -n "$heredoc" ]; then
-      body=$line
-      while [ "${body:0:1}" = $'\t' ]; do body=${body#?}; done
-      [ "$body" = "$heredoc" ] && heredoc=
-      continue
-    fi
-    if [[ $line =~ $heredoc_pattern ]]; then
-      heredoc=${BASH_REMATCH[1]}
-    fi
-    if [[ $line =~ ^[[:space:]]*# ]]; then
-      continue
-    fi
-    rest=$line
-    while [[ $rest =~ (^[[:space:]]*|[;\&\|][[:space:]]*)set[[:space:]]+([+-])[A-Za-z]*e[A-Za-z]* ]]; do
-      case ${BASH_REMATCH[2]} in
-        +) errexit=0 ;;
-        -) errexit=1 ;;
-      esac
-      rest=${rest#*"${BASH_REMATCH[0]}"}
-    done
-    if [ "$errexit" -eq 1 ] && [[ $line =~ $rc_pattern ]]; then
-      rc_hits+=("$f:$line_no: $line")
-    fi
-  done < "$f"
+  found=$(awk -v file="$f" '
+    function heredoc_open(line,    i, n, c, j, rest, quote, delim, strip) {
+      i = 1; n = length(line)
+      while (i <= n) {
+        c = substr(line, i, 1)
+        if (c == "\\") { i += 2; continue }
+        if (c == "\047") {
+          j = index(substr(line, i + 1), "\047")
+          if (j == 0) return 0
+          i = i + j + 1
+          continue
+        }
+        if (c == "\"") {
+          i++
+          while (i <= n) {
+            c = substr(line, i, 1)
+            if (c == "\\") { i += 2; continue }
+            if (c == "\"") { i++; break }
+            i++
+          }
+          continue
+        }
+        if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[ \t;]/)) return 0
+        if (c == "<" && substr(line, i + 1, 1) == "<") {
+          if (substr(line, i + 2, 1) == "<") { i += 3; continue }
+          rest = substr(line, i + 2)
+          strip = 0
+          if (substr(rest, 1, 1) == "-") { strip = 1; rest = substr(rest, 2) }
+          sub(/^[ \t]+/, "", rest)
+          quote = substr(rest, 1, 1)
+          if (quote == "\047" || quote == "\"") {
+            rest = substr(rest, 2)
+            j = index(rest, quote)
+            if (j == 0) return 0
+            delim = substr(rest, 1, j - 1)
+          } else if (match(rest, /^[A-Za-z_][A-Za-z0-9_]*/)) {
+            delim = substr(rest, 1, RLENGTH)
+          } else {
+            i += 2
+            continue
+          }
+          if (delim == "") return 0
+          hd_delim = delim
+          hd_strip = strip
+          return 1
+        }
+        i++
+      }
+      return 0
+    }
+    function word_before(line, at,    k, j) {
+      k = at - 1
+      while (k > 0 && substr(line, k, 1) ~ /[ \t]/) k--
+      if (k == 0) return ""
+      if (substr(line, k, 1) !~ /[A-Za-z0-9_]/) return substr(line, k, 1)
+      j = k
+      while (j > 0 && substr(line, j, 1) ~ /[A-Za-z0-9_]/) j--
+      return substr(line, j + 1, k - j)
+    }
+    function guarded(line, at,    w) {
+      w = word_before(line, at)
+      if (w == "|" || w == "&") return 1
+      return w ~ /^(local|declare|typeset|export|readonly|else|then|do|elif)$/
+    }
+    function trailing_ok(line, after,    tail) {
+      tail = substr(line, after)
+      if (tail ~ /^[ \t]*$/ || tail ~ /^[ \t]*#/) return 1
+      if (tail ~ /^[ \t]*;/) return 1
+      if (tail ~ /^[ \t]*[0-9]*[<>]/) return 1
+      if (tail ~ /^[ \t]*[|&)}]/) return 1
+      return 0
+    }
+    function command_position(line, at,    k) {
+      k = at - 1
+      while (k > 0 && substr(line, k, 1) ~ /[ \t]/) k--
+      if (k == 0) return 1
+      return substr(line, k, 1) ~ /[;&|({!]/
+    }
+    function in_code(line, at,    i, n, c, j, k) {
+      i = 1; n = length(line)
+      while (i < at) {
+        c = substr(line, i, 1)
+        if (c == "\\") { i += 2; continue }
+        if (c == "\047") {
+          j = index(substr(line, i + 1), "\047")
+          if (j == 0 || i + j >= at) return 0
+          i = i + j + 1
+          continue
+        }
+        if (c == "\"") {
+          k = i + 1
+          while (k <= n) {
+            c = substr(line, k, 1)
+            if (c == "\\") { k += 2; continue }
+            if (c == "\"") break
+            k++
+          }
+          if (k >= at) return 0
+          i = k + 1
+          continue
+        }
+        if (c == "#" && (i == 1 || substr(line, i - 1, 1) ~ /[ \t;]/)) return 0
+        i++
+      }
+      return 1
+    }
+    BEGIN { errexit = 1; heredoc = ""; hd_delim = ""; hd_strip = 0 }
+    {
+      if (heredoc != "") {
+        body = $0
+        if (hd_strip) sub(/^\t+/, "", body)
+        if (body == hd_delim) { heredoc = ""; hd_delim = "" }
+        next
+      }
+      if ($0 ~ /^[ \t]*#/) next
+      hd_delim = ""; hd_strip = 0
+      if (heredoc_open($0)) heredoc = hd_delim
+      line = $0
+      n = length(line)
+      pos = 1
+      while (pos <= n) {
+        sp = 0
+        scan = pos
+        while (scan <= n) {
+          rest = substr(line, scan)
+          if (!match(rest, /set[ \t]+[+-][A-Za-z]*e[A-Za-z]*/)) break
+          sp = scan + RSTART - 1
+          if (command_position(line, sp) && in_code(line, sp)) break
+          scan = sp + 3
+          sp = 0
+        }
+        rp = 0
+        scan = pos
+        while (scan <= n) {
+          rest = substr(line, scan)
+          if (!match(rest, /[A-Za-z_][A-Za-z0-9_]*=\$\?/)) break
+          rp = scan + RSTART - 1
+          rlen = RLENGTH
+          if (rp > 1 && substr(line, rp - 1, 1) ~ /[A-Za-z0-9_]/) { scan = rp + rlen; rp = 0; continue }
+          if (!in_code(line, rp)) { scan = rp + rlen; rp = 0; continue }
+          break
+        }
+        if (sp == 0 && rp == 0) break
+        if (rp == 0 || (sp > 0 && sp < rp)) {
+          rest = substr(line, sp)
+          match(rest, /^set[ \t]+[+-]/)
+          if (substr(rest, RLENGTH, 1) == "+") errexit = 0
+          else errexit = 1
+          pos = sp + 3
+          continue
+        }
+        if (errexit == 1 && !guarded(line, rp) && trailing_ok(line, rp + rlen)) {
+          printf "%s:%d: %s\n", file, NR, line
+        }
+        pos = rp + rlen
+      }
+    }
+  ' "$f" || true)
+  [ -n "$found" ] || continue
+  while IFS= read -r hit; do
+    rc_hits+=("$hit")
+  done <<< "$found"
 done
 if [ "${#rc_hits[@]}" -gt 0 ]; then
-  echo "lint: these suites read \$? after a command that errexit would already have aborted, so their fail branch never runs:" >&2
+  echo "lint: these test scripts read \$? after a command that errexit would already have aborted, so their fail branch never runs:" >&2
   for hit in "${rc_hits[@]}"; do
     echo "  $hit" >&2
   done

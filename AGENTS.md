@@ -43,7 +43,7 @@ A rule that only a person keeps is one that goes stale; each rule below names wh
 | every `tests/test-*.sh` is a leg of the CI matrix | `tests/lint.sh` |
 | every `tests/test-*.sh` has a row in `docs/testing.md` and every row names a suite that exists | `tests/lint.sh` |
 | a suite waits with `kp_wait_until` or `kp_holds_for`, never a fixed `sleep` before an assertion | `tests/lint.sh` |
-| a suite captures a status with `kp_run`, never on a `NAME=$?` line after an unguarded capture while errexit is on | `tests/lint.sh` |
+| a test script captures a status with `kp_run`, never on a `NAME=$?` assignment after an unguarded command while errexit is on | `tests/lint.sh` |
 | every parsed flag and `KINGPIN_*` variable is documented, and every one a page shows reaches `docs/cli.md` | `tests/readme-cli-reference.sh` |
 | no page the citation check reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md`, `worker/*.md`) cites a source file by line number | `tests/doc-citations.sh` |
 | nothing under `.agents/plans`, `.agents/reports` or `.agents/reviews` is tracked | `tests/lint.sh` |

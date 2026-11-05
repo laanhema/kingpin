@@ -9,7 +9,7 @@ Run the lint and the full test suite from the repository root:
 # node --check over lib/*.mjs, a check that every tests/test-*.sh is a leg of the CI matrix
 # and has a row in the suite table below, a check that no tests/test-*.sh puts a fixed
 # `sleep` directly before an assertion (wait with kp_wait_until or kp_holds_for instead),
-# a check that no tests/test-*.sh reads `$?` on a `NAME=$?` line while errexit is on
+# a check that no tests/*.sh reads `$?` on a `NAME=$?` assignment while errexit is on
 # (capture with kp_run instead), a check that no page cites a source file by line,
 # a check in both directions over README.md and docs/*.md: every parsed flag and KINGPIN_*
 # variable is documented, and every `--` flag in a backtick span and every KINGPIN_* name a
