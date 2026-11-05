@@ -330,7 +330,7 @@ printf '%s\n' "$prompt" > "$task_dir/prompt.txt"
 # the worktree.
 : > "$task_dir/status"
 
-kp_tmux "$fleet_socket" has-session -t "$target_session" 2>/dev/null \
+kp_tmux_has_session "$fleet_socket" "$target_session" \
   || die "the session $target_session is gone from the tmux server '$fleet_socket' ($(kp_tmux_label "$fleet_socket"))"
 
 # kingpin-wait does not report "exited" for a task with a fresh marker: task.env

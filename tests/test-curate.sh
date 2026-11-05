@@ -162,6 +162,12 @@ tmux list-panes -t kingpin:curator >/dev/null 2>&1 && pass "live curator window 
 [ -d "$KINGPIN_HOME/tasks/curator" ] && pass "the refused run left the stale curator record for a later reconcile" || fail "the refused run reconciled the stale record away"
 tmux kill-window -t kingpin:curator 2>/dev/null || true
 
+# curator_pane_dead: the staged curator window's pane has exited. remain-on-exit
+# keeps the window, which is what lets the guard see a dead pane at all.
+curator_pane_dead() {
+  [ "$(tmux list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null || echo 0)" = "1" ]
+}
+
 # 8.2d A curator whose launch.sh exited is reaped instead of blocking the next run
 cat > "$T/fake-curator-reap" << EOF_REAP
 #!/usr/bin/env bash
@@ -174,13 +180,8 @@ export KINGPIN_CURATOR_CMD="$T/fake-curator-reap"
 # it tmux closes the window and the guard never sees it.
 tmux set-option -g remain-on-exit on
 tmux new-window -d -t kingpin: -n curator "bash -c 'exit 3'"
-dead=0
-for _ in $(seq 1 40); do
-  dead=$(tmux list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null || echo 0)
-  [ "$dead" = "1" ] && break
-  sleep 0.1
-done
-[ "$dead" = "1" ] && pass "dead curator pane staged (pane_dead=1)" || fail "could not stage a dead curator pane"
+kp_wait_until 4 curator_pane_dead \
+  && pass "dead curator pane staged (pane_dead=1)" || fail "could not stage a dead curator pane"
 reap_rc=0
 reap_out=$("$KP_BIN/kingpin" curate 2>&1) || reap_rc=$?
 [ "$reap_rc" -eq 0 ] && pass "curate cleared the dead curator window and continued" || fail "curate after a dead window exit=$reap_rc: $reap_out"
@@ -209,6 +210,45 @@ reap2_out=$("$KP_BIN/kingpin" curate 2>&1) || reap2_rc=$?
 echo "$reap2_out" | grep -q "reaped dead curator window" && pass "dead-window reap is reported" || fail "reap not reported: $reap2_out"
 tmux set-option -g remain-on-exit off
 tmux kill-window -t kingpin:curator 2>/dev/null || true
+
+# 8.2d3 A reap that fails is not reported as done (issue #182)
+rm -rf "$KINGPIN_HOME/tasks/curator"
+mkdir -p "$KINGPIN_HOME/tasks/test-curate-reap-fail"
+echo "Refused reap critique" > "$KINGPIN_HOME/tasks/test-curate-reap-fail/critique"
+cat > "$T/fake-curator-reap-fail" << 'EOF_REAP_FAIL'
+#!/usr/bin/env bash
+exit 0
+EOF_REAP_FAIL
+chmod +x "$T/fake-curator-reap-fail"
+export KINGPIN_CURATOR_CMD="$T/fake-curator-reap-fail"
+tmux set-option -g remain-on-exit on
+tmux new-window -d -t kingpin: -n curator "bash -c 'exit 3'"
+kp_wait_until 4 curator_pane_dead \
+  && pass "a dead curator pane is staged for the refused reap" \
+  || fail "could not stage a dead pane for the refused reap"
+mkdir -p "$T/failbin"
+cat > "$T/failbin/tmux" << FAILTMUX
+#!/usr/bin/env bash
+case " \$* " in
+  *" kill-window "*curator*) echo "tmux: refusing kill-window from the suite" >&2; exit 1 ;;
+esac
+exec "$T/bin/tmux" "\$@"
+FAILTMUX
+chmod +x "$T/failbin/tmux"
+reap_fail_out='' reap_fail_rc=0
+kp_run reap_fail_out reap_fail_rc env PATH="$T/failbin:$PATH" "$KP_BIN/kingpin" curate
+[ "$reap_fail_rc" -eq 0 ] && pass "a refused reap does not fail the run" \
+  || fail "curate after a refused reap exit=$reap_fail_rc: $reap_fail_out"
+echo "$reap_fail_out" | grep -q "could not reap dead curator window" \
+  && pass "a refused reap is reported" || fail "refused reap not reported: $reap_fail_out"
+echo "$reap_fail_out" | grep -q "reaped dead curator window" \
+  && fail "a refused reap was reported as done: $reap_fail_out" \
+  || pass "a refused reap is not reported as done"
+tmux list-windows -t kingpin -F '#{window_id} #{window_name}' \
+  | awk '$2 == "curator" { print $1 }' \
+  | while read -r w; do tmux kill-window -t "$w" 2>/dev/null || true; done
+tmux set-option -g remain-on-exit off
+rm -rf "$KINGPIN_HOME/tasks/test-curate-reap-fail"
 
 # 8.2e A curator reaped mid-run leaves its critiques pending
 mkdir -p "$KINGPIN_HOME/tasks/test-curate-reaped"
@@ -444,5 +484,32 @@ rm -f "$KINGPIN_HOME/config.env"
 rm -rf "$KINGPIN_HOME/tasks/curator" "$KINGPIN_HOME/tasks/test-curate-m4"
 tmux kill-session -t S1 2>/dev/null || true
 tmux kill-session -t S2 2>/dev/null || true
+
+# Test 11: curate matches a configured session exactly (issue #181, with the
+# fleet-wide target of issue #191). A server holding only `kingpin-workers` must
+# not satisfy a configured `TMUX_SESSION=kingpin`: the run refuses by name and
+# leaves the same-named window there alone, instead of silently joining a session
+# nobody named.
+echo "=== Test 11: a configured session is matched exactly ==="
+finish_curator_record
+tmux kill-session -t '=kingpin' 2>/dev/null || true
+tmux new-session -d -s kingpin-workers -n home
+tmux new-window -d -t '=kingpin-workers:' -n curator "sleep 300"
+mkdir -p "$KINGPIN_HOME/tasks/test-curate-session"
+echo "Session placement critique" > "$KINGPIN_HOME/tasks/test-curate-session/critique"
+printf 'TMUX_SESSION=kingpin\n' > "$KINGPIN_HOME/config.env"
+export KINGPIN_CURATOR_CMD="$T/fake-curator-sleep"
+session_out='' session_rc=0
+kp_run session_out session_rc env -u KINGPIN_TMUX_SOCKET TMUX= "$KP_BIN/kingpin" curate
+[ "$session_rc" -ne 0 ] && pass "t11: a configured kingpin is refused when only kingpin-workers exists" || fail "t11: curate exit=$session_rc: $session_out"
+echo "$session_out" | grep -qF "does not exist" && pass "t11: the refusal says the session does not exist" || fail "t11: refusal wording: $session_out"
+echo "$session_out" | grep -qF "kingpin" && pass "t11: the refusal names the configured session" || fail "t11: refusal did not name kingpin: $session_out"
+tmux has-session -t '=kingpin' 2>/dev/null && fail "t11: curate created a kingpin session it was meant to match, not guess" || pass "t11: no session named exactly kingpin was created"
+tmux list-windows -t '=kingpin-workers' -F '#{window_name}' 2>/dev/null | grep -qx curator && pass "t11: the same-named window in kingpin-workers was left alone" || fail "t11: curate touched the kingpin-workers window"
+tmux list-panes -t '=kingpin-workers:curator' -F '#{pane_dead}' 2>/dev/null | grep -qx 0 && pass "t11: the live window in kingpin-workers survived" || fail "t11: the window in kingpin-workers was reaped"
+tmux kill-window -t '=kingpin-workers:=curator' 2>/dev/null || true
+tmux kill-session -t '=kingpin-workers' 2>/dev/null || true
+rm -f "$KINGPIN_HOME/config.env"
+rm -rf "$KINGPIN_HOME/tasks/curator" "$KINGPIN_HOME/tasks/test-curate-session"
 
 kp_test_finish CURATE

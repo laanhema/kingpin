@@ -12,6 +12,13 @@
 # `kp_tmux`, so the socket is passed in one place, and `kp_tmux_label` and
 # `kp_tmux_attach_cmd` are the one way a message or an attach hint spells it.
 #
+# A session is matched exactly (issues #149, #181): `kp_tmux_has_session` pins the
+# target with tmux's `=` form, because a bare name is a unique prefix and a server
+# holding only `kingpin-workers` would otherwise answer for `kingpin`. The one
+# deliberate prefix resolver is `kp_tmux_resolve_session`, which a spawn uses for its
+# explicit target (`--tmux-session` or `KINGPIN_TMUX_SESSION`) and then records the
+# name tmux resolved.
+#
 # The window is resolved by name first and by id second (issue #149). Tmux window ids
 # are per server and restart at `@0`, so an id recorded before the server died can
 # name a different task's window; a reader that prefers the id blindly types into a
@@ -172,7 +179,11 @@ kp_tmux_socket_warn_line() {
 #            that socket and refused when it does not exist; then, when nothing named
 #            a socket or a session, the caller's own session; then the one session a
 #            client is attached to; then the only session the socket holds; then a
-#            `kingpin` session that is created.
+#            `kingpin` session that is created. A user-typed target (the explicit
+#            argument or KINGPIN_TMUX_SESSION) may be an unambiguous prefix and is
+#            recorded as the name tmux resolved it to (issues #152, #181); a
+#            TMUX_SESSION from config.env is matched exactly, like every other
+#            session this function reads.
 #
 # <server-started> is 1 when the fallback had to start the tmux server itself. A
 # refusal prints one sentence on stdout and returns 1, so the caller reads the reason
@@ -181,7 +192,7 @@ kp_tmux_socket_warn_line() {
 # prefix never becomes a recorded target.
 kp_tmux_resolve_target() {
   local home=${1:?kp_tmux_resolve_target needs a kp-home} explicit=${2:-} explicit_source=${3:-}
-  local config_socket='' config_session='' socket='' name='' source='' resolved=''
+  local config_socket='' config_session='' socket='' name='' source='' resolved='' prefix_ok=0
   local caller='' caller_socket='' caller_session='' started=0
   local all=() attached_names=() joined='' attached_joined='' measured=''
   if [ -n "$home" ] && [ -f "$home/config.env" ]; then
@@ -193,24 +204,26 @@ kp_tmux_resolve_target() {
   # A named session is resolved on the configured socket, and must already exist:
   # creating it would put the worker in a session nobody watches (issue #152).
   if [ -n "$explicit" ]; then
-    name=$explicit source=$explicit_source
+    name=$explicit source=$explicit_source prefix_ok=1
   elif [ -n "${KINGPIN_TMUX_SESSION:-}" ]; then
-    name=$KINGPIN_TMUX_SESSION source='KINGPIN_TMUX_SESSION'
+    name=$KINGPIN_TMUX_SESSION source='KINGPIN_TMUX_SESSION' prefix_ok=1
   elif [ -n "$config_session" ]; then
     name=$config_session source="TMUX_SESSION in $home/config.env"
   fi
   if [ -n "$name" ]; then
-    kp_tmux "$socket" has-session -t "$name" 2>/dev/null \
+    if [ "$prefix_ok" -eq 1 ]; then
+      # A user-typed target (--tmux-session, KINGPIN_TMUX_SESSION) accepts an
+      # unambiguous prefix on purpose, and the name tmux resolved it to is recorded
+      # (issues #152, #181). A configured TMUX_SESSION and every other source below
+      # are matched exactly, so a `kingpin-workers` session is never taken for one.
+      resolved=$(kp_tmux_resolve_session "$socket" "$name") || resolved=''
+    else
+      kp_tmux_has_session "$socket" "$name" && resolved=$name || resolved=''
+    fi
+    [ -n "$resolved" ] \
       || {
         printf "the session '%s' from %s does not exist on the tmux server '%s' (%s); start it, or name a session that does\n" \
           "$name" "$source" "${socket:-default}" "$(kp_tmux_label "$socket")"
-        return 1
-      }
-    # has-session accepts an unambiguous prefix, so record the name tmux resolved it to.
-    resolved=$(kp_tmux "$socket" display-message -p -t "$name" '#S' 2>/dev/null) || resolved=''
-    [ -n "$resolved" ] \
-      || {
-        printf "the session '%s' from %s could not be resolved to a session name\n" "$name" "$source"
         return 1
       }
     printf '%s\t%s\tfrom %s\t0\n' "$socket" "$resolved" "$source"
@@ -278,12 +291,39 @@ kp_tmux_resolve_target() {
   return 0
 }
 
+# kp_tmux_has_session <socket> <name>
+# Exit 0 when <socket> holds a session named exactly <name>. The target is written
+# `=<name>`, tmux's exact-match form: a bare name is a unique prefix, so a server
+# holding only `kingpin-workers` answers yes for `kingpin` and the caller starts
+# nothing (issues #149, #181). An empty name answers no. Prints nothing.
+kp_tmux_has_session() {
+  local sock=${1:-} name=${2:-}
+  [ -n "$name" ] || return 1
+  kp_tmux "$sock" has-session -t "=$name" 2>/dev/null
+}
+
+# kp_tmux_resolve_session <socket> <target>
+# Print the name of the session <target> names on <socket>, accepting an
+# unambiguous prefix the way tmux does on purpose, which is what a spawn's explicit
+# target (`--tmux-session`, `KINGPIN_TMUX_SESSION`) promises (issue #152). Exit 1
+# when no session matches and print nothing. A caller that must not accept a prefix
+# uses kp_tmux_has_session.
+kp_tmux_resolve_session() {
+  local sock=${1:-} target=${2:-} name=''
+  [ -n "$target" ] || return 1
+  kp_tmux "$sock" has-session -t "$target" 2>/dev/null || return 1
+  name=$(kp_tmux "$sock" display-message -p -t "$target" '#S' 2>/dev/null) || return 1
+  [ -n "$name" ] || return 1
+  printf '%s\n' "$name"
+}
+
 # kp_tmux_ensure_session <socket> <session>
 # Make sure <session> exists on <socket>, creating it detached when it does not.
-# Prints nothing; the caller reports a failure.
+# The check is exact, so a `kingpin-workers` session beside it is never taken for
+# `kingpin` (issue #181). Prints nothing; the caller reports a failure.
 kp_tmux_ensure_session() {
   local sock=${1:-} session=${2:?}
-  kp_tmux "$sock" has-session -t "$session" 2>/dev/null \
+  kp_tmux_has_session "$sock" "$session" \
     || kp_tmux "$sock" new-session -d -s "$session" -n home
 }
 
