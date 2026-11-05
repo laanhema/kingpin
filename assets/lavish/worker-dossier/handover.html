@@ -29,10 +29,11 @@
   :where(p, li, td, th, .badge) { overflow-wrap: anywhere; }
 
   /* Table rows: every cell's first line sits in a 1.25rem line box, and a pill is centred on that line,
-     so Pass, ID, the severity pill and the text beside it line up. */
+     so Pass, ID, the severity pill and the text beside it line up. A label too long for its column wraps
+     inside the pill and grows it, while the pinned line box keeps a one-line pill at its 1rem height. */
   td, th { line-height: 1.25rem; }
   td code, td .font-mono { line-height: 1; }
-  td > .badge { vertical-align: top; margin-top: .15rem; }
+  td > .badge { vertical-align: top; margin-top: .15rem; white-space: normal; max-width: 100%; height: auto; min-height: var(--size); line-height: 1.4; text-align: center; }
 
   /* Two components. Every panel and stat card is .card-custom. Each changed file's diff sits in a .diffbox. */
   .card-custom { background-color: #161b22; border: 1px solid #30363d; border-radius: 0.5rem; padding: 1.25rem; }

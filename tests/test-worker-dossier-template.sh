@@ -17,6 +17,23 @@ pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAILED=1; }
 FAILED=0
 
+# check_badge_wrap <file>: 0 when a table-cell badge wraps inside its pill.
+# The rule also pins the line box, so a one-line pill keeps its 1rem height.
+# Exactly one rule is allowed: a second one further down overrides the first and
+# renders the page as before the fix, so reading one of two would pass a lost rule.
+check_badge_wrap() {
+  local f=$1 rule d n
+  n=$(perl -0ne 'my $n = () = /td > \.badge\s*\{/g; print $n' "$f")
+  [ "$n" -eq 1 ] || { echo "expected exactly one td > .badge rule, found $n" >&2; return 1; }
+  rule=$(perl -0ne 'print $1 if /td > \.badge\s*\{([^}]*)\}/s' "$f" || true)
+  for d in 'white-space: normal' 'max-width: 100%' 'height: auto' 'min-height: var(--size)' 'line-height: 1.4'; do
+    case "$rule" in
+      *"$d"*) ;;
+      *) echo "td > .badge lost its wrap declaration: $d" >&2; return 1 ;;
+    esac
+  done
+}
+
 # check_dir <dir>: 0 when the folder is a complete, self-contained, gate-clean template.
 # Prints the reason on stderr when it is not, so a negative case explains itself.
 check_dir() {
@@ -54,6 +71,8 @@ check_dir() {
   # Fixed-layout tables need column widths, or every column gets an equal share.
   cols=$(grep -c '<colgroup>' "$dir/template.html" || true)
   [ "$cols" -ge 3 ] || { echo "expected a colgroup on each of the 3 tables, found $cols" >&2; return 1; }
+  # A pill in a narrow column wraps inside its border instead of spilling.
+  check_badge_wrap "$dir/template.html" || return 1
   # The action bar: both buttons, each backed by a handler that guards window.lavish.
   buttons=$(grep -c 'onclick="kp\(Action\|RequestChanges\)(' "$dir/template.html" || true)
   [ "$buttons" -ge 2 ] || { echo "the action bar lost a button ($buttons of 2)" >&2; return 1; }
@@ -96,6 +115,8 @@ check_handover() {
   grep -q '<title id=' "$f" || { echo "the diagram has no title" >&2; return 1; }
   recs=$(grep -c 'badge-success badge-sm">RECOMMENDED</span>' "$f" || true)
   [ "$recs" -eq 1 ] || { echo "expected exactly one RECOMMENDED option, found $recs" >&2; return 1; }
+  # A pill in a narrow column wraps inside its border instead of spilling.
+  check_badge_wrap "$f" || return 1
   forms=$(grep -c 'data-lavish-question=' "$f" || true)
   [ "$forms" -ge 2 ] || { echo "expected at least 2 decision forms, found $forms" >&2; return 1; }
   handlers=$(grep -c '<form [^>]*data-lavish-question="[^"]*"[^>]*onsubmit="kpAnswer(event)"' "$f" || true)
@@ -202,6 +223,18 @@ sed -i 's|<colgroup>.*</colgroup>||' "$T/no-colgroup/template.html"
 out=$(check_dir "$T/no-colgroup" 2>&1) && fail "tables without column widths passed" || pass "tables without column widths fail"
 echo "$out" | grep -q 'colgroup' && pass "the failure names the missing colgroup" || fail "unclear reason: $out"
 
+rm -rf "$T/no-badge-wrap"
+cp -a "$TPL" "$T/no-badge-wrap"
+perl -0pi -e 's/td > \.badge \{[^}]*\}/td > .badge { vertical-align: top; margin-top: .15rem; }/' "$T/no-badge-wrap/template.html"
+out=$(check_dir "$T/no-badge-wrap" 2>&1) && fail "a template without the cell-badge wrap rule passed" || pass "a template without the cell-badge wrap rule fails"
+echo "$out" | grep -q 'td > .badge lost its wrap declaration' && pass "the failure names the missing wrap declaration" || fail "unclear reason: $out"
+
+rm -rf "$T/no-badge-override"
+cp -a "$TPL" "$T/no-badge-override"
+perl -0pi -e 's|(  td > \.badge \{[^}]*\}\n)|$1  td > .badge { white-space: nowrap; height: var(--size); }\n|' "$T/no-badge-override/template.html"
+out=$(check_dir "$T/no-badge-override" 2>&1) && fail "a template with a second cell-badge rule passed" || pass "a template with a second cell-badge rule fails"
+echo "$out" | grep -q 'expected exactly one td > .badge rule' && pass "the failure names the second rule" || fail "unclear reason: $out"
+
 rm -rf "$T/unslop"
 cp -a "$TPL" "$T/unslop"
 sed -i 's/Run the unslop skill/Skip the prose pass/' "$T/unslop/template.html"
@@ -242,6 +275,18 @@ cp -a "$TPL" "$T/h-rec"
 sed -i 's|badge-success badge-sm">RECOMMENDED</span>|badge-outline badge-sm">Option</span>|' "$T/h-rec/handover.html"
 out=$(check_handover "$T/h-rec" 2>&1) && fail "an options block with no recommendation passed" || pass "an options block with no recommendation fails"
 echo "$out" | grep -q 'exactly one RECOMMENDED' && pass "the failure names the recommendation rule" || fail "unclear reason: $out"
+
+rm -rf "$T/h-badge-wrap"
+cp -a "$TPL" "$T/h-badge-wrap"
+perl -0pi -e 's/td > \.badge \{[^}]*\}/td > .badge { vertical-align: top; margin-top: .15rem; }/' "$T/h-badge-wrap/handover.html"
+out=$(check_handover "$T/h-badge-wrap" 2>&1) && fail "a handover template without the cell-badge wrap rule passed" || pass "a handover template without the cell-badge wrap rule fails"
+echo "$out" | grep -q 'td > .badge lost its wrap declaration' && pass "the failure names the missing wrap declaration" || fail "unclear reason: $out"
+
+rm -rf "$T/h-badge-override"
+cp -a "$TPL" "$T/h-badge-override"
+perl -0pi -e 's|(  td > \.badge \{[^}]*\}\n)|$1  td > .badge { white-space: nowrap; height: var(--size); }\n|' "$T/h-badge-override/handover.html"
+out=$(check_handover "$T/h-badge-override" 2>&1) && fail "a handover template with a second cell-badge rule passed" || pass "a handover template with a second cell-badge rule fails"
+echo "$out" | grep -q 'expected exactly one td > .badge rule' && pass "the failure names the second rule" || fail "unclear reason: $out"
 
 rm -rf "$T/h-annot"
 cp -a "$TPL" "$T/h-annot"
