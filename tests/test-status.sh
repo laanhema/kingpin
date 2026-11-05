@@ -119,6 +119,34 @@ printf '%s\n' "merged: pr=u" "approved: by user via lavish dossier" > "$t62_task
 echo 2 > "$t62_task/seen"
 set +e; t62_out=$("$KP_BIN/kingpin" wait --once 2>/dev/null); t62_rc=$?; set -e
 [ "$t62_rc" -eq 1 ] && [ -z "$t62_out" ] && pass "t62: kingpin-wait treats merged: + approved: note as finished" || fail "t62: kingpin-wait rc=$t62_rc out=$t62_out"
+# The state token `kingpin list` and `kingpin brief` share (#188): one classifier, and
+# a window that outlived its harness keeps the row `kingpin list` always printed.
+t62_state_file=$t62_dir/state-status
+t62_state() { # <liveness> <expected>
+  local got
+  got=$(kp_task_state "$t62_state_file" "$1")
+  [ "$got" = "$2" ] && pass "t62: state on '$1' is $2" || fail "t62: state on '$1' = $got (want $2)"
+}
+printf '%s\n' 'failed: no status: stopped without reporting' > "$t62_state_file"
+t62_state live SILENT
+t62_state pane SILENT
+t62_state dead none
+t62_state skip none
+printf '%s\n' 'needs-input: choose one' > "$t62_state_file"
+t62_state live WAITING
+t62_state pane DEAD
+printf '%s\n' 'issue: #7' > "$t62_state_file"
+t62_state live none
+t62_state pane DEAD
+printf '%s\n' 'ready: branch=b review=APPROVE report=r' > "$t62_state_file"
+t62_state dead DEAD
+printf '%s\n' 'merged: pr=u' > "$t62_state_file"
+t62_state dead none
+: > "$t62_state_file"
+t62_state live none
+t62_state pane DEAD
+t62_state dead DEAD
+rm -f "$t62_state_file"
 # kingpin list shows the newest line, notes included
 "$KP_BIN/kingpin" list 2>/dev/null | grep '^t62-wait ' | grep -q "approved: by user via lavish dossier" && pass "t62: kingpin list shows the newest status line" || fail "t62: kingpin list row: $("$KP_BIN/kingpin" list 2>/dev/null | grep '^t62-wait ')"
 rm -rf "$t62_task" "$t62_dir"

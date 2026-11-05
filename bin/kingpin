@@ -36,6 +36,7 @@ Commands:
   wait      Wait for fleet task events (blocking or --once)
   ack       Acknowledge task events to advance seen counters
   list      Display active tasks in the terminal (--all adds finished ones)
+  brief     Print one bounded fleet digest: live tasks, approvals, dossiers, lanes, queue, AFK
   stats     Summarize the fleet's finished work: verdicts, fix passes, failures and time to merged
   lock      Check, acquire, or release the orchestrator session lock (records its harness)
   afk       Arm or disarm automatic landing while you are away (session-scoped)
@@ -111,6 +112,9 @@ case "$cmd" in
   stats)
     exec "$KP_BIN/kingpin-stats" "$@"
     ;;
+  brief)
+    exec "$KP_BIN/kingpin-brief" "$@"
+    ;;
   list|status)
     "$KP_BIN/kingpin-guard" warn || true
     show_all=0
@@ -135,7 +139,8 @@ case "$cmd" in
     print_task_row() {
       local d=$1 suffix=${2:-}
       local tid env_file proj harness mode status_file st listen_info lpid url
-      local state last lines seen dead window_alive tmux_target tmux_socket live_session
+      local state lines seen window_alive tmux_target tmux_socket live_session
+      local liveness task_state
       tid=$(basename "$d")
       env_file="$d/task.env"
       proj="-" harness="claude" mode="review"
@@ -157,7 +162,7 @@ case "$cmd" in
       # window is not this task's, so a fleet whose tmux server died reads as dead instead
       # of healthy (issue #149). An archived row never probes: its window was killed by
       # `kingpin done`, and a window check would only say DEAD for good.
-      dead=0 window_alive=0 live_session=''
+      window_alive=0 live_session=''
       if [ -z "$suffix" ] && kp_window_find "$d" >/dev/null 2>&1; then
         window_alive=1
         tmux_socket=$KP_WINDOW_SOCKET
@@ -172,22 +177,23 @@ case "$cmd" in
       # longer in the window that carries its name, whether or not the record has a
       # status file or a `harness.pid`: an older record (or a curator record) has
       # neither, and `kp_window_harness_live` falls back to the pane's command for it.
-      # WAITING and SILENT still describe a pane that is really there.
-      if [ -n "$suffix" ]; then
-        dead=0
-      elif [ "$window_alive" -eq 0 ]; then
-        dead=1
-      elif ! kp_window_harness_live "$d"; then
-        dead=1
+      # WAITING and SILENT still describe a pane that is really there, which is why
+      # `pane` is a shape of its own: a window that outlived its harness is DEAD while
+      # the job runs on, but a finished silent stop keeps the SILENT row it always had.
+      # The token itself comes from `kp_task_state` (lib/status.sh), the classifier
+      # `kingpin brief` reads too, so the board and the digest cannot disagree.
+      liveness=skip
+      if [ -z "$suffix" ]; then
+        if [ "$window_alive" -eq 0 ]; then
+          liveness=dead
+        elif kp_window_harness_live "$d"; then
+          liveness=live
+        else
+          liveness=pane
+        fi
       fi
       if [ -f "$status_file" ] && [ -s "$status_file" ]; then
         st=$(kp_status_newest "$status_file")
-        last=$(kp_status_last "$status_file")
-        # A terminal line means the job is over: there is nothing to restore, so the
-        # row keeps its status instead of showing DEAD forever.
-        if [ "$dead" -eq 1 ] && kp_status_is_terminal "$last"; then
-          dead=0
-        fi
         # Events appended since the last `kingpin ack` (the supervisor acks what
         # it dispatches), so an event nobody has looked at stays visible.
         lines=$(wc -l < "$status_file" | tr -d ' ')
@@ -203,14 +209,11 @@ case "$cmd" in
           fi
         fi
       fi
-      if [ "$dead" -eq 1 ]; then
-        state="DEAD"
-        [ -n "$suffix" ] || dead_count=$((dead_count + 1))
-      elif [ "$window_alive" -eq 1 ] && [ -f "$status_file" ] && [ -s "$status_file" ]; then
-        if kp_status_is_waiting "$st"; then
-          state="WAITING"
-        elif kp_status_is_silent "$last"; then
-          state="SILENT"
+      task_state=$(kp_task_state "$status_file" "$liveness")
+      if [ "$task_state" != none ]; then
+        state=$task_state
+        if [ "$task_state" = DEAD ]; then
+          dead_count=$((dead_count + 1))
         fi
       fi
       printf "%-22s %-10s %-8s %-12s %-10s %-18s %s%s\n" "$tid" "$proj" "$harness" "$mode" "$live_session" "$state" "$st" "$suffix"

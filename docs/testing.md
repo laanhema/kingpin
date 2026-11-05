@@ -39,6 +39,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-landing-lane.sh` | land lane: dead worker window, dead queue entry, concurrent lands, append-after-release |
 | `test-done.sh` | `done`: refused cleanup, archive, slot guard, branch cleanup, single-flight, default-branch resolution |
 | `test-archive-link.sh` | an archived task's dossier link: the page keeps resolving, and `list`/`wait`/`watch`/`land`/`listen`/`spawn`/`ack` treat the link as finished |
+| `test-brief.sh` | `brief`: the one-screen digest on an empty fleet and on a fixture of every row shape, the state it shares with `list`, one line per task with no pane dump, the approval and no-listener dossier sections and the markers that drop a row, a queued review and a fix pass with High findings left outside the approval count, a window that outlived its harness, the issue-queue pause state, the AFK and supervisor lines, the landing lanes, a record naming a dead server, the no-write guarantee, and `--help` |
 | `test-listen.sh` | `listen`: dossier opening, live listener, prompt routing |
 | `test-restore.sh` | `restore` after a tmux server restart, the `DEAD` list state, and the shared window resolver |
 | `test-send-peek.sh` | `send` and `peek` |
