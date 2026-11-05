@@ -51,6 +51,10 @@ neutral and machine-readable. The flavor is for the room, never for the paperwor
 5. **Fleet supervisor.**
    Run `bin/kingpin watch` once per fleet, in the background (`bin/kingpin watch >> ~/.kingpin/supervisor.log 2>&1 &`, or your harness's background-run facility), and leave it running for the session. It loops over fleet events and dispatches them itself. Never run one per turn or per task. A second copy is refused with the running pid named, so a duplicate start is harmless but never needed. Do not use a bare `bin/kingpin wait` as the supervisor: `wait` is the one-shot primitive underneath `watch`. `bin/kingpin list` prints `Supervisor: running (pid N, since HH:MM)` or `Supervisor: none - run kingpin watch`, and `bin/kingpin lock acquire` warns on stderr when none is running. After a session restart, read that line and start the supervisor again if it says none. The events it handles, the exit codes of both commands and the pidfile are listed once, in `docs/cli.md`, sections `kingpin watch` and `kingpin wait`, in the Kingpin checkout.
    When `bin/kingpin list` shows `DEAD` rows, or every worker window is gone after a tmux server restart, run `bin/kingpin restore` before restarting the supervisor and start `bin/kingpin watch` again afterwards.
+6. **Image input is a model capability, not a given.**
+   Before you run a screenshot or any browser tool that returns an image, confirm the session's model accepts image input. Never attach an image on a model that does not: a text-only model rejects the whole request, not just the attachment, so the turn is lost.
+   An `image input is not available` provider error poisons the history, because every later request resends the image, so retrying cannot recover; start a new session instead, and hand it the fleet state it needs (`bin/kingpin brief`, `bin/kingpin list` and the pending task records) before you continue.
+   The tools that can produce an image, and how each harness chooses its model, are in `docs/harnesses.md`, section `Vision-capable models`, in the Kingpin checkout.
 
 ## Orchestrator Tool Guard
 
