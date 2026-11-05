@@ -417,4 +417,62 @@ else
 fi
 cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
 
+echo "=== Test 22: an unguarded rc=\$? after a capture fails the lint at its line, naming kp_run ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+out=$(printf 'x\n'; exit 3)
+rc=$?
+F
+rc_line=$(grep -n '^rc=\$?' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] \
+  && grep -qF "tests/test-demo.sh:$rc_line" <<< "$LINT_OUT" \
+  && grep -qF 'kp_run' <<< "$LINT_OUT"; then
+  pass "an unguarded \$? line fails the lint at its line with kp_run named"
+else
+  fail "the lint accepted an unguarded \$? line (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 23: the guarded out=\$(cmd) || rc=\$? form passes ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+out=$(printf 'x\n'; exit 3) || rc=$?
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "the guarded || rc=\$? form passes the lint"
+else
+  fail "the lint rejected the guarded rc=\$? form (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 24: an rc=\$? inside a set +e block passes ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+set +e
+out=$(printf 'x\n'; exit 3)
+rc=$?
+set -e
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "an rc=\$? inside a set +e block passes the lint"
+else
+  fail "the lint rejected an rc=\$? inside a set +e block (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 25: an rc=\$? in a here-document body is skipped ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+cat > "$FIX/tests/fixture-rc-body.sh" << 'BODY'
+out=$(printf 'x\n'; exit 3)
+rc=$?
+BODY
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "an rc=\$? in a here-document body is skipped"
+else
+  fail "the \$? check read a here-document body (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
 kp_test_finish LINT

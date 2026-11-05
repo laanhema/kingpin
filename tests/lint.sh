@@ -2,8 +2,8 @@
 # Lint every shell script (bin/*, lib/*.sh, tests/*.sh) and every node module (lib/*.mjs):
 # `bash -n` and `node --check` for syntax, then shellcheck (settings in .shellcheckrc).
 # Every suite has to be a leg of the CI matrix and have a row in docs/testing.md, the fixed
-# sleeps before assertions check below has to stay quiet, and no page the citation check
-# reads may cite a source file by line number (tests/doc-citations.sh).
+# sleeps before assertions check and the unguarded `$?` check below have to stay quiet, and no
+# page the citation check reads may cite a source file by line number (tests/doc-citations.sh).
 # The README/docs CLI-reference check runs in both directions: every parsed flag and
 # KINGPIN_* variable has to be documented, and every flag a docs page shows has to reach
 # docs/cli.md.
@@ -154,6 +154,58 @@ if [ "${#sleep_hits[@]}" -gt 0 ]; then
     echo "  $hit" >&2
   done
   echo "lint: wait with kp_wait_until <seconds> <cmd...> for a positive wait, or kp_holds_for <seconds> <cmd...> when nothing must happen, both in tests/lib.sh" >&2
+  exit 1
+fi
+
+# A `NAME=$?` line that follows a command while errexit is on can never see a non-zero
+# status: `set -e` aborts the suite at the command, so the assertion's fail branch is dead
+# and the run dies without a FAIL line (issue #180). The fix is `kp_run <out-var> <rc-var>
+# <cmd...>` in tests/lib.sh, which captures the status without tripping errexit. The scan
+# tracks `set +e` / `set -e` in file order, because a block that turns errexit off is the
+# one place the bare form is valid, and it skips here-document bodies, which are data. A
+# `set` counts only in command position, so a message that mentions `set -e` does not
+# change the state.
+rc_hits=()
+rc_pattern='^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=\$\?[[:space:]]*(#.*)?$'
+heredoc_pattern="<<-?[[:space:]]*[\"']?([A-Za-z_][A-Za-z0-9_]*)"
+for f in tests/test-*.sh; do
+  [ -f "$f" ] || continue
+  errexit=1
+  heredoc=
+  line_no=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line_no=$((line_no + 1))
+    if [ -n "$heredoc" ]; then
+      body=$line
+      while [ "${body:0:1}" = $'\t' ]; do body=${body#?}; done
+      [ "$body" = "$heredoc" ] && heredoc=
+      continue
+    fi
+    if [[ $line =~ $heredoc_pattern ]]; then
+      heredoc=${BASH_REMATCH[1]}
+    fi
+    if [[ $line =~ ^[[:space:]]*# ]]; then
+      continue
+    fi
+    rest=$line
+    while [[ $rest =~ (^[[:space:]]*|[;\&\|][[:space:]]*)set[[:space:]]+([+-])[A-Za-z]*e[A-Za-z]* ]]; do
+      case ${BASH_REMATCH[2]} in
+        +) errexit=0 ;;
+        -) errexit=1 ;;
+      esac
+      rest=${rest#*"${BASH_REMATCH[0]}"}
+    done
+    if [ "$errexit" -eq 1 ] && [[ $line =~ $rc_pattern ]]; then
+      rc_hits+=("$f:$line_no: $line")
+    fi
+  done < "$f"
+done
+if [ "${#rc_hits[@]}" -gt 0 ]; then
+  echo "lint: these suites read \$? after a command that errexit would already have aborted, so their fail branch never runs:" >&2
+  for hit in "${rc_hits[@]}"; do
+    echo "  $hit" >&2
+  done
+  echo "lint: capture with kp_run <out-var> <rc-var> <cmd...> from tests/lib.sh, which records the status without tripping set -e" >&2
   exit 1
 fi
 

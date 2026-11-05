@@ -357,8 +357,8 @@ printf 'TASK_ID=t12-gone\nMUX=herdr\nMUX_SESSION=kp144\nMUX_TARGET=w8:p8\nMUX_LA
 
 : > "$T/mux-tmux.log"
 t12_before=$(cksum "$t12_peek/task.env")
-t12_peek_out=$(PATH="$T/mux-shim:$PATH" "$KP_BIN/kingpin-peek" t12-peek --lines 5)
-t12_peek_rc=$?
+t12_peek_out='' t12_peek_rc=0
+kp_run t12_peek_out t12_peek_rc env PATH="$T/mux-shim:$PATH" "$KP_BIN/kingpin-peek" t12-peek --lines 5
 t12_after=$(cksum "$t12_peek/task.env")
 [ "$t12_peek_rc" -eq 0 ] && pass "t12: peek exits 0 on a Herdr record" || fail "t12: peek exited $t12_peek_rc"
 case "$t12_peek_out" in
@@ -371,8 +371,8 @@ esac
   && pass "t12: peek leaves the record byte-identical (stale MUX_TARGET kept)" \
   || fail "t12: peek rewrote task.env: $(grep MUX_TARGET "$t12_peek/task.env")"
 
-t12_send_out=$(PATH="$T/mux-shim:$PATH" "$KP_BIN/kingpin-send" t12-send "hello cli")
-t12_send_rc=$?
+t12_send_out='' t12_send_rc=0
+kp_run t12_send_out t12_send_rc env PATH="$T/mux-shim:$PATH" "$KP_BIN/kingpin-send" t12-send "hello cli"
 [ "$t12_send_rc" -eq 0 ] && pass "t12: send exits 0 on a Herdr record" || fail "t12: send exited $t12_send_rc"
 [ "$t12_send_out" = "OK: sent to kp144:kp-144-cli (w1:p7)" ] \
   && pass "t12: send names the Herdr pane label and id" \
@@ -384,8 +384,8 @@ log_has "--session kp144 pane send-keys w1:p7 enter" \
   && pass "t12: send pressed Enter through the Herdr backend" \
   || fail "t12: herdr calls: $(cat "$KP_TEST_HERDR_CALLS")"
 
-t12_gone_out=$(PATH="$T/mux-shim:$PATH" "$KP_BIN/kingpin-launch-check" "$t12_gone")
-t12_gone_rc=$?
+t12_gone_out='' t12_gone_rc=0
+kp_run t12_gone_out t12_gone_rc env PATH="$T/mux-shim:$PATH" "$KP_BIN/kingpin-launch-check" "$t12_gone"
 [ "$t12_gone_rc" -eq 0 ] && pass "t12: launch-check records a Herdr worker that never reported" || fail "t12: launch-check exited $t12_gone_rc"
 case "$t12_gone_out" in
   "failed: no status: t12-gone (claude) exited, herdr pane gone;"*) pass "t12: the failure line names the Herdr pane" ;;
