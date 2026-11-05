@@ -22,7 +22,7 @@ The underboss started you for one job. Task id: {{TASK_ID}}. Task folder: {{TASK
 
 Your report goes to the orchestrator, not to a person in this window. Under the skill optimization protocol in your global rules, that makes this whole run a subagent: edit no skill, and write your critique line to `{{TASK_DIR}}/critique` as well as ending your final reply with it.
 
-Report every event as one line appended to `{{TASK_DIR}}/status`, with `printf '%s\n' '<line>' >> {{TASK_DIR}}/status`:
+Report every event as one line appended to `{{TASK_DIR}}/status`, with `printf '%s\n' '<line>' >> {{TASK_DIR}}/status`. The file is append-only: never rewrite it, never remove a line, and never truncate it, because the fleet reads it from a cursor that counts lines, so a rewrite can hide a report behind a line the supervisor has already passed. Append one of these lines:
 
 - `issue: #<n> <url>` as soon as the issue you work on is known.
 - `needs-input: <one-line summary>` whenever a skill tells you to ask the user, confirm with the user, or wait for the user. First write the whole question to `{{TASK_DIR}}/question.md`, with everything needed to answer it (for a draft issue, the full draft and every choice). Then append the line and end your turn. The answer arrives as your next message. Ask through these files only: the question dialog and plain chat questions reach nobody here.

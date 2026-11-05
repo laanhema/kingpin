@@ -28,8 +28,8 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | Suite | Covers |
 |---|---|
 | `test-lifecycle.sh` | `init`, `list`, `watch` auto-lifecycle, `run`, fleet-server targeting |
-| `test-wait.sh` | `wait` and `ack`: blocking, wake filtering, exit codes |
-| `test-watch-supervisor.sh` | `watch`: single supervisor with a pidfile, stale reclaim, `list` line, `lock acquire` warning, events handled across turns |
+| `test-wait.sh` | `wait` and `ack`: blocking, wake filtering, exit codes, the `seen_line` anchor a written cursor carries, the `--rewind` rules, and the event a file shorter than its cursor raises |
+| `test-watch-supervisor.sh` | `watch`: single supervisor with a pidfile, stale reclaim, `list` line, `lock acquire` warning, events handled across turns, a status file rewritten under the cursor and the one-time repair line it logs |
 | `test-lock.sh` | `lock`: lifecycle, collisions, stale locks, recorded harness, parallel acquire race, atomic publish, release ownership |
 | `test-afk.sh` | `afk`: state lifecycle, the 8-hour default, TTL and dead-pid expiry, the `list` line, `lock release` clearing it, the clean-land path and its note, the listener's no-double-land markers, every refusal, the Stop-hook boundary the note leaves alone, a disarmed fix pass that lands without a note, an auto-mode NITS pass that gains one, and the skipped review listener |
 | `test-curate.sh` | `curate`: lifecycle, quote robustness, and a run on a server that holds only a same-prefix session |

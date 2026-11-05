@@ -10,7 +10,14 @@
 # undispatched line. The cursor never moves backwards, and it is clamped to the
 # file's line count.
 #
-# Usage: kingpin-ack [--through <line>] <task-id>... | --all
+# A count alone cannot say *which* line it counted once a writer rewrote the file,
+# so every cursor write also records the handled line's own text in `seen_line`.
+# A reader that finds another line at that index knows the file was rewritten under
+# the cursor, and `kp_status_cursor_resume` finds where dispatch has to resume
+# (issue #190). `--rewind` lets that reader move the cursor back to the line it
+# resumes at; without it the cursor stays where it was.
+#
+# Usage: kingpin-ack [--through <line> [--rewind]] <task-id>... | --all
 set -euo pipefail
 
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
@@ -22,6 +29,7 @@ tasks_dir="$KP_HOME/tasks"
 
 ALL=0
 THROUGH=''
+REWIND=0
 TARGETS=()
 
 while [ $# -gt 0 ]; do
@@ -37,8 +45,12 @@ while [ $# -gt 0 ]; do
       esac
       shift 2
       ;;
+    --rewind)
+      REWIND=1
+      shift
+      ;;
     -h|--help)
-      echo "usage: kingpin-ack [--through <line>] <task-id>... | --all"
+      echo "usage: kingpin-ack [--through <line> [--rewind]] <task-id>... | --all"
       exit 0
       ;;
     -*)
@@ -58,9 +70,34 @@ if [ "$ALL" -eq 1 ] && [ -n "$THROUGH" ]; then
 fi
 
 if [ "$ALL" -eq 0 ] && [ ${#TARGETS[@]} -eq 0 ]; then
-  echo "usage: kingpin-ack [--through <line>] <task-id>... | --all" >&2
+  echo "usage: kingpin-ack [--through <line> [--rewind]] <task-id>... | --all" >&2
   exit 2
 fi
+
+if [ "$REWIND" -eq 1 ] && [ -z "$THROUGH" ]; then
+  echo "kingpin-ack: --rewind names a line for --through; give both or neither" >&2
+  exit 2
+fi
+
+# write_cursor <task-dir> <line>: move the task's status cursor to that line and
+# record the line's own text beside it. The anchor is what lets a reader notice a
+# file rewritten under the cursor (issue #190), and it is written first. A crash
+# between the two writes leaves the new anchor beside the old count: when that count
+# stops short of it the anchor is not among the counted lines, so dispatch resumes at
+# line 1 and replays the handled lines, the at-least-once rule this protocol already
+# follows; no line is lost. Line 0, and a line that is blank, leave no anchor.
+write_cursor() {
+  local task_dir=$1 line=$2 anchor=''
+  if [ "$line" -gt 0 ]; then
+    anchor=$(sed -n "${line}p" "$task_dir/status" 2>/dev/null || true)
+  fi
+  if [ -n "$anchor" ]; then
+    printf '%s\n' "$anchor" > "$task_dir/seen_line"
+  else
+    rm -f "$task_dir/seen_line"
+  fi
+  printf '%s\n' "$line" > "$task_dir/seen"
+}
 
 ack_task() {
   local task_dir=$1
@@ -69,7 +106,7 @@ ack_task() {
   local status_file="$task_dir/status"
   local stopped_file="$task_dir/stopped"
 
-  # 1. If status exists, count lines and write to seen. With --through, advance to
+  # 1. If status exists, count lines and write the cursor. With --through, write
   # the line the caller just handled instead, so a later append stays pending.
   if [ -f "$status_file" ]; then
     if [ -n "$THROUGH" ]; then
@@ -79,10 +116,12 @@ ack_task() {
       lines=$(wc -l < "$status_file" | tr -d ' ')
       target=$THROUGH
       if [ "$target" -gt "$lines" ]; then target=$lines; fi
-      if [ "$target" -lt "$current" ]; then target=$current; fi
-      printf '%s\n' "$target" > "$task_dir/seen"
+      # Only a caller holding --rewind may move the cursor back, because only a
+      # reader that saw a rewritten file knows the old count names no line.
+      if [ "$REWIND" -eq 0 ] && [ "$target" -lt "$current" ]; then target=$current; fi
+      write_cursor "$task_dir" "$target"
     else
-      wc -l < "$status_file" | tr -d ' ' > "$task_dir/seen"
+      write_cursor "$task_dir" "$(wc -l < "$status_file" | tr -d ' ')"
     fi
   fi
 
