@@ -23,7 +23,9 @@
 # `kp_status_field_count`, `kp_status_verdict`, `kp_verdict_kind`), so the landing
 # gate in kingpin-land and the approval gate in kingpin-listen share one parser.
 # The one pane decision the outcome writers share (`kp_pane_shows_working`) lives
-# here as well, so the per-harness working-marker list exists once. The one command
+# here as well, so the per-harness working-marker list exists once. The state
+# token `kingpin list` prints and `kingpin brief` reuses (`kp_task_state`) is
+# decided here too, beside the readers that define the words. The one command
 # builder the fleet sends share (`kp_skill_command`) lives here for the same reason:
 # spawn and land must ask a harness for the skill name it really expands.
 #
@@ -162,6 +164,63 @@ kp_status_is_silent() {
     "failed: no status:"*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# kp_task_state <status-file> <liveness>
+# The state token a task row carries, decided once for `kingpin list` and
+# `kingpin brief` so the two cannot disagree about the same record. <liveness> is
+# what the caller's window probe found:
+#   live  the record's window is there and the recorded harness still runs in it
+#   pane  the window is still there, but the recorded harness has exited
+#   dead  the window is gone
+#   skip  the caller did not probe (an archived or finished row)
+# Prints DEAD, WAITING, SILENT or none:
+#   DEAD     the window is gone, or the harness no longer runs in it, and the job is
+#            not over yet. A terminal last worker event (merged:, failed:,
+#            cleanup-refused:) means a finished job has nothing to restore, so it
+#            reads as none, the rule `kingpin list` has always applied.
+#   WAITING  a pane is there and the newest line, listener notes included, blocks on
+#            a human (kp_status_is_waiting).
+#   SILENT   a pane is there and the Stop hook's `failed: no status:` is the last
+#            worker event (kp_status_is_silent).
+#   none     running, finished, unprobed, or a record with no status line at all.
+# A missing or empty status file can be DEAD but never WAITING or SILENT, and
+# `skip` never prints a state: there is no window for one to describe. `pane` keeps
+# the shape `kingpin list` has always reported: a window that outlived its harness
+# is DEAD while the job runs on, and a finished silent stop still reads SILENT
+# because its terminal line rules DEAD out.
+kp_task_state() {
+  local status_file=${1:-} liveness=${2:-skip} newest='' last='' dead=0 pane=0
+  local has_status=0
+  case $liveness in
+    live) pane=1 ;;
+    pane) pane=1; dead=1 ;;
+    dead) dead=1 ;;
+    *) printf 'none\n'; return 0 ;;
+  esac
+  if [ -f "$status_file" ] && [ -s "$status_file" ]; then
+    has_status=1
+    newest=$(kp_status_newest "$status_file")
+    last=$(kp_status_last "$status_file")
+    if [ "$dead" -eq 1 ] && kp_status_is_terminal "$last"; then
+      dead=0
+    fi
+  fi
+  if [ "$dead" -eq 1 ]; then
+    printf 'DEAD\n'
+    return 0
+  fi
+  if [ "$pane" -eq 1 ] && [ "$has_status" -eq 1 ]; then
+    if kp_status_is_waiting "$newest"; then
+      printf 'WAITING\n'
+      return 0
+    fi
+    if kp_status_is_silent "$last"; then
+      printf 'SILENT\n'
+      return 0
+    fi
+  fi
+  printf 'none\n'
 }
 
 # kp_status_field <status-line> <key>

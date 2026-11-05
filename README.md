@@ -110,6 +110,7 @@ Only one supervisor runs at a time. A second `kingpin watch` refuses to start an
 | `kingpin afk` | Arms session-scoped auto-landing while you are away: a clean review verdict lands, and anything that needs a human waits. Default TTL 8h. [Details](docs/cli.md#kingpin-afk) |
 | `kingpin spawn` | Starts a worker in a background tmux window, in a leased worktree; the target is resolved, never guessed. [Details](docs/cli.md#kingpin-spawn) |
 | `kingpin list` | Displays the live fleet: each task's state, session and window, the browser daemons it holds, its dossier link, and whether the supervisor is running; `--all` (or `-a`) also shows finished tasks. [Details](docs/cli.md#kingpin-list) |
+| `kingpin brief` | One screen of fleet state for a session that just started: live tasks with their newest status, the reviews waiting for approval, dossiers with no listener, landing lanes, the issue queue, AFK and the supervisor. It writes nothing. [Details](docs/cli.md#kingpin-brief) |
 | `kingpin stats` | Reads the task records and prints the week's outcome: finished tasks, verdicts, fix-pass rate, failures and time to merge; `--since <duration>` limits the window. [Details](docs/cli.md#kingpin-stats) |
 | `kingpin send` | Types the text literally into a worker's window, then presses Enter. [Details](docs/cli.md#kingpin-send) |
 | `kingpin peek` | Read-only view of a worker's terminal: the last 20 non-empty lines of its pane, scrollback included (`--lines N` changes the count). [Details](docs/cli.md#kingpin-peek) |
