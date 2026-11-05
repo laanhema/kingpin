@@ -1,0 +1,18 @@
+[Unit]
+Description=Kingpin fleet supervisor (kingpin watch)
+Documentation=https://github.com/laanhema/kingpin/blob/main/docs/cli.md
+After=default.target
+
+[Service]
+Type=simple
+# A user unit does not inherit the login shell's PATH. `kingpin watch` shells out to
+# gh, tmux, treehouse, lavish-axi and a worker harness, so name the usual bin
+# directories here and add your harness's directory when it lives elsewhere.
+Environment=PATH=%h/.local/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin
+# Change the checkout path when Kingpin is not at ~/github/kingpin.
+ExecStart=%h/github/kingpin/bin/kingpin watch
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

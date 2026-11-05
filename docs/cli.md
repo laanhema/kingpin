@@ -82,6 +82,25 @@ Before the wait pass of every cycle, and in `--once`, the supervisor checks each
 
 It claims `~/.kingpin/supervisor.pid`, refuses a second copy with the running pid named, reclaims a pidfile left by a dead supervisor, and `--once` runs one pass without claiming it (that is the path `kingpin run` and the tests use). `kingpin wait` is the primitive it drives.
 
+### Running it as a systemd user service
+
+The normal deployment is the `kingpin-watch` user unit shipped with the checkout at `systemd/kingpin-watch.service`. It mirrors `kingpin-queue.service`: `Type=simple`, `Restart=always`, `RestartSec=30` and `WantedBy=default.target`, so a crashed supervisor is back within 30 seconds and starts again after a reboot. Install it from the Kingpin checkout:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/kingpin-watch.service ~/.config/systemd/user/
+# edit ExecStart if the checkout is not ~/github/kingpin
+systemctl --user daemon-reload
+systemctl --user enable --now kingpin-watch
+loginctl enable-linger "$USER"
+```
+
+`systemctl --user enable --now kingpin-watch` starts the unit now and at every login, and `loginctl enable-linger "$USER"` keeps the user manager, and with it the unit, running after you log out. Without linger a user unit stops when the last session ends. Check the result with `systemctl --user status kingpin-watch`; the `MainPID` it prints is the pid `kingpin list` reports in its `Supervisor: running (pid <n>, since <HH:MM>)` line.
+
+The unit carries a `PATH` that reaches `gh`, `tmux`, `treehouse`, `lavish-axi` and the worker harnesses, because a user unit does not inherit your login shell's `PATH`. Extend `Environment=PATH=` when your harness lives outside the directories it names, and change `ExecStart=` when the checkout is not at `~/github/kingpin`. The unit does not set a tmux socket: the fleet follows the socket each task record and `$KINGPIN_HOME/config.env` name, and the unit never owns that server.
+
+A host without systemd, or a one-off run under a supervisor of your own, still starts the foreground command directly: `kingpin watch`.
+
 ### Exit codes
 
 `--once` exits 0 after one pass, and a running supervisor exits 0 on `INT` or `TERM`. It exits 1 when a second copy is already running (naming its pid) or when the pidfile cannot be claimed, and 2 for a bad `--interval`, an unknown argument or an unknown flag.
@@ -124,9 +143,9 @@ To look at a worker's window by hand, use the attach command `kingpin list` prin
 
 ### Who owns the server
 
-`kingpin watch` does, and no systemd unit or timer does. The socket is data, not configuration: each task record names its own `TMUX_SOCKET`, a fleet can hold records on more than one server during a move between them, and the same fleet may be running on the operator's default server (`KINGPIN_TMUX_SOCKET=default`) on one host and on a server of its own on the next. A unit would have to name one socket, and on the operator-server configuration it would be a second owner for a server that is not the fleet's. So the supervisor owns the lifecycle of whatever socket the records name: on every sweep it checks each socket a live task record names, and when one no longer answers it hands that socket's tasks to `kingpin restore`, which recreates the session (and with it the server) and re-arms each window with a resume brief. The `OK:` line of a `kingpin spawn` that had to start the server itself says so, for example `, started the tmux server on socket 'kingpin' (it was not running)`.
+`kingpin watch` does, and no systemd unit or timer owns the tmux server. The `kingpin-watch` unit only keeps the supervisor process alive; it names no socket. The socket is data, not configuration: each task record names its own `TMUX_SOCKET`, a fleet can hold records on more than one server during a move between them, and the same fleet may be running on the operator's default server (`KINGPIN_TMUX_SOCKET=default`) on one host and on a server of its own on the next. A unit that owned the server would have to name one socket, and on the operator-server configuration it would be a second owner for a server that is not the fleet's. So the supervisor owns the lifecycle of whatever socket the records name: on every sweep it checks each socket a live task record names, and when one no longer answers it hands that socket's tasks to `kingpin restore`, which recreates the session (and with it the server) and re-arms each window with a resume brief. The `OK:` line of a `kingpin spawn` that had to start the server itself says so, for example `, started the tmux server on socket 'kingpin' (it was not running)`.
 
-The one thing this cannot cover is a supervisor that was itself running inside the server that died. Start `kingpin watch` outside the workers' server, for example from a plain shell or from a service that restarts it; on the operator-server configuration that is the same server your own session lives on, and its own lifecycle belongs to whatever started it (a systemd `tmux.service`, or your own tmux). When that server is back, the next sweep restores the windows. The supervisor follows the socket each record names, not a configured one, so a worker placed in the caller's session on the caller's server is restored there too, with `tmux -S <path>`.
+The one thing this cannot cover is a supervisor that was itself running inside the server that died. Run `kingpin watch` outside the workers' server, which is what the shipped `kingpin-watch` unit does; on the operator-server configuration that is the same server your own session lives on, and its own lifecycle belongs to whatever started it (a systemd `tmux.service`, or your own tmux). When that server is back, the next sweep restores the windows. The supervisor follows the socket each record names, not a configured one, so a worker placed in the caller's session on the caller's server is restored there too, with `tmux -S <path>`.
 
 ### Window names
 
@@ -629,7 +648,7 @@ A restore takes `$KINGPIN_HOME/locks/restore.mutex` for the whole run, so two op
 
 ### Starting the supervisor again
 
-The supervisor's pidfile died with the tmux server, so start `kingpin watch` again after a restore. Restore does not re-arm a review dossier's listener: that is the supervisor's job.
+The supervisor's pidfile died with the tmux server. Under the `kingpin-watch` unit systemd restarts the supervisor after the restore, and a supervisor that runs outside the server re-arms the windows on its next sweep. Without the unit, start `kingpin watch` again; when the unit exists but is stopped, `systemctl --user start kingpin-watch` starts it. Restore does not re-arm a review dossier's listener: that is the supervisor's job.
 
 ### Exit codes
 
@@ -643,7 +662,7 @@ Exits 0 when every named task was restored or was already live; 1 when any task 
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_HARNESS`, `KINGPIN_LOCK_PID`
 
-`--harness` records `claude`, `agy`, `opencode`, `pi` or `codex`; without it, `acquire` detects the harness in this order: `--harness`, `KINGPIN_HARNESS`, the command name or argv of the session process (`claude`, `agy`, `opencode`, `pi`, `codex`, including the `@earendil-works/pi-coding-agent` npm path), then the calling agent's own marker (`CLAUDECODE=1`, `OPENCODE=1`). A session that matches none records nothing. `acquire` also warns on stderr when no fleet supervisor is running, and when the guard or the contract is missing or stale, even with `KINGPIN_SKIP_GUARD=1`, because it calls `kingpin guard check` directly. A numeric `[pid]` overrides the detected session pid, as does `KINGPIN_LOCK_PID`.
+`--harness` records `claude`, `agy`, `opencode`, `pi` or `codex`; without it, `acquire` detects the harness in this order: `--harness`, `KINGPIN_HARNESS`, the command name or argv of the session process (`claude`, `agy`, `opencode`, `pi`, `codex`, including the `@earendil-works/pi-coding-agent` npm path), then the calling agent's own marker (`CLAUDECODE=1`, `OPENCODE=1`). A session that matches none records nothing. `acquire` also warns on stderr, naming `kingpin-watch.service`, when no fleet supervisor is running, and when the guard or the contract is missing or stale, even with `KINGPIN_SKIP_GUARD=1`, because it calls `kingpin guard check` directly. A numeric `[pid]` overrides the detected session pid, as does `KINGPIN_LOCK_PID`.
 
 `acquire` (the default subcommand) records the calling session's pid and the harness it detected, `status` prints `lock: free`, `lock: held by pid <n> (<harness>)`, `lock: held by pid <n>` when the record carries no valid harness line, or `lock: stale`, and `harness` prints the recorded harness. A record whose holder pid is gone is ignored, and the next `acquire` rewrites the whole file.
 

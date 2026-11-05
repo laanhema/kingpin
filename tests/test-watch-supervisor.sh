@@ -3,8 +3,9 @@
 #
 # Covers the pidfile lifecycle (start, second copy refused, stale file reclaimed),
 # the `Supervisor:` line in `kingpin list` in both states, the `kingpin lock acquire`
-# warning, and the point of the whole change: two events that arrive one after the
-# other are both handled by the one watch process, with no re-arm and no human step.
+# warning, the shipped `systemd/kingpin-watch.service` unit, and the point of the whole
+# change: two events that arrive one after the other are both handled by the one watch
+# process, with no re-arm and no human step.
 set -euo pipefail
 
 # shellcheck source=lib.sh
@@ -74,6 +75,37 @@ mk_task() {
 }
 mk_task t-a
 mk_task t-b
+
+# Test 0: the shipped user unit mirrors kingpin-queue.service and starts the daemon
+echo "=== Test 0: the shipped kingpin-watch user unit ==="
+unit="$KP_ROOT/systemd/kingpin-watch.service"
+[ -f "$unit" ] && pass "the unit file ships with the checkout" || fail "missing $unit"
+if [ -f "$unit" ]; then
+  [ "$(grep -c '^ExecStart=' "$unit")" = "1" ] \
+    && pass "the unit has exactly one ExecStart" \
+    || fail "the unit has $(grep -c '^ExecStart=' "$unit") ExecStart lines"
+  grep -qE '^ExecStart=.*bin/kingpin watch$' "$unit" \
+    && pass "ExecStart runs the supervisor daemon" \
+    || fail "ExecStart does not run 'kingpin watch'"
+  grep -qE '^ExecStart=.*--once' "$unit" \
+    && fail "ExecStart passes --once, which is not a daemon" \
+    || pass "ExecStart does not pass --once"
+  grep -qx 'Type=simple' "$unit" \
+    && pass "the unit is Type=simple" \
+    || fail "the unit has no Type=simple"
+  grep -qx 'Restart=always' "$unit" \
+    && pass "the unit restarts on every exit" \
+    || fail "the unit has no Restart=always"
+  grep -qx 'RestartSec=30' "$unit" \
+    && pass "the unit waits 30s between restarts" \
+    || fail "the unit has no RestartSec=30"
+  grep -qE '^Environment=PATH=' "$unit" \
+    && pass "the unit carries a PATH for gh, tmux, treehouse and lavish-axi" \
+    || fail "the unit has no Environment=PATH"
+  grep -qx 'WantedBy=default.target' "$unit" \
+    && pass "the unit installs for the user's default target" \
+    || fail "the unit has no WantedBy=default.target"
+fi
 
 # Test 1: no supervisor, in list and in --once
 echo "=== Test 1: no supervisor yet ==="
@@ -165,9 +197,12 @@ echo "$acquire_err" | grep -q "no fleet supervisor is running" \
 KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin" lock release >/dev/null
 stop_supervisor
 acquire_err=$(KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin" lock acquire 2>&1 >/dev/null || true)
-echo "$acquire_err" | grep -q "no fleet supervisor is running; run 'kingpin watch'" \
+echo "$acquire_err" | grep -q "no fleet supervisor is running" \
   && pass "acquire warns when no supervisor is running" \
   || fail "acquire did not warn: $acquire_err"
+echo "$acquire_err" | grep -q "kingpin-watch.service" \
+  && pass "the warning names the kingpin-watch unit" \
+  || fail "the warning did not name the unit: $acquire_err"
 KINGPIN_LOCK_PID=$$ "$KP_BIN/kingpin" lock release >/dev/null
 
 # Test 7: two events, one watch process, no re-arm anywhere

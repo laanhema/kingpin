@@ -82,11 +82,17 @@ kingpin run my-repo --text "refactor authentication service" --harness agy
 
 ## Automated Fleet Supervision (`kingpin watch`)
 
-`kingpin watch` is the fleet's supervisor: one process per fleet, started once and left running, in the background or in a separate terminal:
+`kingpin watch` is the fleet's supervisor: one process per fleet, kept running by the shipped `kingpin-watch` user unit so a crash, a logout or a reboot does not leave the fleet unwatched:
 
 ```bash
-kingpin watch >> ~/.kingpin/supervisor.log 2>&1 &
+cp systemd/kingpin-watch.service ~/.config/systemd/user/
+# edit ExecStart if the checkout is not ~/github/kingpin
+systemctl --user daemon-reload
+systemctl --user enable --now kingpin-watch
+loginctl enable-linger "$USER"
 ```
+
+A host without systemd can still run `kingpin watch` directly, in the foreground or in the background (`kingpin watch >> ~/.kingpin/supervisor.log 2>&1 &`). The unit's `PATH` and linger rules are in [`Running it as a systemd user service`](docs/cli.md#running-it-as-a-systemd-user-service).
 
 It loops, so it keeps handling events after it handles one; there is nothing to restart each turn. It:
 - Automatically triggers `kingpin land` for workers in `auto` mode when they report `ready:`, and continues a landing after `fixed:` only when the review gate allows it. [`kingpin land`](docs/cli.md#fix-passes) has the gate and the fix pass.
@@ -97,7 +103,7 @@ It loops, so it keeps handling events after it handles one; there is nothing to 
 - Retires a finished task's dossier: marks the archived page so its review buttons no longer submit, and ends the Lavish session a reviewer left open on it.
 - Lands a clean review verdict while AFK is armed, so a fleet you step away from does not wait on a click. A findings verdict lands too when every open finding is Low, and runs the fix pass first otherwise; a `needs-input:`, `cleanup-refused:` or `failed:` task waits for you. [`kingpin afk`](docs/cli.md#kingpin-afk) has the exact rule.
 
-Only one supervisor runs at a time. A second `kingpin watch` refuses to start and names the running pid, and `kingpin lock acquire` warns when none is running. `kingpin list` prints `Supervisor: running (pid 12345, since 14:03)` or `Supervisor: none - run kingpin watch`. [`kingpin watch`](docs/cli.md#kingpin-watch) has the pidfile, `--once` and the interval rules.
+Only one supervisor runs at a time. A second `kingpin watch` refuses to start and names the running pid, and `kingpin lock acquire` warns, naming `kingpin-watch.service`, when none is running. `kingpin list` prints `Supervisor: running (pid 12345, since 14:03)` or `Supervisor: none - run kingpin watch`. [`kingpin watch`](docs/cli.md#kingpin-watch) has the pidfile, `--once` and the interval rules.
 
 `kingpin afk on [--ttl <duration>]` arms auto-landing for this session, `kingpin afk off` disarms it, and `kingpin afk status` reports it. The default TTL is 8 hours, and `--ttl` changes it; the arm reads as off once the TTL passes or the session pid is gone. [`kingpin afk`](docs/cli.md#kingpin-afk) has the status note and the thresholds.
 

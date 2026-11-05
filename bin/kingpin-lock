@@ -242,9 +242,10 @@ case "$cmd" in
       *) echo "warning: orchestrator guard is not active; run 'kingpin guard install'" >&2 ;;
     esac
     # Nothing starts a supervisor for you: a session that only inspects the fleet
-    # would leave a daemon behind. The one line names the command to run.
+    # would leave a daemon behind. The one line names the unit first and the
+    # foreground fallback second (issue #184).
     if [ -z "$(kp_supervisor_pid "$KP_HOME")" ]; then
-      echo "warning: no fleet supervisor is running; run 'kingpin watch'" >&2
+      echo "warning: no fleet supervisor is running; start 'kingpin-watch.service' (systemctl --user enable --now kingpin-watch), or run 'kingpin watch'" >&2
     fi
     ;;
   harness)
