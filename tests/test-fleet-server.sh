@@ -214,5 +214,43 @@ tmux -L default has-session -t S1 2>/dev/null \
 window_exists default S1 t-default \
   && pass "watch restored the default-socket task's window" || fail "the default-socket window was not restored"
 
+# --- Test 7: a record whose TMUX_SOCKET is a socket path -----------------------------
+echo "=== Test 7: a socket-path record names its server in list and in the attach hints ==="
+# A record can name a server whose socket lives outside the default directory: the
+# caller's own tmux client, a `tmux -S` server, a custom TMUX_TMPDIR. `kingpin list`
+# must read that path with `-S` in the SESSION column, in its footer, and in the
+# dead-server warning, because it is the same server either way.
+path_home="$T/path-home"
+mkdir -p "$path_home/tasks/pathtask"
+"$REAL_TMUX" -L pathprobe new-session -d -s probe -n home
+path_socket=$("$REAL_TMUX" -L pathprobe display-message -p '#{socket_path}')
+"$REAL_TMUX" -L pathprobe new-window -d -t probe: -n pathtask cat
+printf 'TASK_ID=pathtask\nPROJECT=demo-auto\nHARNESS=agy\nMODE=review\nTMUX_SOCKET=%s\nTMUX_TARGET=probe:pathtask\n' \
+  "$path_socket" > "$path_home/tasks/pathtask/task.env"
+printf 'issue: #910\n' > "$path_home/tasks/pathtask/status"
+path_list=$(KINGPIN_HOME="$path_home" "$KP_BIN/kingpin" list 2>/dev/null || true)
+[ "$(printf '%s\n' "$path_list" | awk '$1=="pathtask"{print $5}')" = "probe" ] \
+  && pass "list names the session on a socket-path record" \
+  || fail "list row for the socket-path record: $(printf '%s\n' "$path_list" | awk '$1=="pathtask"')"
+case "$path_list" in
+  *"Workers live on the tmux server '$path_socket': tmux -S $path_socket attach"*)
+    pass "the footer attaches to the socket path with -S" ;;
+  *) fail "the footer did not name the socket path: $path_list" ;;
+esac
+path_window=$(printf '%s\n' "$path_list" | grep '↳ Window:' || true)
+case "$path_window" in
+  *"tmux -S $path_socket probe"*)
+    pass "the window line spells the socket path with -S" ;;
+  *) fail "the window line did not use -S: $path_window" ;;
+esac
+"$REAL_TMUX" -L pathprobe kill-server 2>/dev/null || true
+KINGPIN_HOME="$path_home" "$KP_BIN/kingpin" list >/dev/null 2>"$T/path-list.err" || true
+grep -qF "the tmux server '$path_socket' is not running" "$T/path-list.err" \
+  && pass "list warns about the dead socket-path server" \
+  || fail "list did not warn about the socket path: $(cat "$T/path-list.err")"
+grep -qF "tmux -S $path_socket attach" "$T/path-list.err" \
+  && pass "the dead-server warning attaches to the path with -S" \
+  || fail "the warning gave no -S attach hint: $(cat "$T/path-list.err")"
+
 tmux -L default kill-server 2>/dev/null || true
 kp_test_finish FLEET-SERVER

@@ -143,6 +143,24 @@ kp_curate_stamp() {
   fi
 }
 
+# kp_curate_window_label <kp-home>
+# Prints the `<session>:curator` window the curator probe names, read-only: the
+# `MUX_TARGET` the record holds, or, with no record yet, the configured
+# `TMUX_SESSION` (issue #191) or `<kingpin>:curator`. A caller prints it in a skip
+# or refusal message before the launch target is resolved, so the probe and the
+# message name the same window without starting a server.
+kp_curate_window_label() {
+  local home=${1:?} env_file target configured=''
+  env_file="$home/tasks/curator/task.env"
+  if [ -f "$env_file" ]; then
+    target=$(kp_env_get "$env_file" MUX_TARGET)
+    printf '%s\n' "${target:-kingpin:curator}"
+    return 0
+  fi
+  [ -f "$home/config.env" ] && configured=$(kp_env_get "$home/config.env" TMUX_SESSION)
+  printf '%s\n' "${configured:-kingpin}:curator"
+}
+
 # kp_curate_window_state <kp-home>
 # Prints alive, dead, none or unknown for the curator terminal. The mux and the
 # target come from the curator record (`tasks/curator/task.env`), like every other
@@ -159,18 +177,19 @@ kp_curate_stamp() {
 kp_curate_window_state() {
   local home=${1:?} env_file mux sock target session state
   env_file="$home/tasks/curator/task.env"
-  target='kingpin:curator'
+  target=$(kp_curate_window_label "$home")
   sock=''
   session=''
   if [ -f "$env_file" ]; then
     mux=$(kp_mux_record "$home/tasks/curator" 2>/dev/null) || mux=unknown
     sock=$(kp_tmux_socket_from_env "$env_file")
-    target=$(kp_env_get "$env_file" MUX_TARGET)
-    [ -n "$target" ] || target=kingpin:curator
     session=$(kp_env_get "$env_file" MUX_SESSION)
   else
     mux=$(kp_mux_name 2>/dev/null) || mux=unknown
-    sock=$(kp_tmux_socket_name)
+    # No record yet: name the server the launch will use, without starting anything
+    # (the fallback session is the launch's to create). A caller's own tmux client is
+    # not consulted, because this gate must stay read-only.
+    sock=$(kp_tmux_socket_for "$home")
   fi
   # The mux is published before the session fallback reads it, so a Herdr record
   # without MUX_SESSION resolves the Herdr session, not the tmux socket. An
