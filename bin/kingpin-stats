@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# Summarize the fleet's finished work from the task records: how many records the
+# fleet holds, how many finished, the review verdicts, the fix-pass rate, the
+# failed tasks and the median and p90 create-to-merged time.
+#
+# Every fact comes from a record the fleet already writes: `task.env` holds
+# CREATED, and the `status` file holds the lines the worker reported. Nothing in
+# the protocol is timestamped, so the finish time is the status file's mtime, the
+# closest local measure of when the last event landed. The command reads and
+# prints only: it creates no file, no directory and no marker, so it is safe on a
+# read-only or absent $KINGPIN_HOME, and an empty fleet is a zero summary and
+# exit 0, not an error.
+#
+# Usage: kingpin-stats [--since <duration>]
+set -euo pipefail
+
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+KP_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=../lib/status.sh
+. "$KP_BIN/../lib/status.sh"
+# shellcheck source=../lib/portable.sh
+. "$KP_BIN/../lib/portable.sh"
+# shellcheck source=../lib/duration.sh
+. "$KP_BIN/../lib/duration.sh"
+
+die() { echo "kingpin-stats: $*" >&2; exit 1; }
+usage_error() { echo "kingpin-stats: $*" >&2; exit 2; }
+
+usage() {
+  cat <<'HELP'
+usage: kingpin stats [--since <duration>]
+
+  Reads every task record in $KINGPIN_HOME (live and archived) and prints one
+  summary of finished work: records held, records finished (merged and failed),
+  the verdict distribution, the fix-pass rate over reviewed tasks, the failed
+  tasks, and the median and p90 create-to-merged time.
+
+--since takes a duration such as 90m, 8h or 7d (units s, m, h and d) and keeps
+only the records created inside that window. The command writes nothing, and an
+empty or missing $KINGPIN_HOME prints a zero summary and exits 0.
+HELP
+}
+
+since=''
+span=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --since)
+      span=$(kp_parse_duration "${2:-}") || usage_error "--since needs a duration such as 90m, 8h or 7d (got '${2:-}')"
+      since=${2:-}
+      shift 2
+      ;;
+    -h|--help) usage; exit 0 ;;
+    -*) usage_error "unknown argument '$1'" ;;
+    *) usage_error "unexpected argument '$1'" ;;
+  esac
+done
+
+cutoff=0
+if [ -n "$since" ]; then
+  now=$(date +%s 2>/dev/null || true)
+  case "$now" in ''|*[!0-9]*) die "could not read the clock" ;; esac
+  cutoff=$((now - span))
+fi
+
+merged=0 failed=0 in_flight=0 no_report=0
+reviewed=0 fixpass=0 cleanup_refused=0
+curators=0 undated=0
+approve=0 nits=0 changes=0 other=0
+durations='' failures=''
+
+# kp_stats_record <task-dir>
+# Classify one task record, updating the counters above. A curator record and,
+# in a windowed run, a record without a readable CREATED are counted and left
+# out of the buckets. Merged is read from any `merged:` line, because a cleanup
+# refusal that follows it does not undo the merge; failed needs a `failed:` line
+# that is still the worker's last word, so a later needs-input: is not a failure.
+kp_stats_record() {
+  local d=${1:?} id env st created cur start end line
+  local last='' verdict=''
+  local has_merged=0 has_failed=0 has_ready=0 has_fixed=0 failed_last=0
+  id=$(basename "$d")
+  env="$d/task.env"
+  st="$d/status"
+  created=''
+  cur=''
+  if [ -f "$env" ]; then
+    cur=$(kp_env_get "$env" CURATOR)
+    created=$(kp_env_get "$env" CREATED)
+  fi
+  [ -z "$cur" ] || { curators=$((curators + 1)); return 0; }
+  start=''
+  start=$(kp_epoch_from_iso "$created" 2>/dev/null || true)
+  if [ -n "$since" ]; then
+    if [ -z "$start" ]; then
+      undated=$((undated + 1))
+      return 0
+    fi
+    [ "$start" -ge "$cutoff" ] || return 0
+  fi
+  if [ -f "$st" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      case $line in
+        merged:*) has_merged=1; failed_last=0; last=$line ;;
+        failed:*) has_failed=1; failed_last=1; last=$line ;;
+        ready:*) has_ready=1; failed_last=0; verdict=$(kp_status_verdict "$line") ;;
+        fixed:*) has_fixed=1; failed_last=0; last=$line ;;
+        cleanup-refused:*) cleanup_refused=$((cleanup_refused + 1)); failed_last=0; last=$line ;;
+        ''|approved:*|feedback:*) ;;
+        *) failed_last=0; last=$line ;;
+      esac
+    done < "$st"
+  fi
+  if [ "$has_merged" -eq 1 ]; then
+    merged=$((merged + 1))
+    if [ -n "$start" ]; then
+      end=''
+      end=$(kp_mtime "$st" 2>/dev/null || true)
+      case "$end" in
+        ''|*[!0-9]*) ;;
+        *) if [ "$end" -ge "$start" ]; then durations="$durations$((end - start))"$'\n'; fi ;;
+      esac
+    fi
+  elif [ "$has_failed" -eq 1 ] && [ "$failed_last" -eq 1 ]; then
+    failed=$((failed + 1))
+    failures="${failures}  ${id}  ${last}"$'\n'
+  elif [ -n "$last" ]; then
+    in_flight=$((in_flight + 1))
+  else
+    no_report=$((no_report + 1))
+  fi
+  if [ "$has_ready" -eq 1 ]; then
+    reviewed=$((reviewed + 1))
+    case "$verdict" in
+      APPROVE) approve=$((approve + 1)) ;;
+      "APPROVE WITH NITS") nits=$((nits + 1)) ;;
+      "NEEDS CHANGES") changes=$((changes + 1)) ;;
+      *) other=$((other + 1)) ;;
+    esac
+  fi
+  if [ "$has_fixed" -eq 1 ]; then fixpass=$((fixpass + 1)); fi
+}
+
+# Live records first, then the archive. A dossier link left at tasks/<id> is not
+# a record, and kp_task_is_live is the reader that tells it from one, so moving a
+# task to the archive never counts it twice.
+for d in "$KP_HOME/tasks"/*; do
+  kp_task_is_live "$d" || continue
+  kp_stats_record "$d"
+done
+for d in "$KP_HOME/archive"/*; do
+  [ -d "$d" ] || continue
+  kp_stats_record "$d"
+done
+
+if [ -n "$since" ]; then
+  since_iso=''
+  since_iso=$(date -d "@$cutoff" +%Y-%m-%dT%H:%M:%S%z 2>/dev/null || true)
+  [ -n "$since_iso" ] || since_iso=$(date -r "$cutoff" +%Y-%m-%dT%H:%M:%S%z 2>/dev/null || true)
+  printf 'Window: last %s (since %s)\n' "$since" "${since_iso:-unknown}"
+else
+  printf 'Window: all records\n'
+fi
+
+records=$((merged + failed + in_flight + no_report))
+line="Records: $records (finished $((merged + failed)), in flight $in_flight, without a report $no_report)"
+if [ "$curators" -gt 0 ]; then line="$line; $curators curator skipped"; fi
+if [ "$undated" -gt 0 ]; then line="$line; $undated skipped: no CREATED"; fi
+printf '%s\n' "$line"
+printf 'Finished: %s merged, %s failed\n' "$merged" "$failed"
+printf 'Verdicts: APPROVE %s, APPROVE WITH NITS %s, NEEDS CHANGES %s, other %s\n' \
+  "$approve" "$nits" "$changes" "$other"
+if [ "$reviewed" -gt 0 ]; then
+  pct=$(( (fixpass * 100 + reviewed / 2) / reviewed ))
+  printf 'Fix passes: %s of %s reviewed tasks (%s%%)\n' "$fixpass" "$reviewed" "$pct"
+else
+  printf 'Fix passes: 0 of 0 reviewed tasks\n'
+fi
+printf 'Cleanup refused: %s\n' "$cleanup_refused"
+printf 'Failed:\n'
+if [ -n "$failures" ]; then printf '%s' "$failures"; fi
+
+# Percentiles are nearest-rank on whole seconds: p90 is the element at
+# ceil(0.9n) and the median is the middle element or the rounded mean of the
+# middle pair, both on the sorted list.
+stats=$(printf '%s' "$durations" | sort -n | awk '
+  { d[NR] = $1 }
+  END {
+    n = NR
+    if (n == 0) { print "none"; exit }
+    if (n % 2) median = d[(n + 1) / 2]
+    else median = int((d[n / 2] + d[n / 2 + 1]) / 2 + 0.5)
+    p90 = d[int((n * 9 + 9) / 10)]
+    printf "%d %d %d\n", median, p90, n
+  }')
+case "$stats" in
+  none) printf 'Time to merged: none (no merged record)\n' ;;
+  *)
+    read -r median p90 n <<< "$stats"
+    printf 'Time to merged: median %s, p90 %s (n=%s)\n' \
+      "$(kp_format_duration "$median")" "$(kp_format_duration "$p90")" "$n"
+    ;;
+esac

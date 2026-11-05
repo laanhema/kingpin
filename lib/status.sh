@@ -14,6 +14,11 @@
 # orchestrator, not worker events, so the worker's current state is the last line
 # that is not one of them.
 #
+# `kingpin ack` keeps every reader's place in that file: `seen` counts the lines
+# handled and `seen_line` holds the text of the line at that count, so a reader can
+# tell that the file was rewritten under the cursor instead of appended to
+# (`kp_status_cursor_resume`, issue #190).
+#
 # The `review=` verdict of a ready:/fixed: line is read here too (`kp_status_field`,
 # `kp_status_field_count`, `kp_status_verdict`, `kp_verdict_kind`), so the landing
 # gate in kingpin-land and the approval gate in kingpin-listen share one parser.
@@ -41,6 +46,55 @@ kp_status_last() {
 kp_status_newest() {
   [ -f "${1:-}" ] || return 0
   tail -n 1 "$1" 2>/dev/null || true
+}
+
+# kp_status_cursor_resume <task-dir>
+# The last status line index the cursor can vouch for, always as a number. `seen`
+# counts the status lines handled and `seen_line` holds the text of the line at that
+# index; kingpin-ack writes both. While the file still carries that text at that
+# index the cursor is intact and the answer is `seen` itself. When a writer rewrote
+# the file (removed a line, reordered it, truncated it), the index names a different
+# line, so the answer is the last index up to `seen` that still holds the anchor:
+# dispatch resumes after it. 0 means the anchor is gone from that prefix, and every
+# line counts as pending, because replaying a handled line is the at-least-once rule
+# this protocol already follows (issue #190). A count past the end of the file is a
+# rewrite on its own, anchor or not. A record with no `seen_line`, no `status` file,
+# or a blank anchor answers `seen` unchanged: those shapes predate the anchor, or
+# carry nothing a cursor could point at.
+kp_status_cursor_resume() {
+  local dir=${1:-} seen=''
+  [ -n "$dir" ] && [ -f "$dir/seen" ] || { printf '0\n'; return 0; }
+  # The count is read with the shell's own `read`, so the healthy path costs one
+  # process instead of four: kingpin-wait calls this for every task on every pass.
+  { read -r seen < "$dir/seen"; } 2>/dev/null || true
+  seen=${seen// /}
+  case $seen in ''|*[!0-9]*) printf '0\n'; return 0 ;; esac
+  [ "$seen" -gt 0 ] || { printf '0\n'; return 0; }
+  # A record with no status file has nothing to compare or dispatch.
+  [ -f "$dir/status" ] || { printf '%s\n' "$seen"; return 0; }
+  # The anchor is read inside awk, from its own file: `read -r` trims leading and
+  # trailing whitespace, and a `-v` value goes through awk's escape processing, so
+  # either round trip turns a handled line that ends in a space or holds a backslash
+  # into one that never matches itself and reads as a rewrite on every pass. A
+  # getline from a file applies neither, so the anchor keeps every byte sed wrote.
+  # An absent or blank `seen_line` leaves no anchor, as before.
+  KP_SEEN_LINE="$dir/seen_line" awk -v seen="$seen" '
+    BEGIN {
+      f = ENVIRON["KP_SEEN_LINE"]
+      if (f != "" && ((getline anchor < f) > 0)) {
+        close(f)
+        if (anchor != "") has = 1
+      }
+    }
+    { if (has && NR <= seen && $0 == anchor) at = NR
+      if (NR == seen) line = $0 }
+    END {
+      # An index past the end of the file is a rewrite on its own. Otherwise the
+      # cursor is intact while there is no anchor to compare or while the line at
+      # its index is still the handled line; anything else resumes at the anchor.
+      if (seen <= NR && (!has || line == anchor)) { print seen; exit }
+      print at + 0
+    }' "$dir/status" 2>/dev/null || printf '0\n'
 }
 
 # kp_status_worker_events <status-file>

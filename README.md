@@ -68,6 +68,8 @@ Without `--harness`, no `HARNESS` is written and the project follows the default
 
 `kingpin spawn` follows `--harness <name>`, then the project's `HARNESS`, then the harness the orchestrator lock recorded, then `DEFAULT_HARNESS` in `~/.kingpin/config.env`, then `claude`; `kingpin lock acquire` records the orchestrator's own harness, so a worker matches the session you are in. The full order, how `acquire` detects a harness and the lock's refusals are in [`kingpin spawn`](docs/cli.md#kingpin-spawn) and [`kingpin lock`](docs/cli.md#kingpin-lock).
 
+`~/.kingpin/config.env` also says where new workers land. `TMUX_SOCKET` and `TMUX_SESSION` name the fleet's server and session, `KINGPIN_TMUX_SOCKET` and `KINGPIN_TMUX_SESSION` win over them, and with none of the four set a spawn started inside tmux follows your own session and socket. Set `KINGPIN_TMUX_SOCKET=kingpin` to keep workers off your own server, because `tmux kill-server` there ends every worker on it. How the target is resolved, and what a refusal names, is in [`Where the window lives`](docs/cli.md#where-the-window-lives).
+
 ### 2. Run a task to completion in one command
 
 ```bash
@@ -106,8 +108,9 @@ Only one supervisor runs at a time. A second `kingpin watch` refuses to start an
 | `kingpin run` | Single command that spawns, monitors, and completes a task. [Details](docs/cli.md#kingpin-run) |
 | `kingpin watch` | The fleet's one supervisor: a continuous supervision and auto-landing loop. [Details](docs/cli.md#kingpin-watch) |
 | `kingpin afk` | Arms session-scoped auto-landing while you are away: a clean review verdict lands, and anything that needs a human waits. Default TTL 8h. [Details](docs/cli.md#kingpin-afk) |
-| `kingpin spawn` | Starts a worker in a background tmux window on the fleet's own server, in a leased worktree; the session is resolved, never guessed. [Details](docs/cli.md#kingpin-spawn) |
+| `kingpin spawn` | Starts a worker in a background tmux window, in a leased worktree; the target is resolved, never guessed. [Details](docs/cli.md#kingpin-spawn) |
 | `kingpin list` | Displays the live fleet: each task's state, session and window, the browser daemons it holds, its dossier link, and whether the supervisor is running; `--all` (or `-a`) also shows finished tasks. [Details](docs/cli.md#kingpin-list) |
+| `kingpin stats` | Reads the task records and prints the week's outcome: finished tasks, verdicts, fix-pass rate, failures and time to merge; `--since <duration>` limits the window. [Details](docs/cli.md#kingpin-stats) |
 | `kingpin send` | Types the text literally into a worker's window, then presses Enter. [Details](docs/cli.md#kingpin-send) |
 | `kingpin peek` | Read-only view of a worker's terminal: the last 20 non-empty lines of its pane, scrollback included (`--lines N` changes the count). [Details](docs/cli.md#kingpin-peek) |
 | `kingpin sync` | Fast-forwards the main checkout from its upstream branch with `git pull --ff-only`, so the orchestrator never runs raw git against project files. It refuses rather than discarding, and names every untracked path it refuses to overwrite. [Details](docs/cli.md#kingpin-sync) |
