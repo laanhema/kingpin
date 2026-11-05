@@ -64,7 +64,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-browser-daemons.sh` | browser daemons: ownership by working directory, the process-tree stop, and the memory total the `↳ Browser:` line shows |
 | `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
 | `test-agents-paths.sh` | `.agents` artifact policy: nothing under `plans/`, `reports/` or `reviews/` is tracked, other `.agents/` files stay trackable, and the lint fails on a forced artifact |
-| `test-lint.sh` | the lint itself: a syntax error in a shell script or a `lib/*.mjs` module fails it by name, a suite with no CI leg fails the matrix check, a suite with no row in the table above fails by name, a fixed `sleep` before an assertion fails by name with its line and both waits, and a source file cited by line fails by name |
+| `test-lint.sh` | the lint itself: a syntax error in a shell script or a `lib/*.mjs` module fails it by name, a suite with no CI leg fails the matrix check, a suite with no row in the table above fails by name, a fixed `sleep` before an assertion fails by name with its line and both waits (a trailing comment on the sleep still counts, while a here-document body is skipped), and a source file cited by line fails by name |
 
 Run one suite with `./tests/test-<name>.sh`. Run suites one at a time in a checkout: `test-lifecycle.sh`, `test-acceptance.sh` and `test-landing-lane.sh` briefly replace `bin/kingpin-send` with a stub (restored on exit), so a second suite that sends keys to a worker during that window hits the stub and fails. CI legs do not clash, since each runs in its own checkout.
 
