@@ -69,8 +69,9 @@
 -->
 
 <header class="space-y-4">
-  <!-- Action bar. Where the work stands on the left, the two actions on the right. -->
-  <div class="card-custom bg-gradient-to-r from-gray-900 to-gray-800 border-gray-700 p-4 flex flex-wrap items-center justify-between gap-4 shadow-lg">
+  <!-- Action bar. Where the work stands on the left, the two actions on the right.
+       The data-kp-finished-hide hook lets a finished page hide the whole bar. -->
+  <div data-kp-finished-hide class="card-custom bg-gradient-to-r from-gray-900 to-gray-800 border-gray-700 p-4 flex flex-wrap items-center justify-between gap-4 shadow-lg">
     <div class="flex items-center gap-3">
       <span class="inline-flex items-center justify-center w-8 h-8 rounded-full bg-emerald-950 text-emerald-400 border border-emerald-700/50 font-bold">&#10003;</span>
       <div>
@@ -88,7 +89,7 @@
   <!-- Badge row: task id, status, branch. Add a PR badge once there is one. -->
   <div class="flex gap-2 items-center flex-wrap">
     <span class="badge badge-primary badge-pill font-mono text-xs">kp-000-example-task</span>
-    <span class="badge badge-success badge-pill font-semibold text-xs">READY FOR REVIEW</span>
+    <span data-kp-finished-hide class="badge badge-success badge-pill font-semibold text-xs">READY FOR REVIEW</span>
     <span class="badge badge-outline badge-pill text-xs">Branch: kingpin/kp-000-example-task</span>
   </div>
 

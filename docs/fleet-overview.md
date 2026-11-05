@@ -12,7 +12,7 @@ Monitor all active workers, leased worktrees, and current statuses:
 kingpin list
 ```
 
-For any live task whose folder holds a `report.html`, whatever its mode or status, `kingpin list` displays the dossier line directly below the task row: the recorded Lavish session URL, or the `lavish-axi <path>` command when none is recorded. It carries `(listening: pid <n>)` while that task's listener runs; finished and archived rows show no dossier line, and `--all` shows the archived rows without one.
+For any live task whose folder holds a `report.html`, whatever its mode or status, `kingpin list` displays the dossier line directly below the task row: the recorded Lavish session URL, or the `lavish-axi <path>` command when none is recorded. It carries `(listening: pid <n>)` while that task's listener runs and `(no listener)` when none does; finished and archived rows show no dossier line, and `--all` shows the archived rows without one. An open session on a finished task is named in its own `Dossiers left open on finished tasks (kingpin watch ends them):` section, archived records included, so a tab left open on a page nobody will answer is visible on the board until the supervisor ends it.
 
 The `STATE` column describes a live pane: `WAITING` means the worker is blocked on a human (`needs-input:`, a listener's `feedback:` note, or the Stop hook's `waiting:` line), `SILENT` means it stopped without reporting (`failed: no status:`), `DEAD` means the task is live but its window is gone (or the recorded harness is no longer in it), and `Unseen: N` counts status lines written since the supervisor last acknowledged the task. `-` is a worker that is running normally. When any live task is `DEAD`, one `Fleet: <n> live task(s) have no live window; run kingpin restore` line follows the table.
 
@@ -48,6 +48,8 @@ Finished tasks are archived by `kingpin done` and hidden from `kingpin list`; ru
 ### 2. Task Review Dossiers (`lavish-axi`)
 
 When a worker completes a task, it compiles a visual review dossier (`report.html`) containing problem context, verification tables, independent review verdicts, and syntax-highlighted split code diffs. The task's listener opens it once and records the Lavish session URL in the task directory's `dossier.url`, and `kingpin list` prints that URL under the task's row. Hand the URL over rather than running `lavish-axi` on a page a listener already opened, which puts a second tab on the same session. A task with no recorded URL still shows the `lavish-axi <path>` command.
+
+A dossier is retired when its task finishes, so a page left open never reads as a review still waiting on someone. `kingpin done` rewrites the archived page with a banner naming the merged PR, disables the Approve & Land and Request Changes buttons and removes their handlers, then ends the session; `kingpin watch` marks and ends the records that finished without that step. Reopening an ended session is still allowed and is the operator's choice. [`kingpin done`](cli.md#a-finished-dossier) has the marker and the `OK:` line.
 
 Review the changes and click **Approve & Land** on the dossier or run:
 

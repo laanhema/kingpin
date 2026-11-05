@@ -39,6 +39,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_ROOT/lib/afk.sh"
 # shellcheck source=../lib/curator.sh
 . "$KP_ROOT/lib/curator.sh"
+# shellcheck source=../lib/dossier.sh
+. "$KP_ROOT/lib/dossier.sh"
 KP_BIN="$KP_ROOT/bin"
 
 ONCE=0
@@ -548,6 +550,45 @@ rearm_listeners() {
   done
 }
 
+# A finished task's dossier is retired (issue #186). `kingpin done` marks the page of the
+# task it archives; this sweep covers the records that reached a finished state without
+# that step: an archive from before the marker existed, a `failed:` task, and a page
+# rewritten by hand. A record that is not finished, archived or not, is left alone. It
+# also ends the Lavish session a reviewer left open on such a page, once, recording that
+# in the record's `dossier.ended` marker, so a browser tab full of live-looking buttons
+# cannot sit there for hours. Marking is guarded by a grep, so a sweep over a long archive
+# reads each page once and runs the helper only for the ones still unmarked. Runs in
+# --once and in every loop.
+retire_dossiers() {
+  local dir id page end_out
+  for dir in "$KP_HOME"/tasks/* "$KP_HOME"/archive/*; do
+    [ -d "$dir" ] || continue
+    # The dossier link kingpin done leaves at tasks/<id> is not a record: archive/ holds
+    # the page it resolves to, and the second half of this loop reaches it there.
+    case "$dir" in
+      "$KP_HOME"/tasks/*) kp_task_is_live "$dir" || continue ;;
+    esac
+    # Only a finished record is retired, whichever half it was found in: a hand-archived
+    # record whose work is not over keeps its page and its session (issue #186 review H2).
+    kp_task_is_finished "$dir" || continue
+    page=$(kp_dossier_file "$dir") || continue
+    id=$(basename "$dir")
+    if ! kp_dossier_marked "$page" && command -v node >/dev/null 2>&1; then
+      if ! kp_dossier_mark "$dir" "$id" >/dev/null 2>&1; then
+        echo "[kingpin-watch] $id: could not mark $page finished; run kingpin-done $id --force, or edit the page by hand" >&2
+      fi
+    fi
+    # Nothing to end for a record that never opened a session. kp_dossier_end returns 1
+    # when lavish-axi itself failed, which is retried on the next sweep.
+    end_out=''
+    if end_out=$(kp_dossier_end "$KP_HOME" "$dir"); then
+      [ -z "$end_out" ] || echo "[kingpin-watch] $id: $end_out"
+    else
+      echo "[kingpin-watch] $id: could not end the dossier session for $page; run lavish-axi end $(kp_dossier_session_path "$KP_HOME" "$dir") by hand" >&2
+    fi
+  done
+}
+
 # A tmux server that dies takes every worker window with it, and nothing restarts it:
 # the records still name the socket, so the fleet reads as a table of DEAD rows and no
 # worker is running. The supervisor owns the fleet's lifecycle, so it owns this too: for
@@ -608,6 +649,7 @@ if [ "$ONCE" -eq 1 ]; then
   retry_pending_cleanups
   advance_landing_queues
   rearm_listeners
+  retire_dossiers
   # issue #88: one non-blocking auto-curate chance per idle sweep.
   kp_curate_maybe "$KP_HOME" "$KP_BIN"
   exit 0
@@ -690,6 +732,7 @@ while true; do
   retry_pending_cleanups
   advance_landing_queues
   rearm_listeners
+  retire_dossiers
   # issue #88: one non-blocking auto-curate chance per idle sweep.
   kp_curate_maybe "$KP_HOME" "$KP_BIN"
 done

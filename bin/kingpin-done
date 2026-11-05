@@ -25,6 +25,8 @@ KP_BIN=$(cd "$(dirname "$0")" && pwd)
 . "$KP_BIN/../lib/mux.sh"
 # shellcheck source=../lib/browser.sh
 . "$KP_BIN/../lib/browser.sh"
+# shellcheck source=../lib/dossier.sh
+. "$KP_BIN/../lib/dossier.sh"
 GH_CMD=${KINGPIN_GH:-gh}
 FORCE=0
 
@@ -510,14 +512,46 @@ if ! ln -s "$archive_target" "$task_dir" 2>/dev/null; then
   echo "kingpin-done: archived $id but could not link $task_dir to $archive_dir; the dossier path will not resolve" >&2
 fi
 
-# 5c. Answer the review dossier once, then close its session. The link makes the
+# 5c. Mark the dossier finished (issue #186). A page the reviewer left open in a
+# browser kept rendering live-looking Approve and Request Changes buttons hours after
+# the merge, and was mistaken for a stuck session. The page is rewritten here, before
+# the final reply, so a reload of the archived path shows a finished banner and a
+# decision form that cannot submit. A page that cannot be rewritten costs the
+# banner, not the cleanup: the archive is already the record.
+dossier_note=''
+if [ -f "$task_dir/report.html" ]; then
+  dossier_state=finished
+  last_event=$(kp_status_last "$task_dir/status")
+  case "$last_event" in
+    merged:*) dossier_state=merged ;;
+    failed:*) dossier_state=failed ;;
+    *) if [ "$merge_verified" -eq 1 ]; then dossier_state=merged; fi ;;
+  esac
+  finish_out=''
+  if command -v node >/dev/null 2>&1 \
+     && finish_out=$(kp_dossier_mark "$archive_dir" "$id" "$dossier_state" 2>&1); then
+    case "$finish_out" in
+      *already\ marked*) ;;
+      *) dossier_note="; marked its dossier finished" ;;
+    esac
+  else
+    echo "kingpin-done: archived $id but could not mark $task_dir/report.html finished: ${finish_out:-node is not installed}" >&2
+  fi
+fi
+
+# 5d. Answer the review dossier once, then close its session. The link makes the
 # path in the reply resolve, and the reply is the difference between a reviewer
 # seeing "this landed" and a session that went silent on a file that vanished.
+# The page carries the finished banner by now, so a reload of the tab that is still
+# open reads as finished instead of as a review waiting on someone.
 if command -v "$LAVISH_CMD" >/dev/null 2>&1 && [ -f "$task_dir/report.html" ]; then
   "$LAVISH_CMD" reply "$task_dir/report.html" \
-    --agent-reply "Task $id landed. The review dossier is archived at $archive_dir, and this path still opens it." \
+    --agent-reply "Task $id landed. The review dossier is archived at $archive_dir, and this path still opens it; the page now shows the task as finished." \
     >/dev/null 2>&1 || true
-  "$LAVISH_CMD" end "$task_dir/report.html" >/dev/null 2>&1 || true
+  if "$LAVISH_CMD" end "$task_dir/report.html" >/dev/null 2>&1; then
+    # So the supervisor's retire sweep does not end the same session a second time.
+    : > "$archive_dir/dossier.ended" 2>/dev/null || true
+  fi
 fi
 
 # The last task leaving the fleet gives the auto-curate trigger the same chance an
@@ -525,4 +559,4 @@ fi
 # this cleanup; its lines go to stderr so the OK: line stays last on stdout.
 kp_curate_maybe "$KP_HOME" "$KP_BIN" >&2
 
-echo "OK: cleaned up task $id (archived to $archive_dir$browser_note$issue_note)"
+echo "OK: cleaned up task $id (archived to $archive_dir$browser_note$issue_note$dossier_note)"
