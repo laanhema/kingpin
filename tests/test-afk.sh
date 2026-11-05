@@ -152,6 +152,11 @@ fi
 [ "$(( $(sed -n 3p "$AFK_FILE") - $(sed -n 2p "$AFK_FILE") ))" = "5400" ] \
   && pass "01h30m parses as 5400 seconds" || fail "01h30m parsed to the wrong span"
 "$KP_BIN/kingpin" afk off >/dev/null
+"$KP_BIN/kingpin" afk on --ttl 1d >/dev/null \
+  && pass "--ttl 1d is accepted" || fail "--ttl 1d was refused"
+[ "$(( $(sed -n 3p "$AFK_FILE") - $(sed -n 2p "$AFK_FILE") ))" = "86400" ] \
+  && pass "1d parses as 86400 seconds" || fail "1d parsed to the wrong span"
+"$KP_BIN/kingpin" afk off >/dev/null
 
 # Test 2: bad --ttl values are refused without writing state
 echo "=== Test 2: bad --ttl is an argument error ==="
