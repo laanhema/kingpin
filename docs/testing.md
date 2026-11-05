@@ -15,7 +15,7 @@ Run the lint and the full test suite from the repository root:
 # variable is documented, and every `--` flag in a backtick span and every KINGPIN_* name a
 # docs page shows appears in the per-command reference docs/cli.md (a host tool's own flag
 # is exempt; backticks in a fenced block count too, since no fence state is tracked), and a
-# check that no .agents plan, report or review file is tracked. Pass --root <dir> to lint
+# check that no .agents file is tracked. Pass --root <dir> to lint
 # another checkout instead of this one
 ./tests/lint.sh
 
@@ -64,7 +64,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-excludes.sh` | spawn and done never write the main checkout's `.git/info/exclude`, and injected harness files stay out of a worktree's `git status` |
 | `test-browser-daemons.sh` | browser daemons: ownership by working directory, the process-tree stop, and the memory total the `↳ Browser:` line shows |
 | `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
-| `test-agents-paths.sh` | `.agents` artifact policy: nothing under `plans/`, `reports/` or `reviews/` is tracked, other `.agents/` files stay trackable, and the lint fails on a forced artifact |
+| `test-agents-paths.sh` | `.agents` policy: the whole directory is ignored, nothing under it is tracked, a PRD needs a force-add, and the lint fails on a forced artifact |
 | `test-lint.sh` | the lint itself: a syntax error in a shell script or a `lib/*.mjs` module fails it by name, a suite with no CI leg fails the matrix check, a suite with no row in the table above fails by name, a fixed `sleep` before an assertion fails by name with its line and both waits (a trailing comment on the sleep still counts, while a here-document body is skipped), a `NAME=$?` line after an unguarded capture fails by name with its line and `kp_run` (the guarded `\|\| rc=$?` form, a `set +e` block and a here-document body pass), and a source file cited by line fails by name |
 
 Run one suite with `./tests/test-<name>.sh`. Run suites one at a time in a checkout: `test-lifecycle.sh`, `test-acceptance.sh` and `test-landing-lane.sh` briefly replace `bin/kingpin-send` with a stub (restored on exit), so a second suite that sends keys to a worker during that window hits the stub and fails. CI legs do not clash, since each runs in its own checkout.

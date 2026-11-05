@@ -79,9 +79,7 @@ jobs:
 F
 
 cat > "$FIX/.gitignore" << 'F'
-.agents/plans/
-.agents/reports/
-.agents/reviews/
+.agents/
 F
 
 cat > "$FIX/.shellcheckrc" << 'F'
