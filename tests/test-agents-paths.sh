@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# .agents/ artifact policy (issue #84): the plans, reports and reviews folders are ignored and
-# never tracked, while .agents/ itself stays trackable for files such as a PRD.
+# .agents/ policy: the whole directory is ignored and never tracked, because it holds agent
+# working artifacts (plans, reports, reviews, rules and issue drafts), not project sources.
 #
 # The check lives in tests/lint.sh, so this suite runs the real lint inside a fixture copy: a
 # force-added artifact must fail it by name, the printed `git rm --cached` remedy must clear that
-# failure, and a new .agents/PRDs file must stay trackable and leave the lint green.
+# failure, and a new .agents/PRDs file must be ignored rather than committable without a force-add.
 set -euo pipefail
 
 . "$(dirname "$0")/lib.sh"
@@ -29,16 +29,14 @@ lint() {
   LINT_OUT=$(cd "$1" && PATH="$STUB:$PATH" ./tests/lint.sh 2>&1) || LINT_RC=$?
 }
 
-# This checkout: nothing under the three artifact directories is tracked.
-tracked=$(git -C "$KP_ROOT" ls-files -- .agents/plans .agents/reports .agents/reviews)
-[ -z "$tracked" ] && pass "no .agents plan, report or review file is tracked" || fail "tracked artifacts: $(echo "$tracked" | tr '\n' ' ')"
+# This checkout: nothing under .agents/ is tracked.
+tracked=$(git -C "$KP_ROOT" ls-files -- .agents)
+[ -z "$tracked" ] && pass "no .agents file is tracked" || fail "tracked artifacts: $(echo "$tracked" | tr '\n' ' ')"
 
-# The ignore rules stay limited to the three artifact directories, so .agents/ itself is open.
-for d in plans reports reviews; do
-  grep -qx "\.agents/$d/" "$KP_ROOT/.gitignore" && pass ".gitignore ignores .agents/$d/" || fail ".gitignore does not ignore .agents/$d/"
-done
+# One rule covers the whole directory; a narrower rule would leave its other subdirectories open.
+grep -qx '\.agents/' "$KP_ROOT/.gitignore" && pass ".gitignore ignores .agents/" || fail ".gitignore does not ignore .agents/"
 
-[ "$(grep -c '^\.agents' "$KP_ROOT/.gitignore")" = 3 ] && pass ".gitignore carries no broader .agents rule" || fail ".gitignore carries .agents rules beyond the three directories"
+[ "$(grep -c '^\.agents' "$KP_ROOT/.gitignore")" = 1 ] && pass ".gitignore carries exactly one .agents rule" || fail ".gitignore carries more than one .agents rule"
 
 # The fixture: this checkout's lint inputs, committed, with nothing under .agents/ yet.
 # README.md and docs/ are inputs too: the CLI-reference check reads them.
@@ -59,16 +57,18 @@ else
   fail "the lint failed in a clean checkout: $LINT_OUT"
 fi
 
-# .agents/ stays trackable: a PRD can be added and the lint still passes.
+# Every subdirectory is ignored, not just the three artifact folders: a PRD needs a force-add,
+# which the lint then catches like any other leak.
 mkdir -p "$FIX/.agents/PRDs"
 printf '# product requirements\n' > "$FIX/.agents/PRDs/example.md"
-if (cd "$FIX" && git add .agents/PRDs/example.md && git commit -qm prd); then
-  pass "a new .agents/PRDs file can be added and committed"
+git -C "$FIX" check-ignore -q .agents/PRDs/example.md && pass "git ignores a new .agents/PRDs file" || fail "git does not ignore .agents/PRDs/example.md"
+if (cd "$FIX" && git add .agents/PRDs/example.md 2>/dev/null); then
+  fail "git added .agents/PRDs/example.md without -f"
 else
-  fail "git refused .agents/PRDs/example.md"
+  pass "git refuses .agents/PRDs/example.md without -f"
 fi
 lint "$FIX"
-[ "$LINT_RC" -eq 0 ] && pass "the lint passes with a tracked .agents/PRDs file" || fail "the lint failed on a tracked PRD: $LINT_OUT"
+[ "$LINT_RC" -eq 0 ] && pass "the lint passes with the ignored .agents/PRDs file on disk" || fail "the lint failed with an ignored PRD: $LINT_OUT"
 
 # A forced artifact is the leak the issue describes: the lint names it and exits non-zero.
 mkdir -p "$FIX/.agents/plans"

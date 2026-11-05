@@ -347,10 +347,10 @@ if [ "${#rc_hits[@]}" -gt 0 ]; then
   exit 1
 fi
 
-# The .agents/ artifact directories are in .gitignore, and an ignore rule never applies to a
-# path that is already in the index: a force-add, or a branch cut before the rules landed,
-# keeps the file tracked on every clone (issue #84). Catch it here, before it spreads.
-if ! tracked=$(git ls-files -- .agents/plans .agents/reports .agents/reviews 2>&1); then
+# The whole .agents/ directory is in .gitignore, and an ignore rule never applies to a path
+# that is already in the index: a force-add, or a branch cut before the rule landed, keeps
+# the file tracked on every clone (issue #84). Catch it here, before it spreads.
+if ! tracked=$(git ls-files -- .agents 2>&1); then
   # $tracked holds git's own stderr here, and it prints under the named line so the usage hint
   # is what the operator reads first, rather than a bare `fatal: not a git repository`.
   echo "lint: cannot list tracked paths (run this inside a git checkout)" >&2
@@ -358,7 +358,7 @@ if ! tracked=$(git ls-files -- .agents/plans .agents/reports .agents/reviews 2>&
   exit 1
 fi
 if [ -n "$tracked" ]; then
-  echo "lint: .agents/plans, .agents/reports and .agents/reviews must never be tracked; these are:" >&2
+  echo "lint: nothing under .agents/ may be tracked; these are:" >&2
   while IFS= read -r p; do
     echo "  $p" >&2
   done <<< "$tracked"
