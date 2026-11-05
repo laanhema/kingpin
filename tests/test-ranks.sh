@@ -18,7 +18,16 @@ AGENTS="$KP_ROOT/AGENTS.md"
 README="$KP_ROOT/README.md"
 
 has() { grep -qF -- "$2" "$1" && pass "$3" || fail "$3"; }
-hasnt() { ! grep -qF -- "$2" "$1" && pass "$3" || fail "$3"; }
+hasnt() {
+  [ -f "$1" ] || { fail "$3 (file missing: $1)"; return 0; }
+  local rc=0
+  grep -qF -- "$2" "$1" || rc=$?
+  case $rc in
+    0) fail "$3" ;;
+    1) pass "$3" ;;
+    *) fail "$3 (cannot search $1: grep exited $rc)" ;;
+  esac
+}
 
 # 1. The orchestrator contract carries the full Ranks section.
 echo "=== Test 1: contract Ranks section ==="
@@ -77,5 +86,11 @@ has "$README" "**underboss**" "README names the underboss"
 has "$README" "**caporegime**" "README names the caporegime"
 has "$README" "**soldier**" "README names the soldier"
 has "$README" "neutral and machine-readable" "README states the neutrality rule"
+
+# 7. hasnt fails on a missing file instead of passing on grep's exit 2 (issue #180).
+echo "=== Test 7: hasnt needs the file ==="
+probe=$( ( hasnt "$T/no-such-file" "needle" "missing file probe" ) 2>&1 ) || true
+grep -qF -- 'FAIL: missing file probe' <<< "$probe" \
+  && pass "hasnt fails when its file is missing" || fail "hasnt passed on a missing file: $probe"
 
 kp_test_finish RANKS

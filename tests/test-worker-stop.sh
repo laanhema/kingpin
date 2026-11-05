@@ -216,8 +216,7 @@ echo "=== Test 4: the hook fails soft ==="
 d=$(mk_task kp102-unwritable claude)
 rm -f "$d/status"
 mkdir "$d/status"
-out=$(run_claude_stop "$d" 2>&1)
-rc=$?
+kp_run out rc run_claude_stop "$d"
 [ "$rc" -eq 0 ] && pass "an unwritable status does not fail the stop hook" || fail "unwritable status exited $rc"
 echo "$out" | grep -q "cannot append the missing status" && pass "an unwritable status is named on stderr" || fail "no warning for an unwritable status: $out"
 [ -s "$d/stopped" ] && pass "the stopped marker is still written when the status write fails" || fail "stopped missing after a failed append"

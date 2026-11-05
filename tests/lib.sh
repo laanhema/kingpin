@@ -100,6 +100,26 @@ kp_holds_for() {
   done
 }
 
+# kp_run <out-var> <rc-var> <cmd...>: run <cmd> and store its combined stdout and stderr in
+# <out-var> and its exit status in <rc-var>, without tripping `set -e`. A bare
+# `out=$(cmd)` followed by `rc=$?` aborts the suite when <cmd> fails, so the assertion's
+# fail branch never runs; kp_run captures the status instead and always returns 0, which
+# makes it the guarded form `out=$(cmd) || rc=$?` in one call (issue #180). The variable
+# names use a prefix no suite uses, so a caller's own `local out` is not shadowed. An
+# environment assignment needs `env` in front (`kp_run out rc env PATH=... cmd`), because
+# "$@" does not re-parse an assignment as an environment prefix.
+kp_run() {
+  local __kp_run_out_var=${1:?kp_run: missing output variable}
+  local __kp_run_rc_var=${2:?kp_run: missing status variable}
+  shift 2
+  [ $# -gt 0 ] || { echo "kp_run: missing command" >&2; return 2; }
+  local __kp_run_out __kp_run_rc=0
+  __kp_run_out=$("$@" 2>&1) || __kp_run_rc=$?
+  printf -v "$__kp_run_out_var" '%s' "$__kp_run_out"
+  printf -v "$__kp_run_rc_var" '%s' "$__kp_run_rc"
+  return 0
+}
+
 # kp_test_setup <suite-name>: sets T, KP_ROOT, KP_BIN, REAL_TMUX, TEST_SOCKET and the KINGPIN_* environment.
 kp_test_setup() {
   local suite=$1 w

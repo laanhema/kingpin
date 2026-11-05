@@ -417,4 +417,165 @@ else
 fi
 cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
 
+echo "=== Test 22: an unguarded rc=\$? after a capture fails the lint at its line, naming kp_run ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+out=$(printf 'x\n'; exit 3)
+rc=$?
+F
+rc_line=$(grep -n '^rc=\$?' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] \
+  && grep -qF "tests/test-demo.sh:$rc_line" <<< "$LINT_OUT" \
+  && grep -qF 'kp_run' <<< "$LINT_OUT"; then
+  pass "an unguarded \$? line fails the lint at its line with kp_run named"
+else
+  fail "the lint accepted an unguarded \$? line (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 23: the guarded out=\$(cmd) || rc=\$? form passes ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+out=$(printf 'x\n'; exit 3) || rc=$?
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "the guarded || rc=\$? form passes the lint"
+else
+  fail "the lint rejected the guarded rc=\$? form (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 24: an rc=\$? inside a set +e block passes ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+set +e
+out=$(printf 'x\n'; exit 3)
+rc=$?
+set -e
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "an rc=\$? inside a set +e block passes the lint"
+else
+  fail "the lint rejected an rc=\$? inside a set +e block (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 25: an rc=\$? in a here-document body is skipped ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+cat > "$FIX/tests/fixture-rc-body.sh" << 'BODY'
+out=$(printf 'x\n'; exit 3)
+rc=$?
+BODY
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "an rc=\$? in a here-document body is skipped"
+else
+  fail "the \$? check read a here-document body (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 26: an rc=\$? with a trailing semicolon fails the lint at its line ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+out=$(printf 'x\n'; exit 3)
+rc=$?;
+F
+rc_line=$(grep -n '^rc=\$?;$' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] \
+  && grep -qF "tests/test-demo.sh:$rc_line" <<< "$LINT_OUT" \
+  && grep -qF 'kp_run' <<< "$LINT_OUT"; then
+  pass "an rc=\$? with a trailing semicolon fails the lint at its line"
+else
+  fail "the lint accepted an rc=\$? with a trailing semicolon (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 27: an rc=\$? with a trailing redirect fails the lint at its line ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+out=$(printf 'x\n'; exit 3)
+rc=$? 2>/dev/null
+F
+rc_line=$(grep -nF 'rc=$? 2>/dev/null' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] \
+  && grep -qF "tests/test-demo.sh:$rc_line" <<< "$LINT_OUT" \
+  && grep -qF 'kp_run' <<< "$LINT_OUT"; then
+  pass "an rc=\$? with a trailing redirect fails the lint at its line"
+else
+  fail "the lint accepted an rc=\$? with a trailing redirect (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 28: the compact set +e; capture; rc=\$?; set -e form passes ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+set +e; out=$(printf 'x\n'; exit 3); rc=$?; set -e
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "the compact set +e block keeps the rc=\$? state green at its offset"
+else
+  fail "the lint rejected the compact set +e form (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 29: a local rc=\$? cleanup trap passes ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+trap_cleanup() { local rc=$?; rm -rf "$T/scratch"; return "$rc"; }
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "the local rc=\$? cleanup idiom is not read as the dead-branch shape"
+else
+  fail "the lint rejected the local rc=\$? cleanup idiom (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 30: a quoted << does not hide the rc=\$? below it ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+echo "see << EOF for details"
+out=$(printf 'x\n'; exit 3)
+rc=$?
+F
+rc_line=$(grep -n '^rc=\$?$' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] && grep -qF "tests/test-demo.sh:$rc_line" <<< "$LINT_OUT"; then
+  pass "a quoted << does not silence the rc=\$? check for the rest of the file"
+else
+  fail "a quoted << hid the rc=\$? below it (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 31: a here-string does not hide the rc=\$? below it ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+read -r ignore <<< "word"
+out=$(printf 'x\n'; exit 3)
+rc=$?
+F
+rc_line=$(grep -n '^rc=\$?$' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] && grep -qF "tests/test-demo.sh:$rc_line" <<< "$LINT_OUT"; then
+  pass "a here-string does not silence the rc=\$? check for the rest of the file"
+else
+  fail "a here-string hid the rc=\$? below it (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 32: an rc=\$? in a tests/*.sh helper outside the suites fails the lint ==="
+cat > "$FIX/tests/helper.sh" << 'F'
+#!/usr/bin/env bash
+set -euo pipefail
+out=$(printf 'x\n'; exit 3)
+rc=$?
+F
+lint
+if [ "$LINT_RC" -ne 0 ] && grep -qF 'tests/helper.sh:' <<< "$LINT_OUT" && grep -qF 'kp_run' <<< "$LINT_OUT"; then
+  pass "the check reads every tests/*.sh, not only the suites"
+else
+  fail "the lint accepted an rc=\$? in tests/helper.sh (rc=$LINT_RC): $LINT_OUT"
+fi
+rm -f "$FIX/tests/helper.sh"
+lint
+[ "$LINT_RC" -eq 0 ] && pass "removing the helper makes the lint green again" || fail "the lint stayed red after the helper was removed: $LINT_OUT"
+
 kp_test_finish LINT

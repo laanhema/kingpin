@@ -24,8 +24,9 @@ each task back as a visual review dossier. This file describes the repository.
 
 ```bash
 # bash -n, shellcheck, node --check over lib/*.mjs, the CI-matrix and suite-table checks,
-# the fixed-sleep-before-an-assertion check, the README/docs CLI-reference check in both
-# directions, the path:line citation check, and the tracked .agents artifact check
+# the fixed-sleep-before-an-assertion check, the unguarded-`$?` check, the README/docs
+# CLI-reference check in both directions, the path:line citation check, and the tracked
+# .agents artifact check
 ./tests/lint.sh
 
 # One suite at a time (two suites briefly swap bin/kingpin-send)
@@ -34,7 +35,7 @@ each task back as a visual review dossier. This file describes the repository.
 
 ## Rules and their checks
 
-A rule that only a person keeps is one that goes stale; each rule below has a check, so add the check with the rule.
+A rule that only a person keeps is one that goes stale; each rule below names what keeps it, and the last row names the review that catches the shapes no check can see.
 
 | Rule | Enforced by |
 |---|---|
@@ -42,11 +43,13 @@ A rule that only a person keeps is one that goes stale; each rule below has a ch
 | every `tests/test-*.sh` is a leg of the CI matrix | `tests/lint.sh` |
 | every `tests/test-*.sh` has a row in `docs/testing.md` and every row names a suite that exists | `tests/lint.sh` |
 | a suite waits with `kp_wait_until` or `kp_holds_for`, never a fixed `sleep` before an assertion | `tests/lint.sh` |
+| a test script captures a status with `kp_run`, never on a `NAME=$?` assignment after an unguarded command while errexit is on | `tests/lint.sh` |
 | every parsed flag and `KINGPIN_*` variable is documented, and every one a page shows reaches `docs/cli.md` | `tests/readme-cli-reference.sh` |
 | no page the citation check reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md`, `worker/*.md`) cites a source file by line number | `tests/doc-citations.sh` |
 | nothing under `.agents/plans`, `.agents/reports` or `.agents/reviews` is tracked | `tests/lint.sh` |
 | `tmux` is reached only through `lib/tmux.sh` and `herdr` only through `lib/mux-herdr.sh` | the static checks in `tests/test-tmux-isolation.sh` and `tests/test-mux.sh` |
 | a dossier or handover page passes the prose, layout and palette `check` | `bin/kingpin-report check` |
+| a test never silences a status it claims to check with `\|\| true` (reviews of #5, #75), and never runs an unbounded `wait` that hangs instead of failing (reviews of #99, #145) | review |
 
 ## Lavish Artifacts
 

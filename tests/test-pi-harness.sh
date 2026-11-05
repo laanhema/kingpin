@@ -69,26 +69,23 @@ grep -q "agent_settled" "$T/task/harness-events.log" 2>/dev/null \
 # Test 3: no task dir, no stop call
 echo "=== Test 3: no task dir means no stop call ==="
 rm -f "$T/stop-marker"
-out=$(env -u KINGPIN_TASK_DIR -u KINGPIN_SKILLS_DIR -u KINGPIN_WORKTREE \
+kp_run out rc env -u KINGPIN_TASK_DIR -u KINGPIN_SKILLS_DIR -u KINGPIN_WORKTREE \
   KINGPIN_ROOT="$T/root" STOP_MARKER="$T/stop-marker" \
-  node "$T/drive.mjs" settled 2>&1)
-rc=$?
+  node "$T/drive.mjs" settled
 [ "$rc" -eq 0 ] && [ "$out" = "settled-ok" ] && pass "agent_settled without a task dir exits 0" || fail "rc=$rc out=$out"
 [ ! -e "$T/stop-marker" ] && pass "no stop script runs without KINGPIN_TASK_DIR" || fail "the stop script ran without a task dir"
 
 # Test 4: a missing root or a failing hook warns, never throws
 echo "=== Test 4: the stop call fails soft ==="
-out=$(env -u KINGPIN_SKILLS_DIR -u KINGPIN_WORKTREE -u KINGPIN_ROOT \
+kp_run out rc env -u KINGPIN_SKILLS_DIR -u KINGPIN_WORKTREE -u KINGPIN_ROOT \
   KINGPIN_TASK_DIR="$T/task" \
-  node "$T/drive.mjs" settled 2>&1)
-rc=$?
+  node "$T/drive.mjs" settled
 [ "$rc" -eq 0 ] && echo "$out" | grep -q "settled-ok" && pass "an unset KINGPIN_ROOT does not throw" || fail "unset root rc=$rc out=$out"
 echo "$out" | grep -q "stop hook unavailable (KINGPIN_ROOT unset)" && pass "an unset KINGPIN_ROOT is named on stderr" || fail "no warning for an unset root: $out"
 
-out=$(env -u KINGPIN_SKILLS_DIR -u KINGPIN_WORKTREE \
+kp_run out rc env -u KINGPIN_SKILLS_DIR -u KINGPIN_WORKTREE \
   KINGPIN_TASK_DIR="$T/task" KINGPIN_ROOT="$T/no-root" \
-  node "$T/drive.mjs" settled 2>&1)
-rc=$?
+  node "$T/drive.mjs" settled
 [ "$rc" -eq 0 ] && pass "a missing kingpin-stop does not throw" || fail "missing binary rc=$rc out=$out"
 echo "$out" | grep -q "stop hook failed" && pass "a missing kingpin-stop is named on stderr" || fail "no warning for a missing binary: $out"
 
@@ -99,10 +96,9 @@ echo "the stop script failed on purpose" >&2
 exit 1
 FAIL
 chmod +x "$T/root-fail/bin/kingpin-stop"
-out=$(env -u KINGPIN_SKILLS_DIR -u KINGPIN_WORKTREE \
+kp_run out rc env -u KINGPIN_SKILLS_DIR -u KINGPIN_WORKTREE \
   KINGPIN_TASK_DIR="$T/task" KINGPIN_ROOT="$T/root-fail" \
-  node "$T/drive.mjs" settled 2>&1)
-rc=$?
+  node "$T/drive.mjs" settled
 [ "$rc" -eq 0 ] && pass "a failing stop hook does not throw" || fail "failing hook rc=$rc out=$out"
 echo "$out" | grep -q "stop hook failed" && pass "a failing stop hook is named on stderr" || fail "no warning for a failing hook: $out"
 
