@@ -42,7 +42,7 @@ A rule that only a person keeps is one that goes stale; each rule below has a ch
 | every `tests/test-*.sh` is a leg of the CI matrix | `tests/lint.sh` |
 | every `tests/test-*.sh` has a row in `docs/testing.md` and every row names a suite that exists | `tests/lint.sh` |
 | every parsed flag and `KINGPIN_*` variable is documented, and every one a page shows reaches `docs/cli.md` | `tests/readme-cli-reference.sh` |
-| no page cites a source file by line number | `tests/doc-citations.sh` |
+| no page the citation check reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md`, `worker/*.md`) cites a source file by line number | `tests/doc-citations.sh` |
 | nothing under `.agents/plans`, `.agents/reports` or `.agents/reviews` is tracked | `tests/lint.sh` |
 | `tmux` is reached only through `lib/tmux.sh` and `herdr` only through `lib/mux-herdr.sh` | the static checks in `tests/test-tmux-isolation.sh` and `tests/test-mux.sh` |
 | a dossier or handover page passes the prose, layout and palette `check` | `bin/kingpin-report check` |

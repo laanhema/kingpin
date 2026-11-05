@@ -311,4 +311,18 @@ fi
 rm -f "$FIX/docs/page.md"
 rmdir "$FIX/worker" "$FIX/orchestrator"
 
+echo "=== Test 15: a line number after the closing backtick fails the lint with page and line ==="
+cat > "$FIX/docs/page.md" << 'F'
+# Page
+
+See `bin/kingpin-fixture`:42 for the detail.
+F
+lint
+if [ "$LINT_RC" -ne 0 ] && grep -qF 'docs/page.md:3' <<< "$LINT_OUT" && grep -qF 'bin/kingpin-fixture`:42' <<< "$LINT_OUT"; then
+  pass "a citation with the colon outside the code span fails the lint and names the page and line"
+else
+  fail "the lint accepted a path:line citation with the colon outside the code span (rc=$LINT_RC): $LINT_OUT"
+fi
+rm -f "$FIX/docs/page.md"
+
 kp_test_finish LINT

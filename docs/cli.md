@@ -616,7 +616,7 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 | `KINGPIN_ROOT` | Set by `kingpin spawn` to the Kingpin checkout, so a hook finds `bin/kingpin-stop` even after the worker `cd`s elsewhere. Not for hand-setting. |
 | `KINGPIN_WORKTREE` | Set by `kingpin spawn` to the leased worktree; the worker's `PreToolUse` hook allows edits only inside it and the task folder, and the Pi extension's `project_trust` answer covers only it. Not for hand-setting. |
 
-`grep -rl KINGPIN_<name> bin lib` is the honest reader list, and it cannot tell a reader from a writer (a spawn sets `KINGPIN_TASK_DIR`), which is why this table carries no `Read by` column; each command's section above names the variables it reads.
+`grep -rl KINGPIN_<name> bin lib worker` is the honest reader list, and it cannot tell a reader from a writer (a spawn sets `KINGPIN_TASK_DIR`), which is why this table carries no `Read by` column; each command's section above names the variables it reads.
 
 ## Internal helpers
 

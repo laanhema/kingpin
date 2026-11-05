@@ -2,7 +2,9 @@
 # A page that says a source file's line number promises something the file no longer holds the
 # moment someone edits above that line, and every list of them goes stale (issue #178). This
 # check fails on a backticked `bin/`, `lib/`, `tests/` or `worker/` path followed by `:<digits>`
-# in any documentation page, and the remedy is to cite the file or the function by name.
+# in the pages it reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md` and
+# `worker/*.md`), whether the digits sit inside the code span or just after it, and the remedy
+# is to cite the file or the function by name.
 #
 # `tests/lint.sh` calls it; run it alone to reproduce a failure without the syntax checks and
 # the linter. `--root <dir>` runs it against another checkout, which is what tests/test-lint.sh
@@ -41,8 +43,10 @@ hits=()
 for f in "${pages[@]}"; do
   # A page with no citation is the normal case, so a grep that finds nothing must not abort the
   # script under `pipefail`.
+  # The closing backtick is optional, so `` `bin/foo.sh`:12 `` is caught as well as
+  # `` `bin/foo.sh:12` ``: the line number drifts in both forms.
   # shellcheck disable=SC2016 # the backticks are a markdown code-span pattern, not a command
-  found=$(grep -HnoE '`(bin|lib|tests|worker)/[^`]*:[0-9]+' "$f" || true)
+  found=$(grep -HnoE '`(bin|lib|tests|worker)/[^`]*`?:[0-9]+' "$f" || true)
   [ -n "$found" ] || continue
   while IFS= read -r hit; do
     hits+=("$hit")

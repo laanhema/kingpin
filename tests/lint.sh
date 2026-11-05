@@ -2,7 +2,7 @@
 # Lint every shell script (bin/*, lib/*.sh, tests/*.sh) and every node module (lib/*.mjs):
 # `bash -n` and `node --check` for syntax, then shellcheck (settings in .shellcheckrc).
 # Every suite has to be a leg of the CI matrix and have a row in docs/testing.md, and no
-# page may cite a source file by line number (tests/doc-citations.sh).
+# page the citation check reads may cite a source file by line number (tests/doc-citations.sh).
 # The README/docs CLI-reference check runs in both directions: every parsed flag and
 # KINGPIN_* variable has to be documented, and every flag a docs page shows has to reach
 # docs/cli.md.
