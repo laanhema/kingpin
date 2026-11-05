@@ -78,34 +78,15 @@ restart_tmux() {
 
 window_named() { tmux list-windows -t kingpin -F '#{window_name}' 2>/dev/null | grep -qxF -- "$1"; }
 
-pane_has_line() { # <window-name> <wanted line>
-  local want=$2
-  for _ in $(seq 1 50); do
-    tmux capture-pane -pJt "kingpin:=$1" -S -200 2>/dev/null | grep -qxF -- "$want" && return 0
-    sleep 0.1
-  done
-  return 1
+pane_has_line() { # <window-name> <wanted line>: the pane's scrollback holds the line
+  tmux capture-pane -pJt "kingpin:=$1" -S -200 2>/dev/null | grep -qxF -- "$2"
 }
 
-waited_line() { # <file> <wanted line>: poll a file for one exact line
-  local want=$2
-  for _ in $(seq 1 50); do
-    grep -qxF -- "$want" "$1" 2>/dev/null && return 0
-    sleep 0.1
-  done
-  return 1
-}
-
-# wait_for_pane_command <window-id> <command>: a fresh pane reports `tmux` for a moment
-# before its command settles, and the shell-name fallback in lib/tmux.sh reads that
-# value, so a case about a plain-shell window waits for the shell first.
-wait_for_pane_command() {
-  local win=$1 want=$2
-  for _ in $(seq 1 50); do
-    [ "$(tmux list-panes -t "$win" -F '#{pane_current_command}' 2>/dev/null | head -n 1)" = "$want" ] && return 0
-    sleep 0.05
-  done
-  return 1
+# pane_command_is <window-id> <command>: a fresh pane reports `tmux` for a moment before
+# its command settles, and the shell-name fallback in lib/tmux.sh reads that value, so a
+# case about a plain-shell window waits for the shell first.
+pane_command_is() {
+  [ "$(tmux list-panes -t "$1" -F '#{pane_current_command}' 2>/dev/null | head -n 1)" = "$2" ]
 }
 
 snapshot() { # <dir>: a stable listing of every path and file content
@@ -121,7 +102,7 @@ session_json() { # <directory> <updated-epoch-seconds> <id> <title>: one fixture
   printf '{"id":"%s","title":"%s","updated":%s,"directory":"%s"}' "$3" "$4" "$(( $2 * 1000 ))" "$1"
 }
 
-fake_argv_has() { waited_line "$1/fake-argv" "$2"; }
+fake_argv_has() { kp_wait_until 5 grep -qxF -- "$2" "$1/fake-argv"; }
 
 spawn_task() { # <id>
   "$KP_BIN/kingpin-spawn" demo-auto --issue 149 --id "$1" --harness agy >/dev/null
@@ -203,7 +184,7 @@ r3_rc=0
 "$KP_BIN/kingpin" restore r3 >/dev/null 2>"$T/r3.err" || r3_rc=$?
 [ "$r3_rc" -eq 0 ] && pass "restore exits 0 for a task whose stale id was taken" || fail "restore exited $r3_rc: $(cat "$T/r3.err")"
 KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin" send r3 report >/dev/null
-pane_has_line r3 'got: report' && pass "kingpin send reaches the task's own pane" || fail "the task's pane never printed 'got: report'"
+kp_wait_until 5 pane_has_line r3 'got: report' && pass "kingpin send reaches the task's own pane" || fail "the task's pane never printed 'got: report'"
 claimed_after=$(tmux capture-pane -pJt "$claimed" -S -50 2>/dev/null || true)
 [ "$claimed_before" = "$claimed_after" ] && pass "the window holding the stale id was left untouched" || fail "the stale id's window received the text"
 r3_new=$(env_get "$r3_env" TMUX_WINDOW_ID)
@@ -232,7 +213,7 @@ done
 # Test 5: the send round trip and the status protocol work on a restored task
 echo "=== Test 5: send, peek and wait work on a restored task ==="
 KINGPIN_SEND_DELAY=0.1 "$KP_BIN/kingpin" send r1 report >/dev/null
-waited_line "$r1/status" "waiting: test $r1" && pass "the restored harness appended its status line" || fail "no status line from the restored harness: $(cat "$r1/status")"
+kp_wait_until 5 grep -qxF -- "waiting: test $r1" "$r1/status" && pass "the restored harness appended its status line" || fail "no status line from the restored harness: $(cat "$r1/status")"
 r5_peek=$("$KP_BIN/kingpin" peek r1 --lines 20)
 echo "$r5_peek" | grep -qxF 'got: report' && pass "kingpin peek prints the restored pane" || fail "peek output: $r5_peek"
 r5_wait=$("$KP_BIN/kingpin" wait --once 2>/dev/null || true)
@@ -415,7 +396,7 @@ echo "=== Test 11: list marks a shell window DEAD without a harness.pid ==="
 "$KP_BIN/kingpin" restore >/dev/null 2>&1 || fail "restoring the fleet for the legacy DEAD case failed"
 d=$(mk_fixture k-legacy "$T/fixture-wt"); printf 'issue: #149\n' > "$d/status"
 k_legacy_win=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n k-legacy 'exec bash')
-wait_for_pane_command "$k_legacy_win" bash || fail "the k-legacy window never settled on a shell"
+kp_wait_until 3 pane_command_is "$k_legacy_win" bash || fail "the k-legacy window never settled on a shell"
 d=$(mk_fixture k-mismatch "$T/fixture-wt"); printf 'issue: #149\n' > "$d/status"
 tmux new-window -d -t kingpin: -n k-mismatch 'exec sleep 300' >/dev/null
 # A live pid that is not the pane pid: the recorded harness is not in the window.
@@ -424,7 +405,7 @@ printf '%s\n' "$$" > "$KINGPIN_HOME/tasks/k-mismatch/harness.pid"
 d=$(mk_fixture k-statusless "$T/fixture-wt")
 rm -f "$d/status"
 k_statusless_win=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n k-statusless 'exec bash')
-wait_for_pane_command "$k_statusless_win" bash || fail "the k-statusless window never settled on a shell"
+kp_wait_until 3 pane_command_is "$k_statusless_win" bash || fail "the k-statusless window never settled on a shell"
 list_out=$("$KP_BIN/kingpin" list 2>/dev/null)
 row=$(grep '^k-legacy ' <<< "$list_out" || true)
 grep -q 'DEAD' <<< "$row" && pass "a record with no harness.pid whose window runs a shell shows DEAD" || fail "k-legacy row: $row"
@@ -482,7 +463,7 @@ d_b=$(mk_fixture k-claim-b "$T/fixture-wt" "TMUX_TARGET=kingpin:shared"); printf
 cp "$d_b/task.env" "$T/k-claim-b.env.before"
 tmux has-session -t '=kingpin' 2>/dev/null || tmux new-session -d -s kingpin -n home
 shared_win=$(tmux new-window -d -P -F '#{window_id}' -t kingpin: -n shared -c "$T/fixture-wt" 'exec bash')
-wait_for_pane_command "$shared_win" bash || fail "the shared window never settled on a shell"
+kp_wait_until 3 pane_command_is "$shared_win" bash || fail "the shared window never settled on a shell"
 shared_pid=$(tmux list-panes -t "$shared_win" -F '#{pane_pid}' | head -n 1)
 k_claim_rc=0
 k_claim_err=$("$KP_BIN/kingpin" restore k-claim-b 2>&1 >/dev/null) || k_claim_rc=$?

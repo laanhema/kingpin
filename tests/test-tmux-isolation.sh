@@ -58,8 +58,7 @@ echo "--- Test 3: the operator's server dies, the worker does not ---"
 tmux -L "$OPS_SOCKET" kill-session -t opswin 2>/dev/null || true
 ! tmux -L "$OPS_SOCKET" has-session -t opswin 2>/dev/null && pass "t3: the operator's session is gone" || fail "t3: the operator's session survived"
 tmux -L "$OPS_SOCKET" kill-server 2>/dev/null || true
-sleep 0.3
-tmux list-panes -t "$t100_wid" >/dev/null 2>&1 && pass "t3: the worker window survived the operator's kill-server" || fail "t3: the worker window is gone"
+kp_holds_for 0.3 tmux list-panes -t "$t100_wid" && pass "t3: the worker window survived the operator's kill-server" || fail "t3: the worker window is gone"
 
 t100_peek=$("$KP_BIN/kingpin" peek t100-fleet --lines 5 2>&1) && pass "t3: kingpin peek reads the surviving pane" || fail "t3: peek failed: $t100_peek"
 # shellcheck disable=SC2016 # the pane's shell expands the task dir at run time

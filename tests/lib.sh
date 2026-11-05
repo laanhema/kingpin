@@ -34,6 +34,72 @@ pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAILED=1; }
 FAILED=0
 
+# kp_test_now_us: a microsecond reading, for the deadline a wait computes. EPOCHREALTIME
+# needs bash 5; an older shell falls back to whole seconds, so a sub-second window rounds
+# up there rather than down.
+kp_test_now_us() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    printf '%s\n' "${EPOCHREALTIME/[.,]/}"
+  else
+    printf '%s000000\n' "$(date +%s)"
+  fi
+}
+
+# kp_test_seconds_us <seconds>: the microseconds in a decimal seconds value, converted by
+# awk so 0.05 and 16 both work without a float in bash.
+kp_test_seconds_us() {
+  awk -v s="${1:?kp_test_seconds_us: missing seconds}" 'BEGIN { printf "%.0f\n", s * 1000000 }'
+}
+
+# kp_wait_until <seconds> <cmd...>: poll every 0.05 s until <cmd> succeeds, and return 0 as
+# soon as it does, or 1 once the wall-clock window of <seconds> runs out. The window is a
+# deadline rather than a try count, so a loaded runner gets the same window instead of
+# fewer samples, and a bounded poll keeps a check from depending on machine speed
+# (issue #164). <cmd> is a predicate: it runs up to seconds / 0.05 times, so it must be
+# read-only, its output is discarded, and its return code is the whole answer (a check that
+# needs a value reads it after the wait). A predicate that needs `!`, a pipe or an
+# assignment has to be a function, because "$@" never re-parses a control operator.
+kp_wait_until() {
+  local seconds=${1:?kp_wait_until: missing seconds} deadline
+  shift
+  [ $# -gt 0 ] || { echo "kp_wait_until: missing command" >&2; return 2; }
+  case $seconds in
+    '' | *[!0-9.]* | *.*.*)
+      echo "kp_wait_until: <seconds> must be a number, got: '$seconds'" >&2
+      return 2
+      ;;
+  esac
+  deadline=$(( $(kp_test_now_us) + $(kp_test_seconds_us "$seconds") ))
+  while :; do
+    "$@" >/dev/null 2>&1 && return 0
+    [ "$(kp_test_now_us)" -ge "$deadline" ] && return 1
+    sleep 0.05
+  done
+}
+
+# kp_holds_for <seconds> <cmd...>: the "nothing happened" counterpart, for a check that a
+# thing stayed true for a whole window. It samples <cmd> every 0.05 s and returns 0 only
+# when the predicate held at every sample until the deadline, or 1 at the first sample that
+# failed. A single read after a fixed pause cannot tell a thing that never happened from one
+# that happened and went away. <cmd> carries the same read-only rule as kp_wait_until.
+kp_holds_for() {
+  local seconds=${1:?kp_holds_for: missing seconds} deadline
+  shift
+  [ $# -gt 0 ] || { echo "kp_holds_for: missing command" >&2; return 2; }
+  case $seconds in
+    '' | *[!0-9.]* | *.*.*)
+      echo "kp_holds_for: <seconds> must be a number, got: '$seconds'" >&2
+      return 2
+      ;;
+  esac
+  deadline=$(( $(kp_test_now_us) + $(kp_test_seconds_us "$seconds") ))
+  while :; do
+    "$@" >/dev/null 2>&1 || return 1
+    [ "$(kp_test_now_us)" -ge "$deadline" ] && return 0
+    sleep 0.05
+  done
+}
+
 # kp_test_setup <suite-name>: sets T, KP_ROOT, KP_BIN, REAL_TMUX, TEST_SOCKET and the KINGPIN_* environment.
 kp_test_setup() {
   local suite=$1 w

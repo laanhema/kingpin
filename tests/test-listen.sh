@@ -107,19 +107,6 @@ parked_file() {
   done
 }
 
-# wait_for <tries> <command...>: poll <command> every 0.05 s until it succeeds, up to
-# <tries> times, and report whether it did. A bounded poll for an asynchronous outcome
-# keeps a check from depending on machine speed (issue #164).
-wait_for() {
-  local tries=$1 i
-  shift
-  for ((i = 0; i < tries; i++)); do
-    "$@" && return 0
-    sleep 0.05
-  done
-  return 1
-}
-
 # pane_has <tmux-target> <text>: the window's scrollback holds <text>. A terminal
 # paints a forwarded line a moment after the listener sends it, so a check polls this
 # instead of sleeping a fixed interval.
@@ -166,16 +153,6 @@ settled_count() {
   printf '%s\n' "$last"
 }
 
-# now_us: a microsecond reading, for the "how long did that take" report a bounded wait
-# prints. EPOCHREALTIME needs bash 5; an older shell falls back to whole seconds.
-now_us() {
-  if [ -n "${EPOCHREALTIME:-}" ]; then
-    printf '%s\n' "${EPOCHREALTIME/[.,]/}"
-  else
-    printf '%s000000\n' "$(date +%s)"
-  fi
-}
-
 # Parser fixtures, and the decoded prompt text of one parse. The parser falls back to
 # its text scan whenever LAVISH_AXI_BIN names no decoder, which is what these use.
 FIX="$KP_ROOT/tests/fixtures/lavish"
@@ -207,7 +184,7 @@ echo "ready: branch=b review=APPROVE report=$t11_task/report.html" >> "$t11_task
 
 # Assert dossier was opened in lavish: `watch` arms the listener and returns before
 # that listener gets to the open, so wait for the log rather than a fixed interval.
-wait_for 100 grep -qF "$t11_task/report.html" "$T/mock-lavish.log" 2>/dev/null && pass "mock-lavish opened review dossier" || fail "mock-lavish did not open review dossier"
+kp_wait_until 5 grep -qF "$t11_task/report.html" "$T/mock-lavish.log" 2>/dev/null && pass "mock-lavish opened review dossier" || fail "mock-lavish did not open review dossier"
 
 # One open for one ready task, and the session URL it printed is recorded for the
 # handover, so the orchestrator has no reason to run the command on the page again.
@@ -262,12 +239,12 @@ done
 
 grep -q "approved: by user via lavish dossier" "$t11_task/status" && pass "approved status logged" || fail "approved status missing"
 [ -f "$t11_task/landing_sent" ] && pass "landing triggered by listener" || fail "landing not triggered"
-wait_for 100 pane_has kingpin:task-lavish-1 "/issue-flow-done 401" || true
+kp_wait_until 5 pane_has kingpin:task-lavish-1 "/issue-flow-done 401" || true
 pane_out=$(tmux capture-pane -pt kingpin:task-lavish-1 -S -5)
 echo "$pane_out" | grep -q "/issue-flow-done 401" && pass "/issue-flow-done dispatched on approval" || fail "wrong done command: $pane_out"
 # The confirmation is posted after the approval note, so a loaded runner can show the
 # note a moment before the reply reaches the mock: poll for it (issue #174).
-wait_for 400 grep -q "reply $t11_task/report.html --agent-reply Approval received" "$T/mock-lavish.log" || true
+kp_wait_until 20 grep -q "reply $t11_task/report.html --agent-reply Approval received" "$T/mock-lavish.log" || true
 grep -q "reply $t11_task/report.html --agent-reply Approval received" "$T/mock-lavish.log" && pass "approval confirmation reply sent to lavish" || fail "approval reply missing"
 
 # 4. Simulate user feedback / Request Changes
@@ -925,7 +902,7 @@ EOF4
 tmux new-window -d -t kingpin: -n task-lavish-gate cat
 printf '%s\n' "ready: branch=b review=NEEDS CHANGES report=.agents/reviews/r9.md" "feedback: Request Changes: please rename foo" "approved: by user via lavish dossier" > "$t11_gate/status"
 "$KP_BIN/kingpin" land task-lavish-gate >/dev/null
-wait_for 100 pane_has kingpin:task-lavish-gate "/fix-findings $T/proj/.agents/reviews/r9.md" || true
+kp_wait_until 5 pane_has kingpin:task-lavish-gate "/fix-findings $T/proj/.agents/reviews/r9.md" || true
 pane_out=$(tmux capture-pane -pt kingpin:task-lavish-gate -S -5)
 echo "$pane_out" | grep -q "/fix-findings $T/proj/.agents/reviews/r9.md" && pass "feedback/approved notes do not bypass the fix-findings gate" || fail "gate bypassed after listener notes: $pane_out"
 [ ! -f "$t11_gate/landing_sent" ] && pass "no landing dispatched for NEEDS CHANGES after listener notes" || fail "landing dispatched despite NEEDS CHANGES"
@@ -1011,12 +988,12 @@ fix_dispatch_painted() {
   [ "$n" -gt 0 ] && [ $((n % 2)) -eq 0 ]
 }
 approve_resp; "$KP_BIN/kingpin" listen task-lavish-repeat --once >/dev/null
-wait_for 100 fix_dispatch_painted || true
+kp_wait_until 5 fix_dispatch_painted || true
 n1=$(settled_count count_fix)
 approve_resp; "$KP_BIN/kingpin" listen task-lavish-repeat --once >/dev/null
 # The repeated Approve either adds a dispatch or does not; reading the count once it
 # has settled says which, without a fixed interval deciding it.
-wait_for 100 fix_dispatch_painted || true
+kp_wait_until 5 fix_dispatch_painted || true
 n2=$(settled_count count_fix)
 [ "$n1" -ge 1 ] && [ "$n1" = "$n2" ] && pass "repeat Approve did not resend /fix-findings" || fail "/fix-findings lines: first=$n1 after repeat=$n2"
 grep -q "Approval already received" "$T/mock-lavish.log" && pass "repeat Approve answered with a waiting reply" || fail "waiting reply missing"
@@ -1066,7 +1043,7 @@ for race_launch in "${race_launchers[@]}"; do wait "$race_launch" || race_launch
 [ "$race_launch_rc" = "0" ] && pass "all four background launches exited 0" || fail "a background launch exited $race_launch_rc"
 race_seen="$T/race-listeners"
 : > "$race_seen"
-race_start=$(now_us)
+race_start=$(kp_test_now_us)
 # A launcher forks the listener and waits up to 2 s for listener.pid, so a child can
 # still be between fork and exec once `wait` has returned. Treat the race as over only
 # once one listener, the owner, has been the only one for a quiet window; a late loser
@@ -1085,17 +1062,17 @@ while :; do
   [ "$race_n" -gt "$race_peak" ] && race_peak=$race_n
   [ -n "$race_now" ] && printf '%s\n' "$race_now" >> "$race_seen"
   if [ "$race_n" = "1" ] && [ "$race_now" = "$(head -n 1 "$t11_race/listener.owner" 2>/dev/null || true)" ]; then
-    [ -n "$race_quiet_since" ] || race_quiet_since=$(now_us)
+    [ -n "$race_quiet_since" ] || race_quiet_since=$(kp_test_now_us)
     race_seen_now=$race_now
-    [ $(( $(now_us) - race_quiet_since )) -ge 750000 ] && { race_settled=1; break; }
+    [ $(( $(kp_test_now_us) - race_quiet_since )) -ge 750000 ] && { race_settled=1; break; }
   else
     race_quiet_since=""
     race_seen_now=""
   fi
-  [ "$(now_us)" -ge "$race_deadline" ] && break
+  [ "$(kp_test_now_us)" -ge "$race_deadline" ] && break
   sleep 0.05
 done
-race_ms=$(( ($(now_us) - race_start) / 1000 ))
+race_ms=$(( ($(kp_test_now_us) - race_start) / 1000 ))
 race_owner=$(head -n 1 "$t11_race/listener.owner" 2>/dev/null || true)
 # Name the owner in the failure: one listener that never matched listener.owner looks
 # like the success condition until the owner value says otherwise (issue #164).
@@ -1127,7 +1104,7 @@ while IFS= read -r race_kill_pid; do
   [ -n "$race_kill_pid" ] || continue
   kill -- "-$race_kill_pid" 2>/dev/null || kill "$race_kill_pid" 2>/dev/null || true
 done < <({ printf '%s\n' "$race_kill" "$race_final"; sort -u "$race_seen"; } | sort -u)
-wait_for 100 test ! -d "$t11_race/listener.lock" || true
+kp_wait_until 5 test ! -d "$t11_race/listener.lock" || true
 [ ! -d "$t11_race/listener.lock" ] && pass "launch lock released" || fail "launch lock left behind"
 rm -rf "$t11_race"
 
@@ -1239,7 +1216,7 @@ n=$(grep -c "reply $t11_rec/report.html " "$T/mock-lavish.log" || true)
 [ "$n" = "1" ] && pass "listener: recovered poll sends exactly one reply" || fail "listener: recovered poll sent $n replies"
 grep -Fq "reply $t11_rec/report.html --agent-reply Feedback received and forwarded. Kingpin could not fully parse the poll response" "$T/mock-lavish.log" && pass "listener: recovery receipt reports the forward (window present)" || fail "listener: recovery receipt missing or changed"
 grep -Fq "$rec_parked" "$T/mock-lavish.log" && pass "listener: recovery receipt names the parked file" || fail "listener: recovery receipt does not name the parked file"
-wait_for 100 pane_has kingpin:task-lavish-recover "recovered text from a shape the parser does not claim" || true
+kp_wait_until 5 pane_has kingpin:task-lavish-recover "recovered text from a shape the parser does not claim" || true
 pane_out=$(tmux capture-pane -pJ -pt kingpin:task-lavish-recover -S -100)
 printf '%s\n' "$pane_out" | grep -Fq "recovered text from a shape the parser does not claim" && pass "listener: recovered text forwarded to the worker pane" || fail "listener: recovered text not forwarded: $pane_out"
 rm -rf "$t11_rec"

@@ -28,36 +28,17 @@ stop_supervisor() {
 start_supervisor() {
   "$KP_BIN/kingpin-watch" --interval 1 >> "$LOG" 2>&1 &
   WATCH_PID=$!
-  wait_until 80 pidfile_names "$WATCH_PID"
+  kp_wait_until 16 pidfile_names "$WATCH_PID"
 }
 
 pidfile_names() {
   [ "$(sed -n 1p "$PID_FILE" 2>/dev/null | tr -d ' ')" = "$1" ]
 }
 
-# wait_until <tries> <cmd...>: poll every 0.2 s until the command succeeds.
-wait_until() {
-  local tries=$1
-  shift
-  for _ in $(seq 1 "$tries"); do
-    if "$@" >/dev/null 2>&1; then return 0; fi
-    sleep 0.2
-  done
-  return 1
-}
-
 seen_count() {
   local file="$KINGPIN_HOME/tasks/$1/seen"
   [ -f "$file" ] || { echo 0; return 0; }
   tr -d ' \n' < "$file"
-}
-
-# shellcheck disable=SC2329 # invoked indirectly by wait_until
-# seen_is <task> <count>: the predicate wait_until needs, because `seen_count` itself
-# always succeeds. The supervisor logs a dispatch and then acks it, so a read taken the
-# instant the log line appears can still see the previous cursor.
-seen_is() {
-  [ "$(seen_count "$1")" = "$2" ]
 }
 
 # seen_is <task-id> <lines>: the cursor reached that line. The supervisor logs a
@@ -126,7 +107,7 @@ echo "=== Test 3b: a healthy pass's warning is logged ==="
 mk_task t-warn
 : > "$KINGPIN_HOME/tasks/t-warn/status"
 printf 'CREATED=not-a-time\n' >> "$KINGPIN_HOME/tasks/t-warn/task.env"
-wait_until 75 log_has "[kingpin-watch] kingpin-wait warning: kingpin-launch-check: cannot parse CREATED='not-a-time'" \
+kp_wait_until 15 log_has "[kingpin-watch] kingpin-wait warning: kingpin-launch-check: cannot parse CREATED='not-a-time'" \
   && pass "a warning from a healthy wait pass reaches the log" \
   || fail "the healthy-pass warning never reached the log: $(cat "$LOG")"
 sleep 2
@@ -196,16 +177,16 @@ start_supervisor || fail "supervisor did not start for the event test"
 first_pid=$WATCH_PID
 
 printf 'needs-input: probe question\n' >> "$KINGPIN_HOME/tasks/t-a/status"
-wait_until 75 log_has "[kingpin-watch] t-a needs input" \
+kp_wait_until 15 log_has "[kingpin-watch] t-a needs input" \
   && pass "first event handled" \
   || fail "first event was not handled: $(cat "$LOG")"
-wait_until 20 seen_is t-a 2 && pass "first event acknowledged" || fail "t-a seen=$(seen_count t-a)"
+kp_wait_until 4 seen_is t-a 2 && pass "first event acknowledged" || fail "t-a seen=$(seen_count t-a)"
 
 printf 'failed: probe failure\n' >> "$KINGPIN_HOME/tasks/t-b/status"
-wait_until 75 log_has "[kingpin-watch] t-b reported failure: failed: probe failure" \
+kp_wait_until 15 log_has "[kingpin-watch] t-b reported failure: failed: probe failure" \
   && pass "second event handled after the first, with no re-arm" \
   || fail "second event was not handled: $(cat "$LOG")"
-wait_until 20 seen_is t-b 2 && pass "second event acknowledged" || fail "t-b seen=$(seen_count t-b)"
+kp_wait_until 4 seen_is t-b 2 && pass "second event acknowledged" || fail "t-b seen=$(seen_count t-b)"
 
 [ "$WATCH_PID" = "$first_pid" ] && [ "$(sed -n 1p "$PID_FILE" | tr -d ' ')" = "$first_pid" ] \
   && kill -0 "$first_pid" 2>/dev/null \
@@ -219,10 +200,10 @@ wait_until 20 seen_is t-b 2 && pass "second event acknowledged" || fail "t-b see
 echo "=== Test 7b: a batch dispatches every line once, in order ==="
 mk_task t-order
 printf 'needs-input: batch-first\nfailed: batch-second\n' >> "$KINGPIN_HOME/tasks/t-order/status"
-wait_until 75 log_has "[kingpin-watch] t-order needs input" \
+kp_wait_until 15 log_has "[kingpin-watch] t-order needs input" \
   && pass "first line of the batch dispatched" \
   || fail "first line of the batch was lost: $(cat "$LOG")"
-wait_until 75 log_has "[kingpin-watch] t-order reported failure: failed: batch-second" \
+kp_wait_until 15 log_has "[kingpin-watch] t-order reported failure: failed: batch-second" \
   && pass "second line of the batch dispatched in the same supervisor" \
   || fail "second line of the batch was lost: $(cat "$LOG")"
 order_first=$(log_line_of "[kingpin-watch] t-order needs input")
@@ -230,20 +211,20 @@ order_second=$(log_line_of "[kingpin-watch] t-order reported failure: failed: ba
 [ -n "$order_first" ] && [ -n "$order_second" ] && [ "$order_first" -lt "$order_second" ] \
   && pass "the batch was dispatched in file order" \
   || fail "batch order wrong (first=$order_first second=$order_second)"
-wait_until 20 seen_is t-order 3 && pass "the whole batch was acknowledged once" || fail "t-order seen=$(seen_count t-order)"
+kp_wait_until 4 seen_is t-order 3 && pass "the whole batch was acknowledged once" || fail "t-order seen=$(seen_count t-order)"
 
 # Test 7c: issue acceptance - merged: followed by an appended feedback: still cleans up
 echo "=== Test 7c: merged: + feedback: runs the cleanup step ==="
 mk_task t-merged demo-merged
 printf 'merged: pr=https://example.test/pr/73\nfeedback: Request Changes: after merged\n' \
   >> "$KINGPIN_HOME/tasks/t-merged/status"
-wait_until 75 log_has "[kingpin-watch] t-merged merged; running cleanup..." \
+kp_wait_until 15 log_has "[kingpin-watch] t-merged merged; running cleanup..." \
   && pass "merged: ran the cleanup step despite the feedback: note" \
   || fail "merged: was acked away and never cleaned up: $(cat "$LOG")"
-wait_until 75 log_has "[kingpin-watch] t-merged received review feedback: feedback: Request Changes: after merged" \
+kp_wait_until 15 log_has "[kingpin-watch] t-merged received review feedback: feedback: Request Changes: after merged" \
   && pass "the listener feedback: note was still reported" \
   || fail "the feedback: note was not reported: $(cat "$LOG")"
-wait_until 20 seen_is t-merged 3 && pass "merged: + feedback: acknowledged" || fail "t-merged seen=$(seen_count t-merged)"
+kp_wait_until 4 seen_is t-merged 3 && pass "merged: + feedback: acknowledged" || fail "t-merged seen=$(seen_count t-merged)"
 
 # Test 7d: issue acceptance - fixed: followed by feedback: during landing still lands
 echo "=== Test 7d: fixed: + feedback: runs the land step ==="
@@ -251,25 +232,25 @@ mk_task t-fixed demo-fixed
 touch "$KINGPIN_HOME/tasks/t-fixed/landing_in_progress"
 printf 'fixed: high=0 report=.agents/reviews/r.md\nfeedback: Request Changes: after fixed\n' \
   >> "$KINGPIN_HOME/tasks/t-fixed/status"
-wait_until 75 log_has "[kingpin-watch] t-fixed reported fix pass; continuing landing..." \
+kp_wait_until 15 log_has "[kingpin-watch] t-fixed reported fix pass; continuing landing..." \
   && pass "fixed: ran the land step despite the feedback: note" \
   || fail "fixed: was acked away and never landed: $(cat "$LOG")"
-wait_until 75 log_has "[kingpin-watch] t-fixed received review feedback: feedback: Request Changes: after fixed" \
+kp_wait_until 15 log_has "[kingpin-watch] t-fixed received review feedback: feedback: Request Changes: after fixed" \
   && pass "the feedback: after fixed: was still reported" \
   || fail "the feedback: after fixed: was not reported: $(cat "$LOG")"
-wait_until 20 seen_is t-fixed 3 && pass "fixed: + feedback: acknowledged" || fail "t-fixed seen=$(seen_count t-fixed)"
+kp_wait_until 4 seen_is t-fixed 3 && pass "fixed: + feedback: acknowledged" || fail "t-fixed seen=$(seen_count t-fixed)"
 
 # Test 7e: blank and issue: lines advance the cursor without a dispatch
 echo "=== Test 7e: blank and issue: lines are skipped, not dispatched ==="
 mk_task t-skip
 printf '\nissue: #73 informational\nwaiting: skipped-note\n' >> "$KINGPIN_HOME/tasks/t-skip/status"
-wait_until 75 log_has "[kingpin-watch] t-skip is waiting: skipped-note" \
+kp_wait_until 15 log_has "[kingpin-watch] t-skip is waiting: skipped-note" \
   && pass "the real event after blank and issue: lines was dispatched" \
   || fail "the real event after blank and issue: lines was lost: $(cat "$LOG")"
 log_has "[kingpin-watch] t-skip issue:" \
   && fail "an issue: line was dispatched" \
   || pass "issue: lines are not dispatched"
-wait_until 20 seen_is t-skip 4 \
+kp_wait_until 4 seen_is t-skip 4 \
   && pass "the cursor advanced past the skipped lines" \
   || fail "t-skip seen=$(seen_count t-skip), expected 4"
 
@@ -281,16 +262,16 @@ printf 'needs-input: handled-before-restart\nfailed: restart-first\nwaiting: res
   >> "$KINGPIN_HOME/tasks/t-restart/status"
 printf '2\n' > "$KINGPIN_HOME/tasks/t-restart/seen"
 start_supervisor || fail "supervisor did not start for the restart case"
-wait_until 75 log_has "[kingpin-watch] t-restart reported failure: failed: restart-first" \
+kp_wait_until 15 log_has "[kingpin-watch] t-restart reported failure: failed: restart-first" \
   && pass "the first undispatched line was dispatched after the restart" \
   || fail "the first undispatched line was lost after the restart: $(cat "$LOG")"
-wait_until 75 log_has "[kingpin-watch] t-restart is waiting: restart-second" \
+kp_wait_until 15 log_has "[kingpin-watch] t-restart is waiting: restart-second" \
   && pass "the second undispatched line was dispatched after the restart" \
   || fail "the second undispatched line was lost after the restart: $(cat "$LOG")"
 log_has "[kingpin-watch] t-restart needs input" \
   && fail "the restart re-dispatched a line the earlier supervisor had handled" \
   || pass "the restart did not repeat a handled line"
-wait_until 75 seen_is t-restart 4 \
+kp_wait_until 15 seen_is t-restart 4 \
   && pass "the restart left the cursor at the end" \
   || fail "t-restart seen=$(seen_count t-restart)"
 
@@ -409,7 +390,7 @@ rm -rf "$KINGPIN_HOME/tasks/t-snapshot" "$snap_wt"
 # Test 8: stopping the supervisor clears the pidfile and the list line
 echo "=== Test 8: supervisor stop ==="
 stop_supervisor
-wait_until 20 test ! -f "$PID_FILE" && pass "pidfile removed on exit" || fail "pidfile survived the supervisor"
+kp_wait_until 4 test ! -f "$PID_FILE" && pass "pidfile removed on exit" || fail "pidfile survived the supervisor"
 grep -q "Supervisor: none" <<< "$("$KP_BIN/kingpin" list)" \
   && pass "list reports no supervisor after it stops" \
   || fail "list still reports a supervisor"
@@ -435,10 +416,10 @@ stop_supervisor
 echo "=== Test 10: TERM stops the supervisor promptly ==="
 "$KP_BIN/kingpin-watch" >> "$LOG" 2>&1 &
 stop_test_pid=$!
-wait_until 80 pidfile_names "$stop_test_pid" && pass "supervisor started with the default interval" || fail "supervisor did not start with the default interval"
+kp_wait_until 16 pidfile_names "$stop_test_pid" && pass "supervisor started with the default interval" || fail "supervisor did not start with the default interval"
 start=$(date +%s)
 kill "$stop_test_pid" 2>/dev/null || true
-wait_until 25 test ! -f "$PID_FILE"
+kp_wait_until 5 test ! -f "$PID_FILE"
 elapsed=$(( $(date +%s) - start ))
 [ ! -f "$PID_FILE" ] && [ "$elapsed" -le 4 ] \
   && pass "TERM removed the pidfile in ${elapsed}s without waiting for the interval" \
@@ -484,7 +465,7 @@ chmod +x "$KP_BIN/kingpin-wait"
 rm -f "$WAIT_CALLS"
 "$KP_BIN/kingpin-watch" --interval 1 >> "$BACKOFF_LOG" 2>&1 &
 backoff_pid=$!
-wait_until 80 pidfile_names "$backoff_pid" || fail "supervisor did not start against a failing wait"
+kp_wait_until 16 pidfile_names "$backoff_pid" || fail "supervisor did not start against a failing wait"
 sleep 3
 kill "$backoff_pid" 2>/dev/null || true
 wait "$backoff_pid" 2>/dev/null || true
@@ -529,7 +510,7 @@ chmod +x "$KP_BIN/kingpin-wait"
 : > "$KP_TEST_STREAK_COUNT"
 "$KP_BIN/kingpin-watch" --interval 1 >> "$STREAK_LOG" 2>&1 &
 streak_pid=$!
-wait_until 80 pidfile_names "$streak_pid" || fail "supervisor did not start against the streak fixture"
+kp_wait_until 16 pidfile_names "$streak_pid" || fail "supervisor did not start against the streak fixture"
 sleep 3
 kill "$streak_pid" 2>/dev/null || true
 wait "$streak_pid" 2>/dev/null || true
@@ -566,17 +547,17 @@ live_listener_pid() {
 started_pid=$(cat "$KINGPIN_HOME/tasks/t-arm/listener.pid" 2>/dev/null || true)
 listener_alive "$started_pid" && pass "the listener started (pid $started_pid)" || fail "no live listener before the kill"
 kill -- "-$started_pid" 2>/dev/null || kill "$started_pid" 2>/dev/null || true
-wait_until 40 listener_dead "$started_pid" && pass "the listener was killed" || fail "listener $started_pid survived the kill"
+kp_wait_until 8 listener_dead "$started_pid" && pass "the listener was killed" || fail "listener $started_pid survived the kill"
 arm_out=$("$KP_BIN/kingpin-watch" --once 2>&1)
 echo "$arm_out" | grep -q "t-arm: dossier listener is gone; re-arming" \
   && pass "watch reports the dead listener" || fail "no re-arming line: $arm_out"
 arm_pid_file="$KINGPIN_HOME/tasks/t-arm/listener.pid"
-wait_until 40 live_listener_pid "$arm_pid_file" "$started_pid" \
+kp_wait_until 8 live_listener_pid "$arm_pid_file" "$started_pid" \
   && pass "watch re-armed a live listener (pid $(cat "$arm_pid_file"))" \
   || fail "listener pid after --once: $(cat "$arm_pid_file" 2>/dev/null || true)"
 arm_pid=$(cat "$arm_pid_file" 2>/dev/null || true)
 kill -- "-$arm_pid" 2>/dev/null || kill "$arm_pid" 2>/dev/null || true
-wait_until 40 listener_dead "$arm_pid"
+kp_wait_until 8 listener_dead "$arm_pid"
 
 # A task.env without MODE is a review task, exactly as process_task_event reads it.
 reset_arm_task() {
@@ -609,12 +590,12 @@ echo "$default_out" | grep -q "t-arm: dossier listener is gone; re-arming" \
   && pass "a task.env without MODE defaults to review and is re-armed" \
   || fail "a missing MODE skipped the re-arm: $default_out"
 default_pid_file="$KINGPIN_HOME/tasks/t-arm/listener.pid"
-wait_until 40 live_listener_pid "$default_pid_file" 999999 \
+kp_wait_until 8 live_listener_pid "$default_pid_file" 999999 \
   && pass "the default-mode task got a live listener (pid $(cat "$default_pid_file"))" \
   || fail "listener pid after the default-mode sweep: $(cat "$default_pid_file" 2>/dev/null || true)"
 default_pid=$(cat "$default_pid_file" 2>/dev/null || true)
 kill -- "-$default_pid" 2>/dev/null || kill "$default_pid" 2>/dev/null || true
-wait_until 40 listener_dead "$default_pid"
+kp_wait_until 8 listener_dead "$default_pid"
 
 # Every blocker keeps the dead pid in place.
 reset_arm_task; touch "$KINGPIN_HOME/tasks/t-arm/lavish_ended"; assert_no_rearm "a reviewer-ended session"

@@ -325,4 +325,96 @@ else
 fi
 rm -f "$FIX/docs/page.md"
 
+echo "=== Test 16: a fixed sleep before an assertion fails the lint with the line and both helpers ==="
+cp "$FIX/tests/test-demo.sh" "$T/test-demo.saved"
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+sleep 2
+grep -q "^merged:" "$FIX/status" && pass "merged" || fail "not merged"
+F
+sleep_line=$(grep -n '^[[:space:]]*sleep 2$' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] \
+  && grep -qF "tests/test-demo.sh:$sleep_line" <<< "$LINT_OUT" \
+  && grep -qF 'then an assertion on line' <<< "$LINT_OUT" \
+  && grep -qF 'kp_wait_until' <<< "$LINT_OUT" \
+  && grep -qF 'kp_holds_for' <<< "$LINT_OUT"; then
+  pass "a sleep before an assertion fails the lint at its line, with both helpers named"
+else
+  fail "the lint accepted a fixed sleep before an assertion (rc=$LINT_RC): $LINT_OUT"
+fi
+
+echo "=== Test 17: a blank line between the sleep and the assertion is still caught ==="
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+# Same shape as Test 16, with a blank line between the pause and the assertion.
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+sleep 2
+
+grep -q "^merged:" "$FIX/status" && pass "merged" || fail "not merged"
+F
+sleep_line=$(grep -n '^[[:space:]]*sleep 2$' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] && grep -qF "tests/test-demo.sh:$sleep_line" <<< "$LINT_OUT"; then
+  pass "a blank line between the sleep and the assertion does not hide it"
+else
+  fail "a blank line hid a fixed sleep before an assertion (rc=$LINT_RC): $LINT_OUT"
+fi
+
+echo "=== Test 18: restoring the suite makes the lint green ==="
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "the fixed-sleep check goes green once the suite waits instead"
+else
+  fail "the lint stayed red after the fixed sleep was removed (rc=$LINT_RC): $LINT_OUT"
+fi
+
+echo "=== Test 19: a background sleep and a sleep inside a loop body pass ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+sleep 30 &
+wait
+n=0
+while [ "$n" -lt 3 ]; do
+  n=$((n + 1))
+  sleep 0.01
+done
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "a background sleep and a sleep in a loop body are not fixed pauses before an assertion"
+else
+  fail "the fixed-sleep check flagged a sleep that is not before an assertion (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 20: a sleep with a trailing comment before an assertion is still fixed ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+sleep 0.5  # let the worker settle
+grep -q "^merged:" "$FIX/status" && pass "merged" || fail "not merged"
+F
+sleep_line=$(grep -n '^[[:space:]]*sleep 0\.5' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] \
+  && grep -qF "tests/test-demo.sh:$sleep_line" <<< "$LINT_OUT" \
+  && grep -qF 'then an assertion on line' <<< "$LINT_OUT"; then
+  pass "a sleep with a trailing comment before an assertion fails the lint"
+else
+  fail "the lint accepted a fixed sleep with a trailing comment (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
+echo "=== Test 21: a here-document body holding the shape does not fail the lint ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+cat > "$FIX/tests/fixture-body.sh" << 'BODY'
+sleep 2
+grep -q "^merged:" "$FIX/status" && pass "merged" || fail "not merged"
+BODY
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "a here-document body is skipped instead of read as suite code"
+else
+  fail "the fixed-sleep check read a here-document body (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.saved" "$FIX/tests/test-demo.sh"
+
 kp_test_finish LINT

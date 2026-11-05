@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Lint every shell script (bin/*, lib/*.sh, tests/*.sh) and every node module (lib/*.mjs):
 # `bash -n` and `node --check` for syntax, then shellcheck (settings in .shellcheckrc).
-# Every suite has to be a leg of the CI matrix and have a row in docs/testing.md, and no
-# page the citation check reads may cite a source file by line number (tests/doc-citations.sh).
+# Every suite has to be a leg of the CI matrix and have a row in docs/testing.md, the fixed
+# sleeps before assertions check below has to stay quiet, and no page the citation check
+# reads may cite a source file by line number (tests/doc-citations.sh).
 # The README/docs CLI-reference check runs in both directions: every parsed flag and
 # KINGPIN_* variable has to be documented, and every flag a docs page shows has to reach
 # docs/cli.md.
@@ -88,6 +89,71 @@ if [ -n "$missing_rows" ] || [ -n "$stale_rows" ]; then
     done <<< "$stale_rows"
   fi
   echo "lint: give every suite a row in docs/testing.md, and drop the rows of deleted suites" >&2
+  exit 1
+fi
+
+# A bare `sleep` whose next non-blank line asserts is a fixed pause where the suite needs a
+# poll: the work it waits for has no bound, so a loaded runner reads the state before the
+# thing happened and the suite fails for a reason unrelated to the code (issue #179). Six
+# suites had each grown their own poll loop for it before the waits landed in tests/lib.sh.
+# A trailing comment on the sleep line is still that pause, so the pattern allows one. A
+# comment or an assignment between the pause and the assertion ends the inspection, because
+# a suite that captures a value and then asserts is setup, not a race this check can read.
+# The body of a here-document is data, not suite code, so its lines are skipped: a fixture
+# may show the rejected shape without tripping the check (issue #179 review L1).
+sleep_hits=()
+for f in tests/test-*.sh; do
+  [ -f "$f" ] || continue
+  found=$(awk -v file="$f" '
+    function open_heredoc(text,    i, rest, quote, close_at) {
+      while ((i = index(text, "<<")) > 0) {
+        rest = substr(text, i + 2)
+        if (substr(rest, 1, 1) == "<") { text = substr(rest, 2); continue }
+        tab_strip = 0
+        if (substr(rest, 1, 1) == "-") { tab_strip = 1; rest = substr(rest, 2) }
+        sub(/^[ \t]+/, "", rest)
+        quote = substr(rest, 1, 1)
+        if (quote == "\047" || quote == "\"") {
+          rest = substr(rest, 2)
+          close_at = index(rest, quote)
+          if (close_at == 0) { text = rest; continue }
+          heredoc = substr(rest, 1, close_at - 1)
+        } else if (match(rest, /^[A-Za-z_][^ \t;&|<>()]*/)) {
+          heredoc = substr(rest, 1, RLENGTH)
+        } else {
+          text = rest
+          continue
+        }
+        return
+      }
+    }
+    heredoc != "" {
+      body = $0
+      if (tab_strip) sub(/^\t+/, "", body)
+      if (body == heredoc) heredoc = ""
+      next
+    }
+    {
+      if ($0 !~ /^[[:space:]]*#/) open_heredoc($0)
+      if ($0 ~ /^[[:space:]]*sleep[[:space:]]+[0-9]+(\.[0-9]+)?[[:space:]]*(#.*)?$/) { sleep_line = NR; sleep_text = $0; next }
+      if ($0 ~ /^[[:space:]]*$/) next
+      if (sleep_line && ($0 ~ /pass "/ || $0 ~ /fail "/)) {
+        printf "%s:%d: %s, then an assertion on line %d\n", file, sleep_line, sleep_text, NR
+      }
+      sleep_line = 0
+    }
+  ' "$f" || true)
+  [ -n "$found" ] || continue
+  while IFS= read -r hit; do
+    sleep_hits+=("$hit")
+  done <<< "$found"
+done
+if [ "${#sleep_hits[@]}" -gt 0 ]; then
+  echo "lint: these suites pause and then assert once, which races the work they wait for:" >&2
+  for hit in "${sleep_hits[@]}"; do
+    echo "  $hit" >&2
+  done
+  echo "lint: wait with kp_wait_until <seconds> <cmd...> for a positive wait, or kp_holds_for <seconds> <cmd...> when nothing must happen, both in tests/lib.sh" >&2
   exit 1
 fi
 

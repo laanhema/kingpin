@@ -80,16 +80,6 @@ export KP_TEST_GH_LOG=$T/gh-calls.log
 : > "$KP_TEST_GH_LOG"
 : > "$T/curator-calls.log"
 
-wait_until() { # <tries> <cmd...>: poll every 0.1 s until the command succeeds.
-  local tries=$1
-  shift
-  for _ in $(seq 1 "$tries"); do
-    if "$@" >/dev/null 2>&1; then return 0; fi
-    sleep 0.1
-  done
-  return 1
-}
-
 curator_calls() {
   if [ -f "$T/curator-calls.log" ]; then
     wc -l < "$T/curator-calls.log" | tr -d ' '
@@ -167,8 +157,7 @@ echo "=== Test 1: threshold ==="
 reset_state
 seed_critiques 2
 run_watch
-sleep 0.5
-[ "$(curator_calls)" = "0" ] && pass "two pending critiques start no curator" || fail "a curator started below the threshold"
+kp_holds_for 0.5 calls_eq 0 && pass "two pending critiques start no curator" || fail "a curator started below the threshold"
 [ ! -f "$KINGPIN_HOME/curator/last-run" ] && pass "a below-threshold tick claims no day" || fail "a below-threshold tick claimed the day"
 
 # Test 2: a live fleet task holds the trigger back
@@ -177,8 +166,7 @@ reset_state
 seed_critiques 3
 mk_live_task busy
 run_watch
-sleep 0.5
-[ "$(curator_calls)" = "0" ] && pass "a live task keeps the curator from starting" || fail "a curator started with a live task in the fleet"
+kp_holds_for 0.5 calls_eq 0 && pass "a live task keeps the curator from starting" || fail "a curator started with a live task in the fleet"
 ! watch_out | grep -q "task curator is still live" && pass "an ordinary busy fleet adds no curator diagnostic" || fail "the busy gate printed a curator diagnostic: $(watch_out)"
 
 # Test 3: an empty landing lane is required too
@@ -188,35 +176,31 @@ seed_critiques 3
 mk_live_task busy
 touch "$KINGPIN_HOME/tasks/busy/landing_in_progress"
 run_watch
-sleep 0.5
-[ "$(curator_calls)" = "0" ] && pass "landing_in_progress keeps the curator from starting" || fail "a curator started during a landing"
+kp_holds_for 0.5 calls_eq 0 && pass "landing_in_progress keeps the curator from starting" || fail "a curator started during a landing"
 
 reset_state
 seed_critiques 3
 printf 'ghost\n' > "$KINGPIN_HOME/projects/demo.landing_queue"
 "$KP_BIN/kingpin-curate" --auto >/dev/null 2>&1 || true
-sleep 0.5
-[ "$(curator_calls)" = "0" ] && pass "a pending project landing keeps the curator from starting" || fail "a curator started with a queued landing"
+kp_holds_for 0.5 calls_eq 0 && pass "a pending project landing keeps the curator from starting" || fail "a curator started with a queued landing"
 
 reset_state
 seed_critiques 3
 mk_live_task holder
 printf 'holder\n' > "$KINGPIN_HOME/projects/demo.landing"
 run_watch
-sleep 0.5
-[ "$(curator_calls)" = "0" ] && pass "a live landing holder keeps the curator from starting" || fail "a curator started while a landing holder was live"
+kp_holds_for 0.5 calls_eq 0 && pass "a live landing holder keeps the curator from starting" || fail "a curator started while a landing holder was live"
 
 # Test 4: at most one launch per calendar day
 echo "=== Test 4: once a day ==="
 reset_state
 seed_critiques 3
 run_watch
-wait_until 100 calls_eq 1 && pass "an idle fleet with three critiques starts one curator" || fail "the curator did not start (calls=$(curator_calls))"
+kp_wait_until 10 calls_eq 1 && pass "an idle fleet with three critiques starts one curator" || fail "the curator did not start (calls=$(curator_calls))"
 [ "$(last_run_day)" = "$(date +%F)" ] && pass "the run claims today's day stamp" || fail "the day stamp is wrong: $(last_run_day)"
 sleep 1
 run_watch
-sleep 0.5
-[ "$(curator_calls)" = "1" ] && pass "a second idle moment the same day starts nothing" || fail "a second curator started the same day"
+kp_holds_for 0.5 calls_eq 1 && pass "a second idle moment the same day starts nothing" || fail "a second curator started the same day"
 # The operator landed the first PR: archive the finished curator record and free
 # the fleet, then pretend the day has rolled over.
 "$KP_BIN/kingpin" "done" curator >/dev/null 2>&1 || true
@@ -225,7 +209,7 @@ seed_critiques 3
 mkdir -p "$KINGPIN_HOME/curator"
 printf '1\n2000-01-01\n' > "$KINGPIN_HOME/curator/last-run"
 run_watch
-wait_until 100 calls_eq 1 && pass "a fresh day starts exactly one more curator" || fail "a fresh day did not start a curator (calls=$(curator_calls))"
+kp_wait_until 10 calls_eq 1 && pass "a fresh day starts exactly one more curator" || fail "a fresh day did not start a curator (calls=$(curator_calls))"
 [ "$(last_run_day)" = "$(date +%F)" ] && pass "the fresh-day run claims the new day" || fail "the fresh-day run did not claim the day"
 
 # Test 5: an existing window is a reported no-op, a dead pane is reaped
@@ -254,7 +238,7 @@ for _ in $(seq 1 40); do
 done
 [ "$dead" = "1" ] && pass "dead curator pane staged" || fail "could not stage a dead curator pane"
 run_watch
-wait_until 100 calls_eq 1 && pass "a dead curator pane is reaped and replaced" || fail "no curator after the dead pane (calls=$(curator_calls))"
+kp_wait_until 10 calls_eq 1 && pass "a dead curator pane is reaped and replaced" || fail "no curator after the dead pane (calls=$(curator_calls))"
 watch_out | grep -q "reaped dead curator window" && pass "the dead-window reap is reported" || fail "reap not reported: $(watch_out)"
 tmux set-option -g remain-on-exit off
 
@@ -286,15 +270,15 @@ auto_a=$!
 auto_b=$!
 wait "$auto_a" 2>/dev/null || true
 wait "$auto_b" 2>/dev/null || true
-wait_until 100 calls_eq 1 && pass "two parallel triggers start exactly one curator" || fail "parallel triggers started $(curator_calls) curators"
+kp_wait_until 10 calls_eq 1 && pass "two parallel triggers start exactly one curator" || fail "parallel triggers started $(curator_calls) curators"
 
 # Test 7: the marker at PR-open records the URL and is idempotent
 echo "=== Test 7: marker at PR open ==="
 reset_state
 seed_critiques 3
 run_watch
-wait_until 100 calls_eq 1 || fail "the seed run did not start a curator"
-wait_until 100 test -f "$KINGPIN_HOME/tasks/c1/critique.consumed" || test -f "$KINGPIN_HOME/archive/c1/critique.consumed" \
+kp_wait_until 10 calls_eq 1 || fail "the seed run did not start a curator"
+kp_wait_until 10 test -f "$KINGPIN_HOME/tasks/c1/critique.consumed" || test -f "$KINGPIN_HOME/archive/c1/critique.consumed" \
   && pass "a real run consumes the batch" \
   || fail "the batch was not consumed"
 pr_marker=""
@@ -389,8 +373,7 @@ cur_branch="curator/$(date +%F)"
 stuck_pr="https://github.com/laanhema/skills/pull/55"
 mk_curator_record "$cur_branch" "$stuck_pr"
 run_watch
-sleep 0.5
-[ "$(curator_calls)" = "0" ] && pass "a live curator record starts no curator" || fail "a curator started over a live record"
+kp_holds_for 0.5 calls_eq 0 && pass "a live curator record starts no curator" || fail "a curator started over a live record"
 watch_out | grep -q "task curator is still live" \
   && pass "the live curator record is named in the tick output" \
   || fail "the tick said nothing about the live record: $(watch_out)"
@@ -450,7 +433,7 @@ grep -q "could not launch the curator" "$T/launch.out" \
 [ ! -f "$KINGPIN_HOME/curator/last-run" ] && pass "a failed launch does not claim the day" || fail "a failed launch claimed the day"
 [ ! -d "$KINGPIN_HOME/tasks/curator" ] && pass "a failed launch leaves no half-written curator record" || fail "tasks/curator survived a failed launch"
 run_watch
-wait_until 100 calls_eq 1 && pass "the next tick retries the launch" || fail "the next tick did not retry (calls=$(curator_calls))"
+kp_wait_until 10 calls_eq 1 && pass "the next tick retries the launch" || fail "the next tick did not retry (calls=$(curator_calls))"
 
 # Test 13: land refuses a PR that is not in the skills repository
 echo "=== Test 13: land target repository ==="
