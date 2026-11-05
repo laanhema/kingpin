@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # worker dossier and handover templates: the files ship together, the sections the contract relies on stay,
-# the diffs keep a static fallback and the page passes the report gate.
+# the header pills sit on the pixel grid, the option rows keep their shape, the diffs keep a static
+# fallback, the shared style block stays identical and the page passes the report gate.
 #
 # assets/lavish/worker-dossier/ is what every worker's report.html and every page handed to the boss
 # is copied from, so a missing section, a lost Lavish guard or a prose regression there spreads to
@@ -32,6 +33,43 @@ check_badge_wrap() {
       *) echo "td > .badge lost its wrap declaration: $d" >&2; return 1 ;;
     esac
   done
+}
+
+# check_pills <file>: 0 when the header pills carry the odd height and the cap-height trim block.
+# A 12px capital is 9px tall, so only an odd pill height can put its ink on the grid. The @supports
+# block is inert on DaisyUI's inline-flex badge, so the height and the sans face are what land it.
+check_pills() {
+  local f=$1 n
+  grep -q '@supports (text-box: trim-both cap alphabetic)' "$f" || { echo "no @supports block for the cap-height trim" >&2; return 1; }
+  perl -0ne 'exit(/@supports \(text-box: trim-both cap alphabetic\)\s*\{[^}]*text-box:\s*trim-both cap alphabetic/ ? 0 : 1)' "$f" || { echo "the @supports block lost its text-box declaration" >&2; return 1; }
+  grep -q '\.badge-pill { height: 25px; }' "$f" || { echo "the header pill rule lost height: 25px" >&2; return 1; }
+  # Count inside the header badge row: a class added to a table pill must not stand in for a header
+  # pill that lost it.
+  n=$(perl -0ne 'if (/<div class="flex gap-2 items-center flex-wrap">(.*?)<\/div>/s) { my $n = () = $1 =~ /badge-pill/g; print $n }' "$f")
+  n=${n:-0}
+  [ "$n" -eq 3 ] || { echo "expected badge-pill on the 3 header pills, found $n" >&2; return 1; }
+}
+
+# check_option_rows <file>: 0 when every option row is a bold title over a description, the
+# control carries the measured nudge onto that title's ink, and the label leads its state pill.
+check_option_rows() {
+  local f=$1 rows titles
+  grep -q '\.q-option input { margin-top: calc(\.2rem + 1px); flex: none; }' "$f" || { echo "the option control lost its 1px nudge" >&2; return 1; }
+  rows=$(grep -c 'class="q-option"' "$f" || true)
+  titles=$(grep -c 'class="q-option".*class="text-sm font-semibold' "$f" || true)
+  [ "$rows" -gt 0 ] && [ "$titles" -eq "$rows" ] || { echo "an option row has no bold title ($titles of $rows)" >&2; return 1; }
+  grep -q 'badge-outline badge-sm">Option B</span> <span class="badge badge-success badge-sm">RECOMMENDED' "$f" || { echo "the state pill leads the option label" >&2; return 1; }
+}
+
+# check_shared_style <dir>: 0 when the two templates carry the same shared style block, up to the
+# last shared rule. The how-to comment also mentions <style>, so the range is anchored at the real
+# tag: an unanchored one restarts at the comment and runs to the end of the file.
+check_shared_style() {
+  local dir=$1 a b
+  a=$(sed -n '/^<style>$/,/^  \.kp-diff \.kp-fallback/p' "$dir/template.html")
+  b=$(sed -n '/^<style>$/,/^  \.kp-diff \.kp-fallback/p' "$dir/handover.html")
+  [ -n "$a" ] || { echo "template.html has no anchored style block" >&2; return 1; }
+  [ "$a" = "$b" ] || { echo "the shared style block drifted between the two templates" >&2; return 1; }
 }
 
 # check_dir <dir>: 0 when the folder is a complete, self-contained, gate-clean template.
@@ -73,6 +111,15 @@ check_dir() {
   [ "$cols" -ge 3 ] || { echo "expected a colgroup on each of the 3 tables, found $cols" >&2; return 1; }
   # A pill in a narrow column wraps inside its border instead of spilling.
   check_badge_wrap "$dir/template.html" || return 1
+  # The header pills sit on the pixel grid, and the two templates share one style block.
+  check_pills "$dir/template.html" || return 1
+  # Rule 4: the id pill keeps the mono face and the status pill takes the sans one.
+  grep -q 'class="[^"]*font-mono[^"]*">kp-000-example-task' "$dir/template.html" || { echo "the task id pill lost its mono face" >&2; return 1; }
+  if grep -q 'class="[^"]*font-mono[^"]*">READY FOR REVIEW' "$dir/template.html"; then
+    echo "the status pill still uses the mono face" >&2
+    return 1
+  fi
+  check_shared_style "$dir" || return 1
   # The action bar: both buttons, each backed by a handler that guards window.lavish.
   buttons=$(grep -c 'onclick="kp\(Action\|RequestChanges\)(' "$dir/template.html" || true)
   [ "$buttons" -ge 2 ] || { echo "the action bar lost a button ($buttons of 2)" >&2; return 1; }
@@ -117,6 +164,17 @@ check_handover() {
   [ "$recs" -eq 1 ] || { echo "expected exactly one RECOMMENDED option, found $recs" >&2; return 1; }
   # A pill in a narrow column wraps inside its border instead of spilling.
   check_badge_wrap "$f" || return 1
+  # The header pills, the option rows and the kind and status pills' faces.
+  check_pills "$f" || return 1
+  check_option_rows "$f" || return 1
+  if grep -q 'class="[^"]*font-mono[^"]*">PROPOSAL' "$f"; then
+    echo "the kind pill still uses the mono face" >&2
+    return 1
+  fi
+  if grep -q 'class="[^"]*font-mono[^"]*">DECISION NEEDED' "$f"; then
+    echo "the status pill still uses the mono face" >&2
+    return 1
+  fi
   forms=$(grep -c 'data-lavish-question=' "$f" || true)
   [ "$forms" -ge 2 ] || { echo "expected at least 2 decision forms, found $forms" >&2; return 1; }
   handlers=$(grep -c '<form [^>]*data-lavish-question="[^"]*"[^>]*onsubmit="kpAnswer(event)"' "$f" || true)
@@ -235,6 +293,55 @@ perl -0pi -e 's|(  td > \.badge \{[^}]*\}\n)|$1  td > .badge { white-space: nowr
 out=$(check_dir "$T/no-badge-override" 2>&1) && fail "a template with a second cell-badge rule passed" || pass "a template with a second cell-badge rule fails"
 echo "$out" | grep -q 'expected exactly one td > .badge rule' && pass "the failure names the second rule" || fail "unclear reason: $out"
 
+rm -rf "$T/no-trim"
+cp -a "$TPL" "$T/no-trim"
+sed -i '/@supports (text-box: trim-both cap alphabetic) {/,/^  }$/d' "$T/no-trim/template.html"
+out=$(check_dir "$T/no-trim" 2>&1) && fail "a template without the cap-height trim passed" || pass "a template without the cap-height trim fails"
+echo "$out" | grep -q 'no @supports block for the cap-height trim' && pass "the failure names the missing @supports block" || fail "unclear reason: $out"
+
+rm -rf "$T/no-text-box"
+cp -a "$TPL" "$T/no-text-box"
+sed -i 's|\.badge { text-box: trim-both cap alphabetic; }|.badge { text-box: normal; }|' "$T/no-text-box/template.html"
+out=$(check_dir "$T/no-text-box" 2>&1) && fail "an @supports block without its text-box declaration passed" || pass "an @supports block without its text-box declaration fails"
+echo "$out" | grep -q 'lost its text-box declaration' && pass "the failure names the lost text-box declaration" || fail "unclear reason: $out"
+
+rm -rf "$T/no-pill-height"
+cp -a "$TPL" "$T/no-pill-height"
+sed -i 's|\.badge-pill { height: 25px; }|.badge-pill { height: 24px; }|' "$T/no-pill-height/template.html"
+out=$(check_dir "$T/no-pill-height" 2>&1) && fail "a template with an even header pill height passed" || pass "a template with an even header pill height fails"
+echo "$out" | grep -q 'the header pill rule lost height: 25px' && pass "the failure names the lost pill height" || fail "unclear reason: $out"
+
+rm -rf "$T/no-pill-class"
+cp -a "$TPL" "$T/no-pill-class"
+sed -i '0,/badge-outline badge-pill text-xs/s//badge-outline text-xs/' "$T/no-pill-class/template.html"
+out=$(check_dir "$T/no-pill-class" 2>&1) && fail "a header pill without the pill class passed" || pass "a header pill without the pill class fails"
+echo "$out" | grep -q 'expected badge-pill on the 3 header pills, found 2' && pass "the failure names the missing pill class" || fail "unclear reason: $out"
+
+rm -rf "$T/pill-elsewhere"
+cp -a "$TPL" "$T/pill-elsewhere"
+sed -i '0,/badge-outline badge-pill text-xs/s//badge-outline text-xs/' "$T/pill-elsewhere/template.html"
+sed -i 's|<span class="badge badge-error badge-xs">High</span>|<span class="badge badge-error badge-pill badge-xs">High</span>|' "$T/pill-elsewhere/template.html"
+out=$(check_dir "$T/pill-elsewhere" 2>&1) && fail "a copy with badge-pill moved to a table pill passed" || pass "a table pill's badge-pill does not stand in for a header pill"
+echo "$out" | grep -q 'expected badge-pill on the 3 header pills, found 2' && pass "the failure counts the header row only" || fail "unclear reason: $out"
+
+rm -rf "$T/no-id-mono"
+cp -a "$TPL" "$T/no-id-mono"
+sed -i 's|badge-pill font-mono text-xs">kp-000-example-task|badge-pill text-xs">kp-000-example-task|' "$T/no-id-mono/template.html"
+out=$(check_dir "$T/no-id-mono" 2>&1) && fail "a task id pill without the mono face passed" || pass "a task id pill without the mono face fails"
+echo "$out" | grep -q 'the task id pill lost its mono face' && pass "the failure names the id pill's mono face" || fail "unclear reason: $out"
+
+rm -rf "$T/status-mono"
+cp -a "$TPL" "$T/status-mono"
+sed -i 's|badge-pill font-semibold text-xs">READY FOR REVIEW|badge-pill font-mono font-semibold text-xs">READY FOR REVIEW|' "$T/status-mono/template.html"
+out=$(check_dir "$T/status-mono" 2>&1) && fail "a mono status pill passed" || pass "a mono status pill fails"
+echo "$out" | grep -q 'the status pill still uses the mono face' && pass "the failure names the mono status pill" || fail "unclear reason: $out"
+
+rm -rf "$T/shared-drift"
+cp -a "$TPL" "$T/shared-drift"
+sed -i 's|td, th { line-height: 1.25rem; }|td, th { line-height: 1.5rem; }|' "$T/shared-drift/template.html"
+out=$(check_dir "$T/shared-drift" 2>&1) && fail "a template whose shared style drifted passed" || pass "a template whose shared style drifted fails"
+echo "$out" | grep -q 'the shared style block drifted between the two templates' && pass "the failure names the style drift" || fail "unclear reason: $out"
+
 rm -rf "$T/unslop"
 cp -a "$TPL" "$T/unslop"
 sed -i 's/Run the unslop skill/Skip the prose pass/' "$T/unslop/template.html"
@@ -287,6 +394,42 @@ cp -a "$TPL" "$T/h-badge-override"
 perl -0pi -e 's|(  td > \.badge \{[^}]*\}\n)|$1  td > .badge { white-space: nowrap; height: var(--size); }\n|' "$T/h-badge-override/handover.html"
 out=$(check_handover "$T/h-badge-override" 2>&1) && fail "a handover template with a second cell-badge rule passed" || pass "a handover template with a second cell-badge rule fails"
 echo "$out" | grep -q 'expected exactly one td > .badge rule' && pass "the failure names the second rule" || fail "unclear reason: $out"
+
+rm -rf "$T/h-no-trim"
+cp -a "$TPL" "$T/h-no-trim"
+sed -i '/@supports (text-box: trim-both cap alphabetic) {/,/^  }$/d' "$T/h-no-trim/handover.html"
+out=$(check_handover "$T/h-no-trim" 2>&1) && fail "a handover template without the cap-height trim passed" || pass "a handover template without the cap-height trim fails"
+echo "$out" | grep -q 'no @supports block for the cap-height trim' && pass "the handover failure names the missing @supports block" || fail "unclear reason: $out"
+
+rm -rf "$T/h-no-pill-height"
+cp -a "$TPL" "$T/h-no-pill-height"
+sed -i 's|\.badge-pill { height: 25px; }|.badge-pill { height: 24px; }|' "$T/h-no-pill-height/handover.html"
+out=$(check_handover "$T/h-no-pill-height" 2>&1) && fail "a handover template with an even header pill height passed" || pass "a handover template with an even header pill height fails"
+echo "$out" | grep -q 'the header pill rule lost height: 25px' && pass "the handover failure names the lost pill height" || fail "unclear reason: $out"
+
+rm -rf "$T/h-kind-mono"
+cp -a "$TPL" "$T/h-kind-mono"
+sed -i 's|badge badge-primary badge-pill text-xs">PROPOSAL|badge badge-primary badge-pill font-mono text-xs">PROPOSAL|' "$T/h-kind-mono/handover.html"
+out=$(check_handover "$T/h-kind-mono" 2>&1) && fail "a handover template with a mono kind pill passed" || pass "a handover template with a mono kind pill fails"
+echo "$out" | grep -q 'the kind pill still uses the mono face' && pass "the failure names the mono kind pill" || fail "unclear reason: $out"
+
+rm -rf "$T/h-status-mono"
+cp -a "$TPL" "$T/h-status-mono"
+sed -i 's|badge-warning badge-pill font-semibold text-xs">DECISION NEEDED|badge-warning badge-pill font-mono font-semibold text-xs">DECISION NEEDED|' "$T/h-status-mono/handover.html"
+out=$(check_handover "$T/h-status-mono" 2>&1) && fail "a handover template with a mono status pill passed" || pass "a handover template with a mono status pill fails"
+echo "$out" | grep -q 'the status pill still uses the mono face' && pass "the handover failure names the mono status pill" || fail "unclear reason: $out"
+
+rm -rf "$T/h-no-option-title"
+cp -a "$TPL" "$T/h-no-option-title"
+sed -i '0,/class="text-sm font-semibold text-white">A: Do nothing/s//class="text-sm text-gray-200">A: Do nothing/' "$T/h-no-option-title/handover.html"
+out=$(check_handover "$T/h-no-option-title" 2>&1) && fail "an option row without its bold title passed" || pass "an option row without its bold title fails"
+echo "$out" | grep -q 'an option row has no bold title (8 of 9)' && pass "the failure names the option row without a title" || fail "unclear reason: $out"
+
+rm -rf "$T/h-badge-order"
+cp -a "$TPL" "$T/h-badge-order"
+sed -i 's|<span class="badge badge-outline badge-sm">Option B</span> <span class="badge badge-success badge-sm">RECOMMENDED</span>|<span class="badge badge-success badge-sm">RECOMMENDED</span> <span class="badge badge-outline badge-sm">Option B</span>|' "$T/h-badge-order/handover.html"
+out=$(check_handover "$T/h-badge-order" 2>&1) && fail "an option card with the state pill first passed" || pass "an option card with the state pill first fails"
+echo "$out" | grep -q 'the state pill leads the option label' && pass "the failure names the badge order" || fail "unclear reason: $out"
 
 rm -rf "$T/h-annot"
 cp -a "$TPL" "$T/h-annot"
