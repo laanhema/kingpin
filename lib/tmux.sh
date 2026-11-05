@@ -10,6 +10,13 @@
 # reach a worker. Every command that resolves a worker window goes through `kp_tmux`,
 # so the socket is passed in one place.
 #
+# A session is matched exactly (issues #149, #181): `kp_tmux_has_session` pins the
+# target with tmux's `=` form, because a bare name is a unique prefix and a server
+# holding only `kingpin-workers` would otherwise answer for `kingpin`. The one
+# deliberate prefix resolver is `kp_tmux_resolve_session`, which a spawn uses for its
+# explicit target (`--tmux-session` or `KINGPIN_TMUX_SESSION`) and then records the
+# name tmux resolved.
+#
 # The window is resolved by name first and by id second (issue #149). Tmux window ids
 # are per server and restart at `@0`, so an id recorded before the server died can
 # name a different task's window; a reader that prefers the id blindly types into a
@@ -100,12 +107,39 @@ kp_tmux_socket_warn_line() {
   return 0
 }
 
+# kp_tmux_has_session <socket> <name>
+# Exit 0 when <socket> holds a session named exactly <name>. The target is written
+# `=<name>`, tmux's exact-match form: a bare name is a unique prefix, so a server
+# holding only `kingpin-workers` answers yes for `kingpin` and the caller starts
+# nothing (issues #149, #181). An empty name answers no. Prints nothing.
+kp_tmux_has_session() {
+  local sock=${1:-} name=${2:-}
+  [ -n "$name" ] || return 1
+  kp_tmux "$sock" has-session -t "=$name" 2>/dev/null
+}
+
+# kp_tmux_resolve_session <socket> <target>
+# Print the name of the session <target> names on <socket>, accepting an
+# unambiguous prefix the way tmux does on purpose, which is what a spawn's explicit
+# target (`--tmux-session`, `KINGPIN_TMUX_SESSION`) promises (issue #152). Exit 1
+# when no session matches and print nothing. A caller that must not accept a prefix
+# uses kp_tmux_has_session.
+kp_tmux_resolve_session() {
+  local sock=${1:-} target=${2:-} name=''
+  [ -n "$target" ] || return 1
+  kp_tmux "$sock" has-session -t "$target" 2>/dev/null || return 1
+  name=$(kp_tmux "$sock" display-message -p -t "$target" '#S' 2>/dev/null) || return 1
+  [ -n "$name" ] || return 1
+  printf '%s\n' "$name"
+}
+
 # kp_tmux_ensure_session <socket> <session>
 # Make sure <session> exists on <socket>, creating it detached when it does not.
-# Prints nothing; the caller reports a failure.
+# The check is exact, so a `kingpin-workers` session beside it is never taken for
+# `kingpin` (issue #181). Prints nothing; the caller reports a failure.
 kp_tmux_ensure_session() {
   local sock=${1:-} session=${2:?}
-  kp_tmux "$sock" has-session -t "$session" 2>/dev/null \
+  kp_tmux_has_session "$sock" "$session" \
     || kp_tmux "$sock" new-session -d -s "$session" -n home
 }
 

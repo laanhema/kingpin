@@ -160,6 +160,13 @@ kp_curate_window_state() {
     tmux)
       KP_MUX=$mux
       [ -n "$session" ] || session=$sock
+      # `kingpin:curator` is a session prefix, so a `kingpin-workers` session beside
+      # `kingpin` answers for it and this probe would read, reap or refuse another
+      # session's window (issues #149, #181). Both halves are pinned to an exact
+      # match; a target with no colon (a window id) is left alone.
+      case $target in
+        *:*) target="=${target%%:*}:=${target#*:}" ;;
+      esac
       ;;
     *)
       printf 'unknown\n'
