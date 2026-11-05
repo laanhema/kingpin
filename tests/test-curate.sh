@@ -33,7 +33,12 @@ git -C "$T/skills" config "url.$T/skills-origin.git.insteadOf" https://github.co
 cat > "$T/bin/gh" << 'GHEOF'
 #!/usr/bin/env bash
 case "$*" in
-  "pr view "*"--json baseRepository,headRefName"*)
+  # gh 2.97.0 has no baseRepository field for `gh pr view --json`.
+  *"--json"*baseRepository*)
+    echo 'gh: Unknown JSON field: "baseRepository"' >&2
+    exit 1
+    ;;
+  "api repos/laanhema/skills/pulls/"*)
     branch=$(sed -n 's/^BRANCH=//p' "${KINGPIN_HOME:?}/tasks/curator/task.env" 2>/dev/null | tail -n 1)
     printf 'laanhema/skills %s\n' "${branch:-main}"
     ;;
