@@ -92,31 +92,18 @@ start_shutdown_daemon() {
   fixture_pids+=("$started_pid")
 }
 
-wait_for_args() { # <pid> <fixed string>: the process is visible in ps with that argv
-  local pid=$1 needle=$2 _
-  for _ in $(seq 1 50); do
-    ps -o args= -p "$pid" 2>/dev/null | grep -qF -- "$needle" && return 0
-    sleep 0.1
-  done
-  return 1
+argv_has() { # <pid> <fixed string>: the process is visible in ps with that argv
+  ps -o args= -p "$1" 2>/dev/null | grep -qF -- "$2"
 }
 
-wait_for_daemon() { # <dir> <pid>: the ps table sees the daemon once it has started
-  local dir=$1 pid=$2 _
-  for _ in $(seq 1 50); do
-    kp_browser_daemons_under "$dir" | cut -f1 | grep -qx "$pid" && return 0
-    sleep 0.1
-  done
-  return 1
+daemon_seen() { # <dir> <pid>: the ps table sees the daemon once it has started
+  kp_browser_daemons_under "$1" | cut -f1 | grep -qx "$2"
 }
 
 child_pid() { # <pid-file>: the pid the fake daemon recorded for its child
-  local file=$1 _
-  for _ in $(seq 1 50); do
-    [ -s "$file" ] && { head -n 1 "$file"; return 0; }
-    sleep 0.1
-  done
-  return 1
+  local file=$1
+  kp_wait_until 5 test -s "$file" || return 1
+  head -n 1 "$file"
 }
 
 stop_fixtures() {
@@ -138,9 +125,9 @@ start_fake_daemon "$t1_dir"; t1_pid=$started_pid
 start_fake_daemon "$t1_wt/sub"; t1_wt_pid=$started_pid
 start_fake_daemon "$t1_dir_other"; t1_other_pid=$started_pid
 start_marker_mention "$t1_dir"; t1_mention_pid=$started_pid
-wait_for_daemon "$t1_dir" "$t1_pid" && pass "t1: the daemon in the task folder is in the table" || fail "t1: daemon $t1_pid never appeared in the table"
-wait_for_daemon "$t1_wt/sub" "$t1_wt_pid" && pass "t1: the daemon below the worktree is in the table" || fail "t1: daemon $t1_wt_pid never appeared in the table"
-wait_for_args "$t1_mention_pid" "chrome-devtools-axi-bridge.log" || fail "t1: the log-tail process never started"
+kp_wait_until 5 daemon_seen "$t1_dir" "$t1_pid" && pass "t1: the daemon in the task folder is in the table" || fail "t1: daemon $t1_pid never appeared in the table"
+kp_wait_until 5 daemon_seen "$t1_wt/sub" "$t1_wt_pid" && pass "t1: the daemon below the worktree is in the table" || fail "t1: daemon $t1_wt_pid never appeared in the table"
+kp_wait_until 5 argv_has "$t1_mention_pid" "chrome-devtools-axi-bridge.log" || fail "t1: the log-tail process never started"
 t1_rows=$(kp_browser_daemons_under "$t1_dir")
 printf '%s\n' "$t1_rows" | cut -f1 | grep -qx "$t1_pid" && pass "t1: a task folder matches its own daemon" || fail "t1: task folder did not match its daemon: $t1_rows"
 printf '%s\n' "$t1_rows" | cut -f1 | grep -qx "$t1_mention_pid" && fail "t1: a process that only mentions the bridge name was listed as a daemon" || pass "t1: a process that only mentions the bridge name is not a daemon"
@@ -182,10 +169,10 @@ start_fake_daemon "$t2_bystander_dir"; t2_other_daemon_pid=$started_pid
 start_plain_process "$t2_dir"; t2_plain_pid=$started_pid
 start_marker_mention "$t2_dir"; t2_mention_pid=$started_pid
 start_shutdown_daemon "$t2_dir"; t2_shutdown_pid=$started_pid; t2_shutdown_child_file=$started_child_file
-wait_for_daemon "$t2_dir" "$t2_dir_pid" || fail "t2: the task-folder daemon never started"
-wait_for_daemon "$t2_wt" "$t2_wt_pid" || fail "t2: the worktree daemon never started"
-wait_for_daemon "$t2_bystander_dir" "$t2_other_daemon_pid" || fail "t2: the bystander daemon never started"
-wait_for_args "$t2_mention_pid" "chrome-devtools-axi-bridge.log" || fail "t2: the log-tail process never started"
+kp_wait_until 5 daemon_seen "$t2_dir" "$t2_dir_pid" || fail "t2: the task-folder daemon never started"
+kp_wait_until 5 daemon_seen "$t2_wt" "$t2_wt_pid" || fail "t2: the worktree daemon never started"
+kp_wait_until 5 daemon_seen "$t2_bystander_dir" "$t2_other_daemon_pid" || fail "t2: the bystander daemon never started"
+kp_wait_until 5 argv_has "$t2_mention_pid" "chrome-devtools-axi-bridge.log" || fail "t2: the log-tail process never started"
 t2_shutdown_pgid=$(ps -o pgid= -p "$t2_shutdown_pid" 2>/dev/null | tr -d ' ' || true)
 [ "$t2_shutdown_pgid" = "$t2_shutdown_pid" ] && pass "t2: the shutdown-forking daemon leads its own process group" || fail "t2: daemon $t2_shutdown_pid is in group $t2_shutdown_pgid, so the group-kill case cannot be exercised"
 t2_child=$(child_pid "$t2_dir_child_file" || true)
@@ -226,7 +213,7 @@ exit 0
 TREEEOF
 chmod +x "$T/t3-bin/treehouse"
 start_fake_daemon "$t3_slot"; t3_leftover_pid=$started_pid
-wait_for_daemon "$t3_slot" "$t3_leftover_pid" && pass "t3: a daemon was left in the slot before the spawn" || fail "t3: the leftover daemon never started"
+kp_wait_until 5 daemon_seen "$t3_slot" "$t3_leftover_pid" && pass "t3: a daemon was left in the slot before the spawn" || fail "t3: the leftover daemon never started"
 t3_err=$T/t3-spawn.err
 t3_spawn=$(PATH="$T/t3-bin:$PATH" "$KP_BIN/kingpin" spawn demo-auto --text "browser fixture two" --id t3-second 2>"$t3_err")
 t3_wt=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/t3-second/task.env" 2>/dev/null || true)
@@ -256,7 +243,7 @@ EOF
 make_idle_task t4-with-browser "$t4_wt" "ready: branch=b review=APPROVE report=none"
 make_idle_task t4-clean "$t4_wt" "issue: #4 fixture"
 start_fake_daemon "$KINGPIN_HOME/tasks/t4-with-browser"; t4_pid=$started_pid
-wait_for_daemon "$KINGPIN_HOME/tasks/t4-with-browser" "$t4_pid" || fail "t4: the list fixture daemon never started"
+kp_wait_until 5 daemon_seen "$KINGPIN_HOME/tasks/t4-with-browser" "$t4_pid" || fail "t4: the list fixture daemon never started"
 t4_list=$("$KP_BIN/kingpin" list)
 printf '%s\n' "$t4_list" | grep -qE "↳ Browser: +1 daemon, [0-9][0-9]* MB \(pid $t4_pid\)" && pass "t4: list names one daemon, its memory and its pid" || fail "t4: list browser line wrong: $(printf '%s\n' "$t4_list" | grep '↳ Browser:' || echo none)"
 t4_lines=$(printf '%s\n' "$t4_list" | grep -c "↳ Browser:" || true)

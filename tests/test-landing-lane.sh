@@ -30,6 +30,9 @@ EOF
   printf '%s\n' "$status" > "$d/status"
 }
 lane_window() { tmux new-window -d -t kingpin: -n "$1" cat; }
+# pane_has <tmux-target> <text>: the pane's recent scrollback holds <text>. The depth stays
+# shallow so a line from an earlier dispatch in the same window cannot pass a later check.
+pane_has() { tmux capture-pane -pt "$1" -S -5 2>/dev/null | grep -qF -- "$2"; }
 lane_holder() { cat "$KINGPIN_HOME/projects/$1.landing" 2>/dev/null || true; }
 lane_queue() {
   local q="$KINGPIN_HOME/projects/$1.landing_queue"
@@ -231,8 +234,7 @@ lane_window lane-next
 "$KP_BIN/kingpin" land lane-next >/dev/null
 [ "$(lane_holder demo-lane)" = "lane-next" ] && pass "the next land acquires the released lane" || fail "the next land did not acquire: holder=$(lane_holder demo-lane)"
 [ "$(lane_marker lane-next)" = "yes" ] && pass "the next task received landing_sent" || fail "the next task's landing_sent is missing"
-sleep 0.1
-tmux capture-pane -pt kingpin:lane-next -S -5 | grep -q "/issue-flow-done 72" && pass "the next task was dispatched /issue-flow-done 72" || fail "no /issue-flow-done 72 in the next task's pane"
+kp_wait_until 2 pane_has kingpin:lane-next "/issue-flow-done 72" && pass "the next task was dispatched /issue-flow-done 72" || fail "no /issue-flow-done 72 in the next task's pane"
 lane_drop lane-dead demo-lane
 lane_drop lane-next demo-lane
 
@@ -292,8 +294,7 @@ printf 'lane-archived\nlane-live\n' > "$KINGPIN_HOME/projects/demo-q.landing_que
 [ -z "$(lane_queue demo-q)" ] && pass "the queue is empty after the drain" || fail "the queue still holds $(lane_queue demo-q)"
 ! grep -qx "lane-archived" "$KINGPIN_HOME/projects/demo-q.landing_queue" && pass "the archived id is gone from the queue" || fail "the archived id is still queued"
 grep -q "dropping lane-archived from the demo-q queue" "$T/watch-q.err" && pass "the drop is named on the watch console" || fail "no drop line on stderr: $(cat "$T/watch-q.err")"
-sleep 0.1
-tmux capture-pane -pt kingpin:lane-live -S -5 | grep -q "/issue-flow-done 72" && pass "the drained entry was dispatched /issue-flow-done 72" || fail "no /issue-flow-done 72 in the drained task's pane"
+kp_wait_until 2 pane_has kingpin:lane-live "/issue-flow-done 72" && pass "the drained entry was dispatched /issue-flow-done 72" || fail "no /issue-flow-done 72 in the drained task's pane"
 lane_drop lane-live demo-q
 
 lane_task lane-live2 demo-q2

@@ -10,6 +10,11 @@ kp_test_project
 
 kp_test_stub_lavish
 
+# window_name_is <window-id> <name>: the window still carries the name Kingpin gave it.
+window_name_is() {
+  [ "$(tmux display-message -p -t "$1" '#{window_name}')" = "$2" ]
+}
+
 # Test 15: workers are tracked by tmux window ID, so renames and moves keep working
 echo "=== Test 15: window ID tracking (rename, move, gone, legacy) ==="
 mk_t15() {
@@ -175,13 +180,8 @@ export KINGPIN_AGY=$T/fake-renamer
 t18_wid=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$KINGPIN_HOME/tasks/t18-pinned/task.env")
 [ "$(tmux display-message -p -t "$t18_wid" '#{automatic-rename} #{allow-rename}')" = "0 0" ] && pass "t18: automatic-rename and allow-rename are off on the task window" || fail "t18: window options not pinned: $(tmux display-message -p -t "$t18_wid" '#{automatic-rename} #{allow-rename}')"
 touch "$KINGPIN_HOME/tasks/t18-pinned/go"
-for _ in $(seq 1 50); do
-  [ -f "$KINGPIN_HOME/tasks/t18-pinned/emitted" ] && break
-  sleep 0.1
-done
-sleep 0.3
-[ -f "$KINGPIN_HOME/tasks/t18-pinned/emitted" ] && pass "t18: worker emitted the rename escape sequence" || fail "t18: worker never emitted the escape sequence"
-[ "$(tmux display-message -p -t "$t18_wid" '#{window_name}')" = "t18-pinned" ] && pass "t18: escape-sequence rename did not change the window name" || fail "t18: window renamed to $(tmux display-message -p -t "$t18_wid" '#{window_name}')"
+kp_wait_until 5 test -f "$KINGPIN_HOME/tasks/t18-pinned/emitted" && pass "t18: worker emitted the rename escape sequence" || fail "t18: worker never emitted the escape sequence"
+kp_holds_for 0.3 window_name_is "$t18_wid" t18-pinned && pass "t18: escape-sequence rename did not change the window name" || fail "t18: window renamed to $(tmux display-message -p -t "$t18_wid" '#{window_name}')"
 "$KP_BIN/kingpin" "done" t18-pinned --force >/dev/null
 export KINGPIN_AGY=$T/fake-worker
 tmux set-option -gu automatic-rename

@@ -67,6 +67,12 @@ gate_clean() { # <name> <status-line>
     && pass "$1: the dispatch carries no closing keyword" || fail "$1: the dispatch repeats the preamble: $gate_pane"
   gate_done "$1"
 }
+
+# pane_has <tmux-target> <text>: the pane's recent scrollback holds <text>. The depth stays
+# shallow so a line from an earlier case in the same window cannot pass a later check.
+pane_has() {
+  tmux capture-pane -pt "$1" -S -8 2>/dev/null | grep -qF -- "$2"
+}
 gate_refused() { # <name> <status-line> <text the message must name>
   gate_case "$1" "$2"
   [ "$gate_rc" -ne 0 ] && pass "$1: refused with exit $gate_rc" || fail "$1: landed an unreadable verdict (exit 0)"
@@ -267,8 +273,7 @@ out=$("$KP_BIN/kingpin" land t14-nits)
 last=$(printf '%s\n' "$out" | tail -n 1)
 echo "$last" | grep -q "starting landing" && pass "clean fix pass: output says landing is starting" || fail "clean fix pass output unclear: $out"
 echo "$last" | grep -q "^OK: sent" && fail "kingpin-send's OK line hides the outcome line" || pass "outcome line is the last line"
-sleep 0.1
-tmux capture-pane -pt kingpin:t14-nits -S -8 | grep -q "/issue-flow-done 314" && pass "clean fix pass dispatched /issue-flow-done" || fail "no /issue-flow-done after clean fix pass"
+kp_wait_until 2 pane_has kingpin:t14-nits "/issue-flow-done 314" && pass "clean fix pass dispatched /issue-flow-done" || fail "no /issue-flow-done after clean fix pass"
 tmux kill-window -t kingpin:t14-nits 2>/dev/null || true
 rm -f "$KINGPIN_HOME/projects/demo-t14.landing"
 

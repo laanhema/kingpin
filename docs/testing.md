@@ -7,7 +7,9 @@ Run the lint and the full test suite from the repository root:
 ```bash
 # Lint: bash -n + shellcheck over bin/*, lib/*.sh and tests/*.sh (config in .shellcheckrc),
 # node --check over lib/*.mjs, a check that every tests/test-*.sh is a leg of the CI matrix
-# and has a row in the suite table below, a check that no page cites a source file by line,
+# and has a row in the suite table below, a check that no tests/test-*.sh puts a fixed
+# `sleep` directly before an assertion (wait with kp_wait_until or kp_holds_for instead),
+# a check that no page cites a source file by line,
 # a check in both directions over README.md and docs/*.md: every parsed flag and KINGPIN_*
 # variable is documented, and every `--` flag in a backtick span and every KINGPIN_* name a
 # docs page shows appears in the per-command reference docs/cli.md (a host tool's own flag
@@ -20,7 +22,7 @@ Run the lint and the full test suite from the repository root:
 for s in tests/test-*.sh; do "./$s" || break; done
 ```
 
-The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmux server, scratch repo, helpers):
+The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmux server, scratch repo, the `kp_wait_until` and `kp_holds_for` waits, other helpers):
 
 | Suite | Covers |
 |---|---|
@@ -62,7 +64,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-browser-daemons.sh` | browser daemons: ownership by working directory, the process-tree stop, and the memory total the `↳ Browser:` line shows |
 | `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
 | `test-agents-paths.sh` | `.agents` artifact policy: nothing under `plans/`, `reports/` or `reviews/` is tracked, other `.agents/` files stay trackable, and the lint fails on a forced artifact |
-| `test-lint.sh` | the lint itself: a syntax error in a shell script or a `lib/*.mjs` module fails it by name, a suite with no CI leg fails the matrix check, a suite with no row in the table above fails by name, and a source file cited by line fails by name |
+| `test-lint.sh` | the lint itself: a syntax error in a shell script or a `lib/*.mjs` module fails it by name, a suite with no CI leg fails the matrix check, a suite with no row in the table above fails by name, a fixed `sleep` before an assertion fails by name with its line and both waits, and a source file cited by line fails by name |
 
 Run one suite with `./tests/test-<name>.sh`. Run suites one at a time in a checkout: `test-lifecycle.sh`, `test-acceptance.sh` and `test-landing-lane.sh` briefly replace `bin/kingpin-send` with a stub (restored on exit), so a second suite that sends keys to a worker during that window hits the stub and fails. CI legs do not clash, since each runs in its own checkout.
 

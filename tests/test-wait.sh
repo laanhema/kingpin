@@ -60,8 +60,7 @@ set -e
 wait_log="$T/wait-test.log"
 "$KP_BIN/kingpin" wait --timeout 10 > "$wait_log" 2>&1 &
 wait_pid=$!
-sleep 0.5
-kill -0 "$wait_pid" 2>/dev/null && pass "kingpin-wait blocks while idle" || fail "kingpin-wait exited prematurely"
+kp_holds_for 0.5 kill -0 "$wait_pid" && pass "kingpin-wait blocks while idle" || fail "kingpin-wait exited prematurely"
 
 t_start=$(date +%s)
 echo "needs-input: test question" >> "$task_w_dir/status"

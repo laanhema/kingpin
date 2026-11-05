@@ -16,7 +16,7 @@ each task back as a visual review dossier. This file describes the repository.
 | `lib/launch.sh` | The worker preamble and the per-harness `launch.sh` generator, shared by `kingpin-spawn` and `kingpin-restore`, so a restored worker gets the preamble and harness wiring a spawned one does |
 | `worker/` | `preamble.md`, the text a spawned worker receives, `curator-preamble.md`, the contract the curator worker receives, `hooks.json`, its Claude Code settings, and `pi/kingpin-harness.ts`, the Pi extension a spawn loads with `-e` |
 | `orchestrator/contract.md` | The orchestrator contract. `kingpin guard install` copies it into the main checkout's untracked instruction sources; no harness loads this tracked file directly |
-| `tests/` | One shell suite per feature, with shared setup in `tests/lib.sh` |
+| `tests/` | One shell suite per feature, with shared setup in `tests/lib.sh`, including the `kp_wait_until` and `kp_holds_for` waits |
 | `docs/` | The long-form pages `README.md` links to: per-command usage, flags and exit codes (`cli.md`), fleet overview, worker permissions, harness wiring, and testing |
 | `assets/` | Images for `README.md` |
 
@@ -24,8 +24,8 @@ each task back as a visual review dossier. This file describes the repository.
 
 ```bash
 # bash -n, shellcheck, node --check over lib/*.mjs, the CI-matrix and suite-table checks,
-# the README/docs CLI-reference check in both directions, the path:line citation check,
-# and the tracked .agents artifact check
+# the fixed-sleep-before-an-assertion check, the README/docs CLI-reference check in both
+# directions, the path:line citation check, and the tracked .agents artifact check
 ./tests/lint.sh
 
 # One suite at a time (two suites briefly swap bin/kingpin-send)
@@ -41,6 +41,7 @@ A rule that only a person keeps is one that goes stale; each rule below has a ch
 | `bin/*`, `lib/*.sh` and `tests/*.sh` parse and pass shellcheck 0.11.0, and `lib/*.mjs` parses | `tests/lint.sh` |
 | every `tests/test-*.sh` is a leg of the CI matrix | `tests/lint.sh` |
 | every `tests/test-*.sh` has a row in `docs/testing.md` and every row names a suite that exists | `tests/lint.sh` |
+| a suite waits with `kp_wait_until` or `kp_holds_for`, never a fixed `sleep` before an assertion | `tests/lint.sh` |
 | every parsed flag and `KINGPIN_*` variable is documented, and every one a page shows reaches `docs/cli.md` | `tests/readme-cli-reference.sh` |
 | no page the citation check reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md`, `worker/*.md`) cites a source file by line number | `tests/doc-citations.sh` |
 | nothing under `.agents/plans`, `.agents/reports` or `.agents/reviews` is tracked | `tests/lint.sh` |
