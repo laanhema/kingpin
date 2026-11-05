@@ -79,5 +79,3 @@ t24_rc=0
 [ "$t24_rc" -eq 2 ] && pass "t24: lock bogus exits 2" || fail "t24: lock bogus rc=$t24_rc"
 
 kp_test_finish CLI-HELP
-
-exit 1
