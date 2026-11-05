@@ -9,7 +9,7 @@ each task back as a visual review dossier. This file describes the repository.
 | Path | What it holds |
 |---|---|
 | `bin/` | One executable per command (`kingpin-spawn`, `kingpin-guard`, `kingpin-wait`, ...), plus `bin/kingpin`, the dispatcher that maps `kingpin <cmd>` to them |
-| `lib/` | Shared helpers: `status.sh` (the status-file protocol and the live-versus-archived task path readers, sourced by the scripts), `tmux.sh`, `browser.sh` (the browser-daemon table, its working-directory ownership rule, the process-tree stop and the size formatter `kingpin done`, `kingpin spawn` and `kingpin list` share), `landing.sh`, `mutex.sh` (the mutex sequence shared by the landing lane and `kingpin-lock`, plus the non-blocking `kp_mutex_try` the auto-curate gate uses), `curator.sh` (the automatic daily curator gate, applied-critique marker and trigger, sourced by `kingpin-curate`, `kingpin-watch` and `kingpin-done`), `supervisor.sh` (the fleet supervisor's pidfile, sourced by `kingpin-watch`, `kingpin-lock` and `kingpin list`), `afk.sh` (the session-scoped AFK state, sourced by `kingpin-afk`, `kingpin-watch`, `kingpin-lock` and `kingpin list`), `session.sh` (the session-pid detection `kingpin-lock` and `kingpin-afk` share), `exclude.sh` (the per-worktree exclude file a spawn points at, and the guard-owned block of the main checkout's exclude file, sourced by `kingpin-spawn`, `kingpin-done` and `kingpin-guard`), `portable.sh` (the GNU-then-BSD clock and file-mtime readers), `gitdir.sh` (the git-dir, common-dir and git-path readers the linked-worktree checks use, which read the plain `git rev-parse` form so they work on git 2.30, sourced by `kingpin-spawn`, `kingpin-sync`, `kingpin-guard` and the suites), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, `codex-trust`, ...) |
+| `lib/` | Shared helpers: `status.sh` (the status-file protocol and the live-versus-archived task path readers), `tmux.sh`, `browser.sh` (the browser-daemon table, its working-directory ownership rule, the process-tree stop and the size formatter), `landing.sh`, `mutex.sh` (the mutex sequence, plus the non-blocking `kp_mutex_try` the auto-curate gate uses), `curator.sh` (the automatic daily curator gate, applied-critique marker and trigger), `supervisor.sh` (the fleet supervisor's pidfile), `afk.sh` (the session-scoped AFK state), `session.sh` (the session-pid detection), `exclude.sh` (the per-worktree exclude file a spawn points at, and the guard-owned block of the main checkout's exclude file), `portable.sh` (the GNU-then-BSD clock and file-mtime readers), `gitdir.sh` (the git-dir, common-dir and git-path readers the linked-worktree checks use, which read the plain `git rev-parse` form so they work on git 2.30), and the node helpers `*.mjs` (`guard-hook`, `slug`, `report-diffs`, `codex-trust`, ...) |
 | `lib/tmux.sh` | The fleet's tmux socket (`KINGPIN_TMUX_SOCKET`, default `kingpin`), the one `kp_tmux` helper every command reaches tmux through, the two socket-health readers (`kp_tmux_socket_reachable`, whether a server answers, and `kp_tmux_socket_warn_line`, the one stderr line a dead server prints for the tasks on it), and the one window resolver: finds a task's window by name first and by the recorded id second, decides whether the harness really runs in it (`harness.pid` against the pane pid), records a new id, and is the only place that creates or respawns a window |
 | `lib/mux.sh` | The one terminal contract every command calls (issue #144): selects the backend from `KINGPIN_MUX` or from the task record's `MUX=` line, and delegates every verb (find, capture, send, activity, rename, kill, ensure-session, create, record-id) to `lib/tmux.sh` or to the Herdr backend. The tmux delegations are today's `kp_tmux`/`kp_window_*` calls unchanged, and the Herdr file is loaded only when a record or `KINGPIN_MUX` selects it |
 | `lib/mux-herdr.sh` | The Herdr backend of `lib/mux.sh`: the one place the `herdr` binary is reached, session resolution (`KINGPIN_HERDR_SESSION`, then the inherited `HERDR_SESSION`), the label-first pane resolver with its pane-id fallback, and the verbs written against herdr 0.9.3 (`pane read` prints plain text, `pane list`/`pane get` print JSON). It refuses to create a terminal until the spawn path is migrated (issue #144 phase E) |
@@ -23,13 +23,29 @@ each task back as a visual review dossier. This file describes the repository.
 ## Validation
 
 ```bash
-# bash -n, shellcheck, node --check over lib/*.mjs, the CI-matrix check, the README/docs
-# CLI-reference check in both directions, and the tracked .agents artifact check
+# bash -n, shellcheck, node --check over lib/*.mjs, the CI-matrix and suite-table checks,
+# the README/docs CLI-reference check in both directions, the path:line citation check,
+# and the tracked .agents artifact check
 ./tests/lint.sh
 
 # One suite at a time (two suites briefly swap bin/kingpin-send)
 ./tests/test-<suite>.sh
 ```
+
+## Rules and their checks
+
+A rule that only a person keeps is one that goes stale; each rule below has a check, so add the check with the rule.
+
+| Rule | Enforced by |
+|---|---|
+| `bin/*`, `lib/*.sh` and `tests/*.sh` parse and pass shellcheck 0.11.0, and `lib/*.mjs` parses | `tests/lint.sh` |
+| every `tests/test-*.sh` is a leg of the CI matrix | `tests/lint.sh` |
+| every `tests/test-*.sh` has a row in `docs/testing.md` and every row names a suite that exists | `tests/lint.sh` |
+| every parsed flag and `KINGPIN_*` variable is documented, and every one a page shows reaches `docs/cli.md` | `tests/readme-cli-reference.sh` |
+| no page the citation check reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md`, `worker/*.md`) cites a source file by line number | `tests/doc-citations.sh` |
+| nothing under `.agents/plans`, `.agents/reports` or `.agents/reviews` is tracked | `tests/lint.sh` |
+| `tmux` is reached only through `lib/tmux.sh` and `herdr` only through `lib/mux-herdr.sh` | the static checks in `tests/test-tmux-isolation.sh` and `tests/test-mux.sh` |
+| a dossier or handover page passes the prose, layout and palette `check` | `bin/kingpin-report check` |
 
 ## Lavish Artifacts
 

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Lint every shell script (bin/*, lib/*.sh, tests/*.sh) and every node module (lib/*.mjs):
 # `bash -n` and `node --check` for syntax, then shellcheck (settings in .shellcheckrc).
+# Every suite has to be a leg of the CI matrix and have a row in docs/testing.md, and no
+# page the citation check reads may cite a source file by line number (tests/doc-citations.sh).
 # The README/docs CLI-reference check runs in both directions: every parsed flag and
 # KINGPIN_* variable has to be documented, and every flag a docs page shows has to reach
 # docs/cli.md.
@@ -62,6 +64,33 @@ if [ "$ci_suites" != "$disk_suites" ]; then
   exit 1
 fi
 
+# Every suite needs a row in the docs/testing.md table, and every row needs a suite that
+# exists: a suite with no row is one a reader cannot find, and a row naming a deleted suite
+# sends the reader to a file that is gone (issue #178). Both sides are deduplicated, so a
+# repeated row is harmless.
+[ -f docs/testing.md ] || { echo "lint: docs/testing.md is missing; every suite needs a row in it" >&2; exit 1; }
+# shellcheck disable=SC2016 # the backticks are markdown code-span literals, not a command
+table_suites=$(sed -n 's/^| `test-\([a-z0-9-]*\)\.sh`.*/\1/p' docs/testing.md | LC_ALL=C sort -u)
+disk_suites=$(printf '%s\n' tests/test-*.sh | sed 's|^tests/test-||; s|\.sh$||' | LC_ALL=C sort -u)
+missing_rows=$(comm -13 <(printf '%s\n' "$table_suites") <(printf '%s\n' "$disk_suites"))
+stale_rows=$(comm -23 <(printf '%s\n' "$table_suites") <(printf '%s\n' "$disk_suites"))
+if [ -n "$missing_rows" ] || [ -n "$stale_rows" ]; then
+  if [ -n "$missing_rows" ]; then
+    echo "lint: docs/testing.md has no row for these suites:" >&2
+    while IFS= read -r s; do
+      echo "  test-$s.sh" >&2
+    done <<< "$missing_rows"
+  fi
+  if [ -n "$stale_rows" ]; then
+    echo "lint: docs/testing.md lists these suites that do not exist:" >&2
+    while IFS= read -r s; do
+      echo "  test-$s.sh" >&2
+    done <<< "$stale_rows"
+  fi
+  echo "lint: give every suite a row in docs/testing.md, and drop the rows of deleted suites" >&2
+  exit 1
+fi
+
 # The .agents/ artifact directories are in .gitignore, and an ignore rule never applies to a
 # path that is already in the index: a force-add, or a branch cut before the rules landed,
 # keeps the file tracked on every clone (issue #84). Catch it here, before it spreads.
@@ -83,6 +112,10 @@ fi
 
 if [ -x "$script_dir/readme-cli-reference.sh" ]; then
   "$script_dir/readme-cli-reference.sh" --root "$root"
+fi
+
+if [ -x "$script_dir/doc-citations.sh" ]; then
+  "$script_dir/doc-citations.sh" --root "$root"
 fi
 
 echo "lint: ${#files[@]} shell files and ${#node_files[@]} node files clean"
