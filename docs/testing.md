@@ -32,7 +32,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-watch-supervisor.sh` | `watch`: single supervisor with a pidfile, stale reclaim, `list` line, `lock acquire` warning, events handled across turns |
 | `test-lock.sh` | `lock`: lifecycle, collisions, stale locks, recorded harness, parallel acquire race, atomic publish, release ownership |
 | `test-afk.sh` | `afk`: state lifecycle, the 8-hour default, TTL and dead-pid expiry, the `list` line, `lock release` clearing it, the clean-land path and its note, the listener's no-double-land markers, every refusal, the Stop-hook boundary the note leaves alone, a disarmed fix pass that lands without a note, an auto-mode NITS pass that gains one, and the skipped review listener |
-| `test-curate.sh` | `curate` |
+| `test-curate.sh` | `curate`: lifecycle, quote robustness, and a run on a server that holds only a same-prefix session |
 | `test-curate-auto.sh` | the automatic daily curator trigger: threshold, idle/live-fleet and landing gates, the finished-record shapes that let the run start (`merged:`, `failed: no status:`, `done_cleaned`, a terminal record still carrying `landing_in_progress`), an interrupted `cleanup-refused:` record that holds the run, a finished curator record the reconcile cannot archive that both paths leave intact, the in-flight record named on stderr, once-a-day stamp, existing-window no-op, concurrency, the applied marker, `kingpin land curator`, and no delay to a landing |
 | `test-land.sh` | `land`: review-gate verdicts, fix pass, re-review, output wording |
 | `test-landing-lane.sh` | land lane: dead worker window, dead queue entry, concurrent lands, append-after-release |
@@ -42,7 +42,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-restore.sh` | `restore` after a tmux server restart, the `DEAD` list state, and the shared window resolver |
 | `test-send-peek.sh` | `send` and `peek` |
 | `test-spawn.sh` | `spawn`: window ID tracking, descriptive slugs, pinned window names |
-| `test-tmux-isolation.sh` | tmux isolation: the operator's session and server killed under a running worker, the static check that every tmux call goes through `lib/tmux.sh`, `list` naming the socket and session, and `done` closing the fleet window |
+| `test-tmux-isolation.sh` | tmux isolation: the operator's session and server killed under a running worker, the static checks that every tmux call goes through `lib/tmux.sh` and every session check goes through `kp_tmux_has_session`, `list` naming the socket and session, and `done` closing the fleet window |
 | `test-fleet-server.sh` | the fleet tmux server: a dead server read as `DEAD`, the socket warning, the supervisor's restore sweep, and the spawn line that says it started the server |
 | `test-mux.sh` | the mux contract: `KINGPIN_MUX` selection, the per-record mux reader, every verb's argv against a fake Herdr, and the two static checks |
 | `test-mux-herdr-real.sh` | the opt-in real-Herdr leg: `lib/mux.sh`'s backend against the installed `herdr`, self-skipping when it is absent |

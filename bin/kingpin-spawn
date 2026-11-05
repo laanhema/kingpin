@@ -80,13 +80,13 @@ resolve_tmux_session() {
   local explicit=${1:-} explicit_source=${2:-} name attached resolved=''
   local all=() attached_names=() joined='' measured='' attached_joined=''
   if [ -n "$explicit" ]; then
-    kp_tmux "$fleet_socket" has-session -t "$explicit" 2>/dev/null \
-      || die "refusing to spawn: the session '$explicit' from $explicit_source does not exist on the fleet's tmux server (tmux -L $fleet_socket); start it, or name a session that does"
-    # has-session accepts an unambiguous prefix, so record the name tmux resolved it to:
-    # storing the prefix would name a session that does not exist (issue #152).
-    resolved=$(kp_tmux "$fleet_socket" display-message -p -t "$explicit" '#S' 2>/dev/null) || resolved=''
+    # An explicit target accepts an unambiguous prefix on purpose, and the name tmux
+    # resolved it to is recorded: storing the prefix would name a session that does
+    # not exist (issue #152). The helper is the one deliberate prefix resolver; every
+    # other session check goes through the exact kp_tmux_has_session (issue #181).
+    resolved=$(kp_tmux_resolve_session "$fleet_socket" "$explicit") || resolved=''
     [ -n "$resolved" ] \
-      || die "refusing to spawn: the session '$explicit' from $explicit_source could not be resolved to a session name"
+      || die "refusing to spawn: the session '$explicit' from $explicit_source does not exist on the fleet's tmux server (tmux -L $fleet_socket); start it, or name a session that does"
     target_session=$resolved
     target_session_source="from $explicit_source"
     return 0
@@ -388,7 +388,7 @@ printf '%s\n' "$prompt" > "$task_dir/prompt.txt"
 # the worktree.
 : > "$task_dir/status"
 
-kp_tmux "$fleet_socket" has-session -t "$target_session" 2>/dev/null \
+kp_tmux_has_session "$fleet_socket" "$target_session" \
   || die "the session $target_session is gone from the fleet's tmux server (tmux -L $fleet_socket)"
 
 # kingpin-wait does not report "exited" for a task with a fresh marker: task.env

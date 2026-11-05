@@ -436,7 +436,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
         exit 0
         ;;
       dead)
-        kp_tmux "$fleet_socket" kill-window -t kingpin:curator 2>/dev/null || true
+        kp_tmux "$fleet_socket" kill-window -t '=kingpin:=curator' 2>/dev/null || true
         info "reaped dead curator window kingpin:curator"
         ;;
       unknown)
@@ -502,7 +502,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
         die "curator window kingpin:curator is already active"
         ;;
       dead)
-        kp_tmux "$fleet_socket" kill-window -t kingpin:curator 2>/dev/null || true
+        kp_tmux "$fleet_socket" kill-window -t '=kingpin:=curator' 2>/dev/null || true
         echo "kingpin-curate: reaped dead curator window kingpin:curator"
         ;;
       unknown)
