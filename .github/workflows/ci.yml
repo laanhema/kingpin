@@ -62,3 +62,21 @@ jobs:
         run: git --version && tmux -V && node --version && treehouse --version
       - name: tests/test-${{ matrix.suite }}.sh
         run: ./tests/test-${{ matrix.suite }}.sh
+
+  # The one check `main` requires once the protection command in AGENTS.md has run: it passes
+  # only when every job above passed, and it runs even when one failed or was skipped, so a
+  # broken pull request shows a red required check instead of a pending one. A job added to
+  # this workflow joins `needs` below.
+  ci-ok:
+    needs: [lint, test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every needed job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          printf '%s\n' "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          printf '%s\n' "$NEEDS" | jq -e 'all(.[]; .result == "success")' >/dev/null \
+            || { echo "::error::a needed job did not succeed"; exit 1; }
