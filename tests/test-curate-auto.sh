@@ -22,7 +22,7 @@ git clone -q "$T/skills-origin.git" "$T/skills" 2>/dev/null
   git commit -qm "init"
   git push -q -u origin main
 )
-# The curator's target check compares gh's baseRepository with the origin URL, so
+# The curator's target check compares gh's base repository with the origin URL, so
 # the origin has to name a GitHub repository. The push above is already done; an
 # insteadOf rewrite keeps every later `git fetch`/`push` on the local bare repo so
 # no test reaches the network.
@@ -30,11 +30,12 @@ git -C "$T/skills" remote set-url origin https://github.com/laanhema/skills.git
 git -C "$T/skills" config "url.$T/skills-origin.git.insteadOf" https://github.com/laanhema/skills.git
 
 # A gh stub that records argv and answers the calls the curator flow makes. The
-# target answers are honest: the base is the repository the remote names, and the
-# head is the branch the skills checkout is really on. The curator's own
-# `--mark-applied` runs inside the tmux window, which does not inherit the
-# suite's KP_TEST_* variables, so the stub reads the exported KINGPIN_SKILLS_DIR
-# and logs to /dev/null when the log variable is not there.
+# target answers come from the REST pull request the check reads. gh 2.97.0 has no
+# `baseRepository` field for `pr view --json`, so the stub refuses that field the
+# way the real gh does: a regression to it fails here instead of passing quietly.
+# The curator's own `--mark-applied` runs inside the tmux window, which does not
+# inherit the suite's KP_TEST_* variables, so the stub reads the exported
+# KINGPIN_SKILLS_DIR and logs to /dev/null when the log variable is not there.
 cat > "$T/bin/gh" << 'GHEOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${KP_TEST_GH_LOG:-/dev/null}"
@@ -43,13 +44,23 @@ case "$*" in
   "pr merge"*) exit 0 ;;
 esac
 case "$*" in
-  # gh pr view <url> --json baseRepository,headRefName --jq ...
-  "pr view "*"--json baseRepository,headRefName"*)
-    case "${3:-}" in
-      *other-repo*) printf 'someone-else/other-repo curator/2026-01-01\n' ;;
-      */pull/9) printf 'laanhema/skills curator/1999-12-31\n' ;;
-      *) printf 'laanhema/skills %s\n' "$(git -C "${KINGPIN_SKILLS_DIR:?}" symbolic-ref --short HEAD)" ;;
-    esac
+  # gh 2.97.0 has no baseRepository field for `gh pr view --json`.
+  *"--json"*baseRepository*)
+    echo 'gh: Unknown JSON field: "baseRepository"' >&2
+    exit 1
+    ;;
+  "api repos/someone-else/other-repo/pulls/"*)
+    printf 'someone-else/other-repo curator/2026-01-01\n'
+    ;;
+  "api repos/laanhema/skills/pulls/9 --jq"*)
+    printf 'laanhema/skills curator/1999-12-31\n'
+    ;;
+  "api repos/laanhema/skills/pulls/500 --jq"*)
+    echo 'gh: Not Found (HTTP 404)' >&2
+    exit 1
+    ;;
+  "api repos/laanhema/skills/pulls/"*)
+    printf 'laanhema/skills %s\n' "$(git -C "${KINGPIN_SKILLS_DIR:?}" symbolic-ref --short HEAD)"
     ;;
   "pr view "*"--json state"*) echo MERGED ;;
   *) exit 0 ;;
@@ -477,10 +488,20 @@ done
 [ -n "$pr_marker" ] && grep -qxF "https://github.com/laanhema/skills/pull/7" "$pr_marker" \
   && pass "the applied marker records the PR URL" \
   || fail "critique.applied.*.pr missing or wrong: ${pr_marker:-none}"
+: > "$KP_TEST_GH_LOG"
 mark_out=$("$KP_BIN/kingpin-curate" --mark-applied "https://github.com/laanhema/skills/pull/7" 2>&1)
 echo "$mark_out" | grep -q "OK: marked 0 critique(s)" \
   && pass "marking an already-applied batch prints 0" \
   || fail "second mark-applied output: $mark_out"
+grep -qE "^api repos/laanhema/skills/pulls/7( |$)" "$KP_TEST_GH_LOG" \
+  && pass "the target check reads the PR through the REST call" \
+  || fail "no REST pull request read in the gh log: $(cat "$KP_TEST_GH_LOG")"
+! grep -q baseRepository "$KP_TEST_GH_LOG" \
+  && pass "the target check does not ask for the gh 2.97.0 field" \
+  || fail "the target check still asks for baseRepository: $(cat "$KP_TEST_GH_LOG")"
+grep -qE "^api repos/laanhema/skills/pulls/7 .*--hostname github\.com$" "$KP_TEST_GH_LOG" \
+  && pass "the target check addresses the host the PR URL names" \
+  || fail "no --hostname from the PR URL in the gh log: $(cat "$KP_TEST_GH_LOG")"
 dry_out=$("$KP_BIN/kingpin-curate" --dry-run 2>&1)
 echo "$dry_out" | grep -q "no pending skill critiques" \
   && pass "the dry run reports no pending critique after the marker" \
@@ -680,6 +701,32 @@ echo "$mark_out" | grep -q "not the skills origin" \
 [ -f "$KINGPIN_HOME/tasks/c1/critique" ] \
   && pass "the refused marker leaves the critique pending" \
   || fail "a foreign URL consumed the critique"
+
+# Test 15b: --mark-applied refuses a PR gh cannot read, and a URL that is not a PR
+echo "=== Test 15b: mark-applied unreadable PR ==="
+reset_state
+mkdir -p "$KINGPIN_HOME/tasks/c1" "$KINGPIN_HOME/curator/collected"
+printf 'critique c1\n' > "$KINGPIN_HOME/tasks/c1/critique"
+cp "$KINGPIN_HOME/tasks/c1/critique" "$KINGPIN_HOME/curator/collected/c1"
+printf '%s\n' "$KINGPIN_HOME/tasks/c1/critique" > "$KINGPIN_HOME/curator/batch-critiques.txt"
+mark_rc=0
+mark_out=$("$KP_BIN/kingpin-curate" --mark-applied "https://github.com/laanhema/skills/pull/500" 2>&1) || mark_rc=$?
+[ "$mark_rc" -eq 1 ] && pass "mark-applied refuses a PR gh cannot read" || fail "unreadable mark-applied exit=$mark_rc: $mark_out"
+echo "$mark_out" | grep -q "Not Found (HTTP 404)" \
+  && pass "the refusal names the gh error" \
+  || fail "refusal text: $mark_out"
+[ -f "$KINGPIN_HOME/tasks/c1/critique" ] \
+  && pass "the unreadable PR leaves the critique pending" \
+  || fail "an unreadable PR consumed the critique"
+mark_rc=0
+mark_out=$("$KP_BIN/kingpin-curate" --mark-applied "https://github.com/laanhema/skills/issues/7" 2>&1) || mark_rc=$?
+[ "$mark_rc" -eq 1 ] && pass "mark-applied refuses a URL that is not a pull request" || fail "non-PR mark-applied exit=$mark_rc: $mark_out"
+echo "$mark_out" | grep -q "is not a pull request URL" \
+  && pass "the non-PR refusal names the URL shape" \
+  || fail "refusal text: $mark_out"
+[ -f "$KINGPIN_HOME/tasks/c1/critique" ] \
+  && pass "the non-PR URL leaves the critique pending" \
+  || fail "a non-PR URL consumed the critique"
 
 # Test 16: a terminal curator record is archived without the merge verification
 echo "=== Test 16: terminal record reconcile ==="
