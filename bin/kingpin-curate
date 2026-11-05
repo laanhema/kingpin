@@ -414,8 +414,11 @@ if [ "$DRY_RUN" -eq 0 ]; then
         exit 0
         ;;
       dead)
-        kp_tmux "$fleet_socket" kill-window -t kingpin:curator 2>/dev/null || true
-        info "reaped dead curator window kingpin:curator"
+        if kp_tmux "$fleet_socket" kill-window -t kingpin:curator 2>/dev/null; then
+          info "reaped dead curator window kingpin:curator"
+        else
+          info "could not reap dead curator window kingpin:curator; a later run tries again"
+        fi
         ;;
       unknown)
         echo "kingpin-curate: the curator record names a mux this run cannot read; the automatic run skipped"
@@ -480,8 +483,11 @@ if [ "$DRY_RUN" -eq 0 ]; then
         die "curator window kingpin:curator is already active"
         ;;
       dead)
-        kp_tmux "$fleet_socket" kill-window -t kingpin:curator 2>/dev/null || true
-        echo "kingpin-curate: reaped dead curator window kingpin:curator"
+        if kp_tmux "$fleet_socket" kill-window -t kingpin:curator 2>/dev/null; then
+          echo "kingpin-curate: reaped dead curator window kingpin:curator"
+        else
+          echo "kingpin-curate: could not reap dead curator window kingpin:curator; a later run tries again" >&2
+        fi
         ;;
       unknown)
         die "the curator record names a mux this command cannot read"

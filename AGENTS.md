@@ -49,6 +49,7 @@ A rule that only a person keeps is one that goes stale; each rule below names wh
 | nothing under `.agents/` is tracked | `tests/lint.sh` |
 | `tmux` is reached only through `lib/tmux.sh` and `herdr` only through `lib/mux-herdr.sh` | the static checks in `tests/test-tmux-isolation.sh` and `tests/test-mux.sh` |
 | a dossier or handover page passes the prose, layout and palette `check` | `bin/kingpin-report check` |
+| a message or marker that reports a step is written only after the step's status is checked | review |
 | a test never silences a status it claims to check with `\|\| true` (reviews of #5, #75), and never runs an unbounded `wait` that hangs instead of failing (reviews of #99, #145) | review |
 
 ## Lavish Artifacts

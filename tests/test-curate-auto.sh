@@ -90,6 +90,12 @@ curator_calls() {
 
 calls_eq() { [ "$(curator_calls)" = "$1" ]; }
 
+# curator_pane_dead: the staged curator window's pane has exited. remain-on-exit
+# keeps the window, which is what lets the guard see a dead pane at all.
+curator_pane_dead() {
+  [ "$(tmux list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null || echo 0)" = "1" ]
+}
+
 # reset_state: forget every curator and task record but keep the project config.
 reset_state() {
   tmux kill-window -t kingpin:curator 2>/dev/null || true
@@ -230,17 +236,45 @@ reset_state
 seed_critiques 3
 tmux set-option -g remain-on-exit on
 tmux new-window -d -t kingpin: -n curator "bash -c 'exit 3'"
-dead=0
-for _ in $(seq 1 40); do
-  dead=$(tmux list-panes -t kingpin:curator -F '#{pane_dead}' 2>/dev/null || echo 0)
-  [ "$dead" = "1" ] && break
-  sleep 0.1
-done
-[ "$dead" = "1" ] && pass "dead curator pane staged" || fail "could not stage a dead curator pane"
+kp_wait_until 4 curator_pane_dead \
+  && pass "dead curator pane staged" || fail "could not stage a dead curator pane"
 run_watch
 kp_wait_until 10 calls_eq 1 && pass "a dead curator pane is reaped and replaced" || fail "no curator after the dead pane (calls=$(curator_calls))"
 watch_out | grep -q "reaped dead curator window" && pass "the dead-window reap is reported" || fail "reap not reported: $(watch_out)"
 tmux set-option -g remain-on-exit off
+
+# Test 5a: a refused reap is reported, not called done (issue #182)
+reset_state
+seed_critiques 3
+tmux set-option -g remain-on-exit on
+tmux new-window -d -t kingpin: -n curator "bash -c 'exit 3'"
+kp_wait_until 4 curator_pane_dead \
+  && pass "a dead curator pane is staged for the refused reap" \
+  || fail "could not stage a dead pane for the refused reap"
+mkdir -p "$T/failbin"
+cat > "$T/failbin/tmux" << FAILTMUX
+#!/usr/bin/env bash
+case " \$* " in
+  *" kill-window "*curator*) echo "tmux: refusing kill-window from the suite" >&2; exit 1 ;;
+esac
+exec "$T/bin/tmux" "\$@"
+FAILTMUX
+chmod +x "$T/failbin/tmux"
+PATH="$T/failbin:$PATH" run_watch
+watch_out | grep -q "could not reap dead curator window" \
+  && pass "an automatic run reports a refused reap" \
+  || fail "the automatic refused reap is silent: $(watch_out)"
+watch_out | grep -q "reaped dead curator window" \
+  && fail "the automatic run reported a refused reap as done: $(watch_out)" \
+  || pass "the automatic run does not report a refused reap as done"
+[ "$(last_run_day)" = "$(date +%F)" ] \
+  && pass "a refused reap still claims the day" \
+  || fail "a refused reap left the day unclaimed: $(last_run_day)"
+tmux list-windows -t kingpin -F '#{window_id} #{window_name}' \
+  | awk '$2 == "curator" { print $1 }' \
+  | while read -r w; do tmux kill-window -t "$w" 2>/dev/null || true; done
+tmux set-option -g remain-on-exit off
+reset_state
 
 # Test 5b: a record without TMUX_SOCKET is probed where its window really lives
 # ---------------------------------------------------------------------------
