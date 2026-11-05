@@ -9,6 +9,9 @@ set -euo pipefail
 kp_test_setup "tmux-isolation"
 kp_test_project
 
+# shellcheck source=../lib/tmux.sh
+. "$KP_ROOT/lib/tmux.sh"
+
 OPS_SOCKET="$TEST_SOCKET-ops"
 
 # Test 1: no command runs tmux behind the fleet's back
@@ -34,6 +37,56 @@ if [ -z "$raw" ]; then
 else
   fail "t1: these call tmux without kp_tmux (they would read the default server): $raw"
 fi
+
+# Test 1b: no command checks a session by a bare name (issues #149, #181)
+# ---------------------------------------------------------------------------
+# `has-session -t name` accepts a unique prefix, so a server holding only
+# `kingpin-workers` answers for `kingpin` and the caller creates nothing. The one
+# exact check is kp_tmux_has_session; the one deliberate prefix resolver is
+# kp_tmux_resolve_session, and both live in lib/tmux.sh. The scan is written so a
+# raw call anywhere in bin/ or lib/ fails it, and a fixture proves it cannot pass
+# vacuously.
+echo "--- Test 1b: every session check goes through kp_tmux_has_session ---"
+has_session_scan() {
+  local root=${1:?} dir dirs=()
+  for dir in "$root/bin" "$root/lib"; do
+    [ -d "$dir" ] && dirs+=("$dir")
+  done
+  [ "${#dirs[@]}" -gt 0 ] || return 0
+  grep -rnF 'has-session' "${dirs[@]}" 2>/dev/null \
+    | grep -vF -- "$root/lib/tmux.sh:" \
+    | grep -vE ':[0-9]+:[[:space:]]*#' || true
+}
+raw_sessions=$(has_session_scan "$KP_ROOT")
+if [ -z "$raw_sessions" ]; then
+  pass "t1b: no command calls has-session outside lib/tmux.sh (use kp_tmux_has_session)"
+else
+  fail "t1b: these check a session without kp_tmux_has_session (a prefix answers for another session): $raw_sessions"
+fi
+mkdir -p "$T/fixture/bin"
+# shellcheck disable=SC2016 # the fixture writes a literal tmux call, not a shell expansion
+printf '%s\n' 'kp_tmux "$sock" has-session -t x' > "$T/fixture/bin/raw"
+fixture_hit=$(has_session_scan "$T/fixture")
+if [ -n "$fixture_hit" ]; then
+  pass "t1b: the check catches a raw has-session"
+else
+  fail "t1b: the check missed a raw has-session"
+fi
+
+# Test 1c: the helper matches a session exactly, on a prefix-only server
+# ---------------------------------------------------------------------------
+# The fleet server this suite uses already holds `kingpin`, so the case the issue
+# names is measured on a second private server holding only `kingpin-workers`.
+echo "--- Test 1c: a session is matched exactly ---"
+pfx_socket="$TEST_SOCKET-prefix"
+tmux -L "$pfx_socket" new-session -d -s kingpin-workers -n home
+kp_tmux_has_session "$pfx_socket" kingpin && fail "t1c: a prefix-only server answered for kingpin" || pass "t1c: a prefix-only server does not answer for kingpin"
+kp_tmux_has_session "$pfx_socket" kingpin-workers && pass "t1c: the exact session matches" || fail "t1c: the exact session did not match"
+kp_tmux_has_session "$pfx_socket" kingpin-worker && fail "t1c: a shorter prefix matched" || pass "t1c: a shorter prefix matches nothing"
+kp_tmux_has_session "$pfx_socket" '' && fail "t1c: an empty name matched" || pass "t1c: an empty name matches nothing"
+kp_tmux_ensure_session "$pfx_socket" kingpin
+kp_tmux_has_session "$pfx_socket" kingpin && pass "t1c: ensure created the exact session" || fail "t1c: ensure did not create the exact session"
+tmux -L "$pfx_socket" kill-server 2>/dev/null || true
 
 # Test 2: a spawn from inside the operator's tmux session lands on the fleet server
 # ---------------------------------------------------------------------------

@@ -127,6 +127,25 @@ TMUX_TARGET=kingpin:$id
 EOF
 }
 
+# mk_task <id> <last-status-line> [done_cleaned]: a real task record whose last
+# worker line is the given one; `done_cleaned` adds the marker kingpin-done writes
+# after a successful cleanup. Unlike mk_live_task, this writes a status file.
+mk_task() { # <id> <last-status-line> [done_cleaned]
+  local id=$1 last=$2 marker=${3:-}
+  mkdir -p "$KINGPIN_HOME/tasks/$id"
+  cat > "$KINGPIN_HOME/tasks/$id/task.env" << EOF
+TASK_ID=$id
+PROJECT=demo-auto
+PROJECT_PATH=$T/proj
+HARNESS=claude
+MODE=review
+TMUX_TARGET=kingpin:$id
+EOF
+  printf '%s\n' "$last" > "$KINGPIN_HOME/tasks/$id/status"
+  if [ "$marker" = done_cleaned ]; then touch "$KINGPIN_HOME/tasks/$id/done_cleaned"; fi
+  return 0
+}
+
 # mk_curator_record <branch> <pr>: a live curator task waiting for review, with
 # no report.html, so a sweep reports it without arming a dossier listener.
 mk_curator_record() {
@@ -171,9 +190,78 @@ echo "=== Test 2: live fleet ==="
 reset_state
 seed_critiques 3
 mk_live_task busy
+printf 'needs-input: confirm the API shape\n' > "$KINGPIN_HOME/tasks/busy/status"
 run_watch
 kp_holds_for 0.5 calls_eq 0 && pass "a live task keeps the curator from starting" || fail "a curator started with a live task in the fleet"
 ! watch_out | grep -q "task curator is still live" && pass "an ordinary busy fleet adds no curator diagnostic" || fail "the busy gate printed a curator diagnostic: $(watch_out)"
+watch_out | grep -qF "task busy is still in flight (last status: needs-input: confirm the API shape)" \
+  && pass "the in-flight task is named in the tick output" \
+  || fail "the tick did not name the in-flight task: $(watch_out)"
+
+# Test 2b: a record whose work is over does not hold the gate, even when its
+# cleanup never archived it (#198).
+echo "=== Test 2b: finished records are idle ==="
+reset_state
+seed_critiques 3
+mk_task merged 'merged: pr=https://github.com/laanhema/skills/pull/3'
+auto_out=$("$KP_BIN/kingpin-curate" --auto 2>&1)
+kp_wait_until 10 calls_eq 1 \
+  && pass "a merged record with no cleanup starts the curator" \
+  || fail "a curator did not start with a merged record (calls=$(curator_calls)): $auto_out"
+! printf '%s\n' "$auto_out" | grep -q "is still in flight" \
+  && pass "a merged record is not named as in flight" \
+  || fail "a merged record was named as in flight: $auto_out"
+
+reset_state
+seed_critiques 3
+mk_task silent 'failed: no status: worker stopped without reporting'
+auto_out=$("$KP_BIN/kingpin-curate" --auto 2>&1)
+kp_wait_until 10 calls_eq 1 \
+  && pass "a silent record starts the curator" \
+  || fail "a curator did not start with a failed: no status: record (calls=$(curator_calls)): $auto_out"
+! printf '%s\n' "$auto_out" | grep -q "is still in flight" \
+  && pass "a silent record is not named as in flight" \
+  || fail "a silent record was named as in flight: $auto_out"
+
+reset_state
+seed_critiques 3
+mk_task marker 'ready: branch=b review=APPROVE report=r' done_cleaned
+auto_out=$("$KP_BIN/kingpin-curate" --auto 2>&1)
+kp_wait_until 10 calls_eq 1 \
+  && pass "a done_cleaned record starts the curator" \
+  || fail "a curator did not start with a done_cleaned record (calls=$(curator_calls)): $auto_out"
+! printf '%s\n' "$auto_out" | grep -q "is still in flight" \
+  && pass "a done_cleaned record is not named as in flight" \
+  || fail "a done_cleaned record was named as in flight: $auto_out"
+
+reset_state
+seed_critiques 3
+mk_task landed 'merged: pr=https://github.com/laanhema/skills/pull/4'
+touch "$KINGPIN_HOME/tasks/landed/landing_in_progress"
+auto_out=$("$KP_BIN/kingpin-curate" --auto 2>&1)
+kp_wait_until 10 calls_eq 1 \
+  && pass "a terminal record still carrying landing_in_progress starts the curator" \
+  || fail "a curator did not start with a terminal landing_in_progress record (calls=$(curator_calls)): $auto_out"
+! printf '%s\n' "$auto_out" | grep -q "is still in flight" \
+  && pass "a terminal landing_in_progress record is not named as in flight" \
+  || fail "a terminal landing_in_progress record was named as in flight: $auto_out"
+
+# Test 2c: cleanup-refused: is not finished, because kingpin-watch retries it.
+echo "=== Test 2c: an interrupted cleanup holds the gate ==="
+reset_state
+seed_critiques 3
+mk_task stubborn 'cleanup-refused: worktree has uncommitted changes'
+auto_out=$("$KP_BIN/kingpin-curate" --auto 2>&1)
+kp_holds_for 0.5 calls_eq 0 \
+  && pass "a cleanup-refused record keeps the curator from starting" \
+  || fail "a curator started with a cleanup-refused record in the fleet"
+stubborn_holds=$(printf '%s\n' "$auto_out" | grep -cF 'task stubborn is still in flight (last status: cleanup-refused:' || true)
+[ "$stubborn_holds" = "1" ] \
+  && pass "the cleanup-refused record is named once in the output" \
+  || fail "the cleanup-refused record was named $stubborn_holds times: $auto_out"
+[ ! -f "$KINGPIN_HOME/curator/last-run" ] \
+  && pass "a cleanup-refused record claims no day" \
+  || fail "a cleanup-refused record claimed the day"
 
 # Test 3: an empty landing lane is required too
 echo "=== Test 3: landing gates ==="
@@ -543,6 +631,63 @@ sleep 0.5
 [ -d "$KINGPIN_HOME/archive/curator" ] && pass "the archive holds the record" || fail "no archive/curator after the reconcile"
 git -C "$T/skills" checkout -q main 2>/dev/null || true
 git -C "$T/skills" branch -D "$cur_branch" >/dev/null 2>&1 || true
+
+# Test 16b: a finished curator record the reconcile cannot archive is left intact
+# (#198 review M1). `kingpin done` dies on the record's missing WORKTREE before it
+# writes a cleanup-refused: line, so the record is still a real directory when the
+# launch would overwrite it. Both paths must stop and keep its evidence.
+echo "=== Test 16b: an unarchivable curator record ==="
+reset_state
+seed_critiques 3
+cur_branch="curator/$(date +%F)"
+unarchived_pr="https://github.com/laanhema/skills/pull/56"
+mk_curator_record "$cur_branch" "$unarchived_pr"
+printf 'merged: pr=%s\n' "$unarchived_pr" >> "$KINGPIN_HOME/tasks/curator/status"
+grep -v '^WORKTREE=' "$KINGPIN_HOME/tasks/curator/task.env" > "$T/curator-env.noworktree"
+cp "$T/curator-env.noworktree" "$KINGPIN_HOME/tasks/curator/task.env"
+cp "$KINGPIN_HOME/tasks/curator/status" "$T/unarchived-status.before"
+auto_out='' auto_rc=0
+kp_run auto_out auto_rc "$KP_BIN/kingpin-curate" --auto
+[ "$auto_rc" -eq 0 ] \
+  && pass "an unarchivable curator record exits 0 in the automatic path" \
+  || fail "the automatic path exited $auto_rc: $auto_out"
+kp_holds_for 0.5 calls_eq 0 \
+  && pass "an unarchivable curator record launches no curator" \
+  || fail "a curator launched over the unarchived record"
+printf '%s\n' "$auto_out" | grep -qF "the finished curator record could not be archived (last status: merged: pr=$unarchived_pr)" \
+  && pass "the automatic path names the unarchived record" \
+  || fail "no unarchived-record line on the automatic path: $auto_out"
+auto_notes=$(printf '%s\n' "$auto_out" | grep -cF 'could not be archived' || true)
+[ "$auto_notes" = "1" ] \
+  && pass "the automatic path reports the unarchived record once" \
+  || fail "the unarchived record was reported $auto_notes times: $auto_out"
+cmp -s "$T/unarchived-status.before" "$KINGPIN_HOME/tasks/curator/status" \
+  && pass "the unarchived record's status survives the automatic path" \
+  || fail "the automatic path rewrote the unarchived record's status"
+cmp -s "$T/curator-env.noworktree" "$KINGPIN_HOME/tasks/curator/task.env" \
+  && pass "the unarchived record's task.env survives the automatic path" \
+  || fail "the automatic path rewrote the unarchived record's task.env"
+[ ! -f "$KINGPIN_HOME/curator/last-run" ] \
+  && pass "an unarchivable record claims no day" \
+  || fail "an unarchivable record claimed the day"
+
+manual_out='' manual_rc=0
+kp_run manual_out manual_rc "$KP_BIN/kingpin-curate"
+[ "$manual_rc" -eq 1 ] \
+  && pass "a manual run over an unarchivable curator record exits 1" \
+  || fail "the manual run exited $manual_rc: $manual_out"
+printf '%s\n' "$manual_out" | grep -qF "could not be archived" \
+  && pass "the manual refusal names the unarchived record" \
+  || fail "no unarchived-record line on the manual path: $manual_out"
+printf '%s\n' "$manual_out" | grep -qF "run kingpin done curator to see why" \
+  && pass "the manual refusal names the recovery step" \
+  || fail "the manual refusal lost the recovery step: $manual_out"
+cmp -s "$T/unarchived-status.before" "$KINGPIN_HOME/tasks/curator/status" \
+  && pass "the unarchived record's status survives the manual path" \
+  || fail "the manual path rewrote the unarchived record's status"
+cmp -s "$T/curator-env.noworktree" "$KINGPIN_HOME/tasks/curator/task.env" \
+  && pass "the unarchived record's task.env survives the manual path" \
+  || fail "the manual path rewrote the unarchived record's task.env"
 
 tmux kill-window -t kingpin:curator 2>/dev/null || true
 kp_test_finish CURATE-AUTO

@@ -196,4 +196,39 @@ kp_task_archive_dir "$t115_home" live >/dev/null && fail "t115: a live task repo
 kp_task_archive_dir "$t115_home" nope >/dev/null && fail "t115: an unknown id reported as archived" || pass "t115: an unknown id is not archived"
 rm -rf "$t115_home"
 
+# The finished-record reader (#198): a record whose work is over but whose cleanup
+# never archived it must not keep the automatic curator gate busy.
+echo "=== Test t198: finished task records ==="
+t198_home=$T/t198-home
+mkdir -p "$t198_home/tasks" "$t198_home/archive"
+t198_mk() { # <id> <last-status-line>
+  local id=$1 last=$2
+  mkdir -p "$t198_home/tasks/$id"
+  [ -n "$last" ] && printf '%s\n' "$last" > "$t198_home/tasks/$id/status"
+  return 0
+}
+t198_finished() { # <id> <0 finished|1 not finished>
+  local want=$2 got=1
+  kp_task_is_finished "$t198_home/tasks/$1" && got=0
+  [ "$got" = "$want" ] && pass "t198: $1 finished=$want" || fail "t198: $1 finished=$got (want $want)"
+}
+t198_mk merged 'merged: pr=https://example/pull/1'
+t198_finished merged 0
+t198_mk silent 'failed: no status: worker stopped without reporting'
+t198_finished silent 0
+t198_mk live 'ready: branch=b review=APPROVE report=r'
+t198_finished live 1
+t198_mk interrupted 'cleanup-refused: worktree is dirty'
+t198_finished interrupted 1
+t198_mk no-status ''
+t198_finished no-status 1
+t198_mk marker 'ready: branch=b review=APPROVE report=r'
+touch "$t198_home/tasks/marker/done_cleaned"
+t198_finished marker 0
+t198_mk noted 'merged: pr=https://example/pull/2'
+printf 'approved: by user via lavish dossier\n' >> "$t198_home/tasks/noted/status"
+t198_finished noted 0
+t198_finished missing 1
+rm -rf "$t198_home"
+
 kp_test_finish STATUS

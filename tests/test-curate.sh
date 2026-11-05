@@ -352,4 +352,29 @@ finish_curator_record
 empty_curate_out=$("$KP_BIN/kingpin" curate)
 echo "$empty_curate_out" | grep -q "no pending skill critiques" && pass "curate reports no pending skill critiques" || fail "curate did not report empty"
 
+# Test 9: curate on a server holding only a same-prefix session (issue #181)
+# ---------------------------------------------------------------------------
+# tmux resolves `has-session -t kingpin` as a unique prefix, so a server holding
+# only `kingpin-workers` satisfied the session check and no `kingpin` session was
+# created. The staged `curator` window in `kingpin-workers` also proves the window
+# probe is exact: curate must create its own window and leave that one alone.
+echo "=== Test 9: curate creates an exact kingpin session ==="
+finish_curator_record
+tmux kill-session -t '=kingpin' 2>/dev/null || true
+tmux new-session -d -s kingpin-workers -n home
+tmux new-window -d -t '=kingpin-workers:' -n curator "sleep 300"
+mkdir -p "$KINGPIN_HOME/tasks/test-curate-session"
+echo "Session placement critique" > "$KINGPIN_HOME/tasks/test-curate-session/critique"
+export KINGPIN_CURATOR_CMD="$T/fake-curator-sleep"
+session_rc=0
+session_out=$("$KP_BIN/kingpin" curate 2>&1) || session_rc=$?
+[ "$session_rc" -eq 0 ] && pass "t9: curate ran on a server holding only kingpin-workers" || fail "t9: curate exit=$session_rc: $session_out"
+tmux has-session -t '=kingpin' 2>/dev/null && pass "t9: curate created a session named exactly kingpin" || fail "t9: no session named exactly kingpin: $(tmux list-sessions -F '#{session_name}' 2>/dev/null | tr '\n' ' ')"
+tmux list-windows -t '=kingpin' -F '#{window_name}' 2>/dev/null | grep -qx curator && pass "t9: the curator window landed in kingpin" || fail "t9: windows in kingpin: $(tmux list-windows -t '=kingpin' -F '#{window_name}' 2>/dev/null | tr '\n' ' ')"
+grep -qx 'TMUX_TARGET=kingpin:curator' "$KINGPIN_HOME/tasks/curator/task.env" 2>/dev/null && pass "t9: the curator record names kingpin:curator" || fail "t9: curator record: $(cat "$KINGPIN_HOME/tasks/curator/task.env" 2>/dev/null || echo missing)"
+tmux list-windows -t '=kingpin-workers' -F '#{window_name}' 2>/dev/null | grep -qx curator && pass "t9: the same-named window in kingpin-workers was left alone" || fail "t9: curate touched the kingpin-workers window"
+tmux kill-window -t '=kingpin:=curator' 2>/dev/null || true
+tmux kill-session -t '=kingpin-workers' 2>/dev/null || true
+rm -rf "$KINGPIN_HOME/tasks/test-curate-session"
+
 kp_test_finish CURATE
