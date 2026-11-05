@@ -176,7 +176,9 @@ t21_rc=0
 (cd "$t21/main" && "$KP_BIN/kingpin" sync --bogus >/dev/null 2>&1) || t21_rc=$?
 [ "$t21_rc" -eq 2 ] && pass "t21: unknown argument exits 2" || fail "t21: unknown arg rc=$t21_rc"
 
-"$KP_BIN/kingpin" --help | grep -q "^  sync " && grep -q "^#   kingpin sync" "$KP_BIN/kingpin" && pass "t21: sync is in the kingpin help and header" || fail "t21: sync missing from kingpin help/header"
+# usage() is the one place a command is described (issue #178), so the help output is the
+# only surface to assert; the hand-kept file-header list it used to duplicate is gone.
+"$KP_BIN/kingpin" --help | grep -q "^  sync " && pass "t21: sync is in the kingpin help" || fail "t21: sync missing from the kingpin help"
 
 rm -rf "$t21"
 
