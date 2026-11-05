@@ -95,7 +95,7 @@ cmp -s "$T/dry-launch.before" "$KINGPIN_HOME/curator/launch.sh" && pass "dry-run
 # 8.2 Failing curator leaves critiques pending and delivers quotes verbatim
 cat > "$T/fake-curator-fail" << EOF_FAIL
 #!/usr/bin/env bash
-printf "%s\n" "\$1" > "$T/curator-received.txt"
+cat > "$T/curator-received.txt"
 exit 1
 EOF_FAIL
 chmod +x "$T/fake-curator-fail"
@@ -171,7 +171,7 @@ curator_pane_dead() {
 # 8.2d A curator whose launch.sh exited is reaped instead of blocking the next run
 cat > "$T/fake-curator-reap" << EOF_REAP
 #!/usr/bin/env bash
-printf '%s\n' "\$1" > "$T/curator-reap-received.txt"
+cat > "$T/curator-reap-received.txt"
 exit 1
 EOF_REAP
 chmod +x "$T/fake-curator-reap"
