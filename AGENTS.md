@@ -16,6 +16,7 @@ each task back as a visual review dossier. This file describes the repository.
 | `lib/mux-herdr.sh` | The Herdr backend of `lib/mux.sh`: the one place the `herdr` binary is reached, session resolution (`KINGPIN_HERDR_SESSION`, then the inherited `HERDR_SESSION`), the label-first pane resolver with its pane-id fallback, and the verbs written against herdr 0.9.3 (`pane read` prints plain text, `pane list`/`pane get` print JSON). It refuses to create a terminal until the spawn path is migrated (issue #144 phase E) |
 | `lib/launch.sh` | The worker preamble and the per-harness `launch.sh` generator, shared by `kingpin-spawn` and `kingpin-restore`, so a restored worker gets the preamble and harness wiring a spawned one does |
 | `worker/` | `preamble.md`, the text a spawned worker receives, `curator-preamble.md`, the contract the curator worker receives, `hooks.json`, its Claude Code settings, and `pi/kingpin-harness.ts`, the Pi extension a spawn loads with `-e` |
+| `systemd/` | `kingpin-watch.service`, the user unit that keeps the fleet supervisor running; the install steps, the `PATH` rule and the linger requirement are in [`Running it as a systemd user service`](docs/cli.md#running-it-as-a-systemd-user-service) |
 | `orchestrator/contract.md` | The orchestrator contract. `kingpin guard install` copies it into the main checkout's untracked instruction sources; no harness loads this tracked file directly |
 | `tests/` | One shell suite per feature, with shared setup in `tests/lib.sh`, including the `kp_wait_until` and `kp_holds_for` waits |
 | `docs/` | The long-form pages `README.md` links to: per-command usage, flags and exit codes (`cli.md`), fleet overview, worker permissions, harness wiring, and testing |
@@ -79,6 +80,7 @@ A rule that only a person keeps is one that goes stale; each rule below names wh
 | no page the citation check reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md`, `worker/*.md`) cites a source file by line number | `tests/doc-citations.sh` |
 | nothing under `.agents/` is tracked | `tests/lint.sh` |
 | `tmux` is reached only through `lib/tmux.sh` and `herdr` only through `lib/mux-herdr.sh` | the static checks in `tests/test-tmux-isolation.sh` and `tests/test-mux.sh` |
+| the shipped `systemd/kingpin-watch.service` mirrors `kingpin-queue.service` (`Type=simple`, `Restart=always`, `RestartSec=30`), starts the daemon rather than `--once`, and the no-supervisor warning names the unit | `tests/test-watch-supervisor.sh` |
 | a tmux session is matched exactly: a session check goes through `kp_tmux_has_session`, never a raw `has-session`, and only a user-typed target (`--tmux-session` or `KINGPIN_TMUX_SESSION`, for a spawn or the curator) accepts a prefix, through `kp_tmux_resolve_session` | the static check in `tests/test-tmux-isolation.sh` for the raw `has-session`, and review for the prefix resolver |
 | the land gate lands past a review report whose open findings are all Low, and fails closed into the fix pass on a report it cannot read, including a report that carries a `###` heading it does not know or a `NEEDS CHANGES` verdict | `tests/test-review-findings.sh` |
 | a dossier or handover page passes the prose, layout and palette `check` | `bin/kingpin-report check` |
@@ -191,19 +193,22 @@ print is described in [`kingpin list`](docs/cli.md#kingpin-list) and
 [`kingpin wait`](docs/cli.md#kingpin-wait), and what a restore refuses is in
 [`kingpin restore`](docs/cli.md#kingpin-restore).
 
-The supervisor owns the tmux server's lifecycle, and no systemd unit or timer does: the
-socket is data, not configuration (each record names its own `TMUX_SOCKET`, a fleet can hold
-records on more than one server, and the same fleet runs on the operator's default server on
-one host), so a unit would name one socket and, on the operator-server configuration, would
-be a second owner for a server that is not the fleet's. On every sweep, before the wait pass,
+The `kingpin-watch.service` user unit shipped in `systemd/` keeps the supervisor running
+(install steps in [`Running it as a systemd user service`](docs/cli.md#running-it-as-a-systemd-user-service)): it restarts a crashed supervisor after 30 seconds and starts it at
+login. The supervisor owns the tmux server's lifecycle, and no unit or timer owns the tmux
+server: the socket is data, not configuration (each record names its own `TMUX_SOCKET`, a
+fleet can hold records on more than one server, and the same fleet runs on the operator's
+default server on one host), so a unit that owned the server would name one socket and, on
+the operator-server configuration, would be a second owner for a server that is not the
+fleet's. On every sweep, before the wait pass,
 `kingpin-watch` checks each socket a live task record names; when one no longer answers it
 runs `kingpin restore` for the tasks on that socket, which recreates the session and with it
 the server, and re-arms the windows. The one case it cannot cover is a supervisor that was
-itself running inside the server that died, so `kingpin watch` is started outside the
-workers' server; on the operator-server configuration that server belongs to whatever
-started it (a systemd `tmux.service`, or the operator's own tmux), and the next sweep
-restores the windows once it is back. A `kingpin spawn` that had to start the server itself
-says so in its `OK:` line.
+itself running inside the server that died, so `kingpin watch` runs outside the workers'
+server, which is what the unit does; on the operator-server configuration that server
+belongs to whatever started it (a systemd `tmux.service`, or the operator's own tmux), and
+the next sweep restores the windows once it is back. A `kingpin spawn` that had to start the
+server itself says so in its `OK:` line.
 
 `kingpin afk on [--ttl <duration>]` arms session-scoped auto-landing. The state is
 `$KINGPIN_HOME/afk` (holder pid, arm epoch, expiry epoch), the default TTL is 8 hours, and
