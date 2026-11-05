@@ -391,11 +391,19 @@ A task whose `task.env` carries `CURATOR=1` is dispatched to `kingpin curate --l
 
 ### The review gate
 
-The review gate fails closed: it reads `review=` from the worker's last `ready:` line whatever the field order, and only `APPROVE` lands.
+The review gate fails closed: it reads `review=` from the worker's last `ready:` line whatever the field order. `APPROVE` lands; a findings verdict lands only when the review report it names has no blocking finding, as the next two sections describe.
 
 ### Fix passes
 
-`APPROVE WITH NITS` and `NEEDS CHANGES` (any case; `NEEDS_CHANGES` and `NEEDS-CHANGES` too) run `/fix-findings` first and say so; landing continues after the worker reports `fixed:`. That `fixed:` line has to report `high=0`: a line with `high` above zero sends `/review` again and exits 0 without landing, and a later `ready:` starts the next landing.
+A findings verdict (`APPROVE WITH NITS` or `NEEDS CHANGES`, any case; `NEEDS_CHANGES` and `NEEDS-CHANGES` too) is decided by the review report the `ready:` line names. A Critical, High or Medium finding in the report's `## Issues Found` block blocks the merge, so the gate runs `/fix-findings` first and says how many findings block; landing continues after the worker reports `fixed:`. `NEEDS CHANGES` blocks on its own, even when the report lists only Low findings, because the verdict is the reviewer's "not yet" and a report that disagrees with it is contradictory input.
+
+A report the gate cannot read (missing, empty, `report=none`, no `## Issues Found` block, or no recognized severity heading) also runs the fix pass: an unreadable report is not proof that nothing blocks.
+
+That `fixed:` line has to report `high=0`: a line with `high` above zero sends `/review` again and exits 0 without landing, and a later `ready:` starts the next landing.
+
+### Follow-up findings
+
+When every open finding is Low (`### Suggestions (Low)`), the gate lands, writes the finding lines to `<task>/followups.md`, and names that path in its outcome line. The merge goes ahead and the file is how the nits stay tracked: the worker's preamble requires a `## Follow-up` checklist in the PR body, or one GitHub issue for them, before the worker reports `merged:`.
 
 ### Unreadable verdicts
 
@@ -565,7 +573,7 @@ The arm reads as off once the expiry passes or the recorded pid is gone, so a se
 While armed, `kingpin watch` reacts to a new `ready:` line:
 
 - a clean `APPROVE` verdict goes through `kingpin land` exactly as an operator's `kingpin land` would, and a landing that starts gains `approved: auto (afk)`; a line that only queues behind a busy project lane gains none, because the note records a decision that has completed;
-- `APPROVE WITH NITS` and `NEEDS CHANGES` reach the same command, which starts the fix pass and waits for the re-review, so they never merge on that line. A clean `fixed:` landing that follows an AFK-started pass gains the same `approved: auto (afk)` note in `review` and `auto` mode alike, while a `fixed:` line that only queues gains none and drops its marker; a pass that still leaves High findings asks for `/review` and gains none. If the arm is off or expired by the time that `fixed:` line arrives, the landing still continues but gains no note;
+- a findings verdict reaches the same command, which lands it when the review report's open findings are all Low, and runs the fix pass when one is Medium or above, when the report cannot be read, or when the verdict is `NEEDS CHANGES`. A landing past Low findings gains the same note and leaves `followups.md`, while a fix pass waits for the re-review. A clean `fixed:` landing that follows an AFK-started pass gains the same `approved: auto (afk)` note in `review` and `auto` mode alike, while a `fixed:` line that only queues gains none and drops its marker; a pass that still leaves High findings asks for `/review` and gains none. If the arm is off or expired by the time that `fixed:` line arrives, the landing still continues but gains no note;
 - an unreadable verdict, a `needs-input:` question, a `cleanup-refused:` case and a `failed:` task hold for the operator, and nothing is forced.
 
 The dossier listener's `landing_sent` and `approve_pending` markers are checked first, so an approval the listener already took is never landed twice. AFK adds no merge path: the verdict gate and the per-project landing lane are the ones `kingpin land` always uses. The `kingpin report check` warning belongs to `kingpin watch`, not to `kingpin land`: the supervisor runs it on the dossier in its review branch and, while AFK is armed, in the clean branch before it lands. With AFK off or expired, `kingpin watch` behaves exactly as before.

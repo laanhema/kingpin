@@ -7,7 +7,8 @@
 # markers, every refusal (findings, unreadable verdict, needs-input, cleanup-refused,
 # failed), the unchanged behaviour with AFK off or expired, the Stop-hook turn
 # boundary the note must not move, a disarmed fix pass that lands without a note,
-# an auto-mode NITS pass that gains one, the review branch AFK keeps from starting
+# an auto-mode NITS pass that gains one, an all-Low findings verdict that lands
+# through the gate and gains one, the review branch AFK keeps from starting
 # a dossier listener, a queued landing that gains no note, the pid 0/1 and
 # leading-zero TTL guards, and the report-check warning the AFK branch shares with
 # the review branch.
@@ -452,6 +453,47 @@ printf 'fixed: high=0 report=r.md\n' >> "$t_noteonly/status"
 watch_once
 [ ! -f "$t_noteonly/landing_sent" ] && pass "t-noteonly: the note alone did not land the fixed: line" || fail "t-noteonly: an AFK note alone landed the fixed: line"
 [ "$(send_count t-noteonly "/issue-flow-done")" = "0" ] && pass "t-noteonly: no landing was sent" || fail "t-noteonly: sends: $(sends_of t-noteonly)"
+
+# Test 9j: an all-Low findings verdict lands through the gate and gains the note
+echo "=== Test 9j: an all-Low findings verdict lands and gains the note ==="
+"$KP_BIN/kingpin" afk on >/dev/null
+mkdir -p "$T/proj/.agents/reviews"
+cat > "$T/proj/.agents/reviews/afk-low.md" <<'EOF'
+# Code Review: demo
+
+## Issues Found
+
+### Critical
+
+None
+
+### High Priority
+
+None
+
+### Medium Priority
+
+None
+
+### Suggestions (Low)
+
+- **L1** `a.sh:1`: a stale comment. **Why:** it misleads. **Fix:** reword it.
+EOF
+mk_task t-afk-low
+printf 'ready: branch=b review=APPROVE WITH NITS report=.agents/reviews/afk-low.md\n' >> "$KINGPIN_HOME/tasks/t-afk-low/status"
+watch_once
+t_afk_low="$KINGPIN_HOME/tasks/t-afk-low"
+[ -f "$t_afk_low/landing_sent" ] && pass "t-afk-low: the all-Low findings verdict landed" || fail "t-afk-low: no landing"
+[ "$(send_count t-afk-low "/issue-flow-done 94")" = "1" ] && pass "t-afk-low: the worker received /issue-flow-done" || fail "t-afk-low: sends: $(sends_of t-afk-low)"
+[ "$(send_count t-afk-low "/fix-findings")" = "0" ] && pass "t-afk-low: no fix pass was sent" || fail "t-afk-low: a fix pass ran for Low-only findings (sends: $(sends_of t-afk-low))"
+[ ! -f "$t_afk_low/afk_fix_pass" ] && pass "t-afk-low: no AFK fix-pass marker was written" || fail "t-afk-low: afk_fix_pass appeared"
+[ -f "$t_afk_low/followups.md" ] && grep -qF 'L1' "$t_afk_low/followups.md" \
+  && pass "t-afk-low: followups.md holds the Low finding" || fail "t-afk-low: followups.md missing or empty"
+[ "$(status_count t-afk-low '^approved: auto \(afk\)$')" = "1" ] && pass "t-afk-low: exactly one approved: auto (afk) note" || fail "t-afk-low: notes: $(tr '\n' '|' < "$t_afk_low/status")"
+watch_once
+[ "$(send_count t-afk-low "/issue-flow-done 94")" = "1" ] && [ "$(status_count t-afk-low '^approved: auto \(afk\)$')" = "1" ] \
+  && pass "t-afk-low: a second pass adds no send and no note" \
+  || fail "t-afk-low: a second pass duplicated the landing or the note"
 
 # Test 10: an unreadable verdict holds
 echo "=== Test 10: an unreadable verdict holds ==="

@@ -94,7 +94,7 @@ It loops, so it keeps handling events after it handles one; there is nothing to 
 - Notifies when tasks in `review` mode are ready for inspection or need input.
 - Advances a project's landing queue whose holder released or is gone.
 - Re-arms a review task's dossier listener that died, so a reviewer's clicks always reach a session someone reads.
-- Lands a clean review verdict while AFK is armed, so a fleet you step away from does not wait on a click. A findings verdict still runs the fix pass first, and the clean landing that follows carries the same note; a `needs-input:`, `cleanup-refused:` or `failed:` task waits for you. [`kingpin afk`](docs/cli.md#kingpin-afk) has the exact rule.
+- Lands a clean review verdict while AFK is armed, so a fleet you step away from does not wait on a click. A findings verdict lands too when every open finding is Low, and runs the fix pass first otherwise; a `needs-input:`, `cleanup-refused:` or `failed:` task waits for you. [`kingpin afk`](docs/cli.md#kingpin-afk) has the exact rule.
 
 Only one supervisor runs at a time. A second `kingpin watch` refuses to start and names the running pid, and `kingpin lock acquire` warns when none is running. `kingpin list` prints `Supervisor: running (pid 12345, since 14:03)` or `Supervisor: none - run kingpin watch`. [`kingpin watch`](docs/cli.md#kingpin-watch) has the pidfile, `--once` and the interval rules.
 
