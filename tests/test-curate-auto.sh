@@ -160,6 +160,25 @@ run_watch
 kp_holds_for 0.5 calls_eq 0 && pass "two pending critiques start no curator" || fail "a curator started below the threshold"
 [ ! -f "$KINGPIN_HOME/curator/last-run" ] && pass "a below-threshold tick claims no day" || fail "a below-threshold tick claimed the day"
 
+# Test 1b: a tick that launches nothing starts no tmux server (issue #191 review M3).
+# The trigger reads local files only, so a stamped day on a dead server must stay dead.
+echo "=== Test 1b: a skipped tick starts no server ==="
+reset_state
+seed_critiques 3
+mkdir -p "$KINGPIN_HOME/curator"
+printf '1\n%s\n' "$(date +%F)" > "$KINGPIN_HOME/curator/last-run"
+tmux kill-server 2>/dev/null || true
+tmux list-sessions >/dev/null 2>&1 \
+  && fail "the fleet server survived the reset" \
+  || pass "the fleet server is down before a skipped tick"
+"$KP_BIN/kingpin-curate" --auto >/dev/null 2>&1 || true
+tmux list-sessions >/dev/null 2>&1 \
+  && fail "a skipped --auto tick started the tmux server" \
+  || pass "a skipped --auto tick starts no tmux server"
+calls_eq 0 && pass "the skipped tick launched no curator" || fail "the skipped tick launched a curator"
+# The rest of the suite expects the suite's fleet server.
+tmux new-session -d -s kingpin -n home
+
 # Test 2: a live fleet task holds the trigger back
 echo "=== Test 2: live fleet ==="
 reset_state
@@ -259,6 +278,54 @@ watch_out | grep -q "curator window kingpin:curator is already active; the autom
   || fail "the record's default-server window was missed: $(watch_out)"
 [ "$(curator_calls)" = "0" ] && pass "an old record's live window launches nothing" || fail "a second curator launched over the default-server window"
 tmux -L default kill-server 2>/dev/null || true
+
+# Test 5c: the reap never kills a window it did not probe (issue #191 review M4).
+# An archived record (the symlink `kingpin done` leaves) names a dead pane in S1 while
+# the configured session is S2, where a live curator window sits. The resolved window
+# decides: the trigger skips, claims the day, and the live window stays.
+echo "=== Test 5c: the reap follows the resolved window ==="
+reset_state
+seed_critiques 3
+printf 'TMUX_SOCKET=kingpin\nTMUX_SESSION=S2\n' > "$KINGPIN_HOME/config.env"
+tmux new-session -d -s S1 -n home
+tmux new-session -d -s S2 -n home
+tmux set-option -g remain-on-exit on
+tmux new-window -d -t S1: -n curator "bash -c 'exit 3'"
+t5c_s1_dead() { [ "$(tmux list-panes -t S1:curator -F '#{pane_dead}' 2>/dev/null)" = 1 ]; }
+kp_wait_until 4 t5c_s1_dead && pass "a dead pane is staged in the record's session" || fail "could not stage a dead pane in S1:curator"
+tmux new-window -d -t S2: -n curator "sleep 300"
+live_pid=$(tmux list-panes -t S2:curator -F '#{pane_pid}')
+mkdir -p "$KINGPIN_HOME/archive/curator"
+cat > "$KINGPIN_HOME/archive/curator/task.env" << EOF_T5C
+TASK_ID=curator
+PROJECT=curator
+PROJECT_PATH=$T/skills
+HARNESS=claude
+MODE=review
+BRANCH=curator/2026-01-01
+WORKTREE=$T/skills
+MUX=tmux
+NO_LEASE=1
+CURATOR=1
+TMUX_SOCKET=kingpin
+TMUX_TARGET=S1:curator
+MUX_TARGET=S1:curator
+EOF_T5C
+printf 'failed: the curator stopped\n' > "$KINGPIN_HOME/archive/curator/status"
+ln -s "$KINGPIN_HOME/archive/curator" "$KINGPIN_HOME/tasks/curator"
+run_watch
+watch_out | grep -q "curator window .*S2:curator is already active; the automatic run skipped" \
+  && pass "the trigger skips the live window under the resolved session" \
+  || fail "no skip line for the resolved session's window: $(watch_out)"
+tmux list-panes -t S2:curator -F '#{pane_pid}' 2>/dev/null | grep -qxF -- "$live_pid" \
+  && pass "the live window under the resolved session survived the sweep" \
+  || fail "the sweep killed the live window under the resolved session: $(watch_out)"
+kp_holds_for 0.5 calls_eq 0 && pass "the skipped sweep launched no curator" || fail "the skipped sweep launched a curator"
+[ "$(last_run_day)" = "$(date +%F)" ] && pass "the skipped sweep claims the day" || fail "the skipped sweep claimed no day: $(last_run_day)"
+tmux set-option -g remain-on-exit off
+tmux kill-session -t S1 2>/dev/null || true
+tmux kill-session -t S2 2>/dev/null || true
+rm -f "$KINGPIN_HOME/config.env"
 
 # Test 6: two triggers in parallel still start one curator
 echo "=== Test 6: concurrency ==="
