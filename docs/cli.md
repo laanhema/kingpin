@@ -2,6 +2,15 @@
 
 [Back to the README](../README.md).
 
+## Conventions
+
+Every command prints its usage on `--help` (or `-h`) and exits 0, and an unknown flag exits
+non-zero. A success line starts with `OK:` on stdout, and a refusal goes to stderr and exits
+non-zero. A startup check that only warns still exits 0: `kingpin guard warn`, a
+`kingpin listen` without `lavish-axi`, and a `kingpin curate --auto` whose checkout is
+missing are the cases, and their sections say which check ran. Where a command has exit codes
+of its own, its section below lists them.
+
 ## kingpin init
 
 **Usage:** `kingpin init [name] [path] [--harness <name>] [--setup "<cmd>"]`
@@ -51,6 +60,10 @@ A worker that reported a status line and whose window is gone before a terminal 
 
 Each cycle also advances a project's landing queue whose holder released or is gone, so an ownerless queue recovers on its own, and re-arms a review task's dossier listener that died (missing or dead `listener.pid`) unless the reviewer ended the session, the task finished, a landing is under way, the task runs in `auto` mode, or its last worker event is not `ready:`/`fixed:`.
 
+### What a status line dispatches
+
+Every unprocessed status line is dispatched once, in file order, and the task's `seen` cursor advances line by line, so a line a dispatch appends stays pending for the next pass and a supervisor restart resumes at the first undispatched line. A blank line and an `issue:` line advance the cursor without dispatching anything. A `ready:` line starts a landing in `auto` mode; in `review` mode it continues a landing already in progress, or opens the task's dossier listener. `fixed:` continues a landing in `auto` mode or after a fix pass. `merged:` runs `kingpin done` unless the task carries a `done_cleaned` marker. `cleanup-refused:` is logged and the cleanup is retried on every cycle. `approved:`, `feedback:`, `needs-input:`, `waiting:` and `failed:` are logged for the operator, and nothing else runs for them. While AFK is armed, a `ready:` or `fixed:` line goes through the AFK path first (see [`kingpin afk`](#kingpin-afk)).
+
 ### A status file rewritten under its cursor
 
 The cursor is a line count paired with the text of the handled line, so a file a worker rewrote is noticed rather than silently skipped. The supervisor logs `[kingpin-watch] <id> status file was rewritten under its cursor (<n> line(s), seen <m>); resuming at line <k>` on stderr, moves the cursor to the line it resumes at, and dispatches from the next one. This is the only cursor move that goes backwards, and it is a repair: after it the file reads as intact again, so the line appears once per rewrite.
@@ -67,6 +80,10 @@ Before the wait pass of every cycle, and in `--once`, the supervisor checks each
 
 It claims `~/.kingpin/supervisor.pid`, refuses a second copy with the running pid named, reclaims a pidfile left by a dead supervisor, and `--once` runs one pass without claiming it (that is the path `kingpin run` and the tests use). `kingpin wait` is the primitive it drives.
 
+### Exit codes
+
+`--once` exits 0 after one pass, and a running supervisor exits 0 on `INT` or `TERM`. It exits 1 when a second copy is already running (naming its pid) or when the pidfile cannot be claimed, and 2 for a bad `--interval`, an unknown argument or an unknown flag.
+
 ## kingpin spawn
 
 **Usage:** `kingpin spawn <proj> (--issue <n> | --text <req>) [--mode review|auto] [--id <task-id>] [--harness <name>] [--tmux-session <name>]`
@@ -81,6 +98,15 @@ It claims `~/.kingpin/supervisor.pid`, refuses a second copy with the running pi
 - `--tmux-session`: tmux session on the resolved server to place the worker window in; it must already exist (see [Choosing the session](#choosing-the-session))
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_AGY`, `KINGPIN_OPENCODE`, `KINGPIN_PI`, `KINGPIN_CODEX`, `KINGPIN_GH`, `KINGPIN_TMUX_SOCKET`, `KINGPIN_TMUX_SESSION`; `TMUX_SOCKET` and `TMUX_SESSION` in `$KINGPIN_HOME/config.env` are the fleet-wide default for both, read when the matching environment variable is unset. The `kingpin scope check` it runs reads `KINGPIN_ALLOW_GLOBAL_CONTRACT`, and a codex spawn also reads `KINGPIN_SKILLS_DIR` and `CODEX_HOME`.
+
+### Which harness
+
+The spawn picks the first of these that is set: `--harness <name>`, `HARNESS` in the
+project's env file (only when it was set explicitly, as `kingpin init --harness` does), the
+harness the orchestrator lock recorded, `DEFAULT_HARNESS` in `$KINGPIN_HOME/config.env`,
+then `claude`. `kingpin lock acquire` records the orchestrator's own harness, and
+`kingpin lock status` shows it. A project file written by an older `kingpin init` carries
+`HARNESS=claude`, which counts as set; delete that line to let the lock holder decide.
 
 ### Where the window lives
 
@@ -314,6 +340,9 @@ An archived task resolves: `kingpin listen <task-id>` on one prints `OK: task <t
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_SKIP_SOCKET_WARN`
 
+Each event is one `<task-id> <reason>` line, where the reason is `status` (a new status
+line), `quiet` (a task that stopped reporting) or `exited` (a worker whose window is gone).
+
 ### Exit codes
 
 Exits 0 on events and on a plain timeout (nothing printed); `--once` with no events exits 1; 2 for a bad argument.
@@ -410,7 +439,13 @@ Cleanup is single-flight per task: a second run while one is in progress says so
 
 ### A refused cleanup
 
-A failed `treehouse return` refuses the cleanup, names the worktree and treehouse's reason in the `cleanup-refused:` line, and leaves the record in `tasks/` instead of archiving a task whose lease is gone.
+Every refusal names its reason on stderr and exits 1 with the record still in `tasks/` and nothing archived; a finished task also records the reason in its `cleanup-refused:` line. All but the last are raised before the teardown starts, so the worktree and the record are as the worker left them. The last one, a `treehouse return` failure, is known only after the window is closed, the listener stopped, the browser daemons stopped, and the spawn's injected paths, exclude file and codex trust entry cleared; it leaves the `lease-lost` marker described below, and `--force` re-attempts the full cleanup. The reasons:
+
+- `worktree <path> has uncommitted changes` when a changed or untracked file is left in the worktree; `--force` discards them and continues.
+- `HEAD <sha> is not yet merged into refs/remotes/origin/<branch>` when the worker's commits never reached the remote default branch. `--force` tears the worktree down anyway, and the remote branch is left in place because the merge was not verified.
+- `HEAD <sha> cannot be verified: refs/remotes/origin/<branch> is missing` when the default branch ref is not there to compare against, with any `git fetch` failure named in the same line; `--force` is the way past it.
+- `worktree <path> is held by unfinished task <id>` when another live task records the same worktree. This one is refused even with `--force`.
+- `treehouse return failed for worktree <path>: <reason>` when the slot could not go back to the pool. The reason is recorded in the task's `lease-lost` marker (next section), and `--force` re-attempts the full cleanup.
 
 ### The lease-lost marker
 
@@ -511,7 +546,15 @@ Exits 0 when every named task was restored or was already live; 1 when any task 
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_HARNESS`, `KINGPIN_LOCK_PID`
 
-`--harness` records `claude`, `agy`, `opencode`, `pi` or `codex`; without it, `acquire` detects the harness from the session process (including the `@earendil-works/pi-coding-agent` npm path) or from the calling agent's environment marker. `acquire` also warns on stderr when no fleet supervisor is running, and when the guard or the contract is missing or stale, even with `KINGPIN_SKIP_GUARD=1`, because it calls `kingpin guard check` directly. A numeric `[pid]` overrides the detected session pid, as does `KINGPIN_LOCK_PID`.
+`--harness` records `claude`, `agy`, `opencode`, `pi` or `codex`; without it, `acquire` detects the harness in this order: `--harness`, `KINGPIN_HARNESS`, the command name or argv of the session process (`claude`, `agy`, `opencode`, `pi`, `codex`, including the `@earendil-works/pi-coding-agent` npm path), then the calling agent's own marker (`CLAUDECODE=1`, `OPENCODE=1`). A session that matches none records nothing. `acquire` also warns on stderr when no fleet supervisor is running, and when the guard or the contract is missing or stale, even with `KINGPIN_SKIP_GUARD=1`, because it calls `kingpin guard check` directly. A numeric `[pid]` overrides the detected session pid, as does `KINGPIN_LOCK_PID`.
+
+`acquire` (the default subcommand) records the calling session's pid and the harness it detected, `status` prints `lock: free`, `lock: held by pid <n> (<harness>)`, `lock: held by pid <n>` when the record carries no valid harness line, or `lock: stale`, and `harness` prints the recorded harness. A record whose holder pid is gone is ignored, and the next `acquire` rewrites the whole file.
+
+`release` drops only the calling session's record and clears the AFK arm, and it refuses, naming the holder, while another live session holds the lock. `acquire` and `release` are serialized by a sibling mutex, `$KINGPIN_HOME/orchestrator.lock.mutex`, so sessions that start together get one `lock: acquired` and the rest exit 1 naming the holder; the wait is about nine seconds, and a mutex held longer refuses the same way. The lock file is published whole with a temporary file and a rename, so `status`, `check` and `harness` never read a half-written pid or harness line.
+
+### Exit codes
+
+`status` and `harness` exit 0, and `check` exits 0 with `lock: verified`. The refusals exit 1: another live session holds the lock (`check`, `acquire` and `release`), the mutex cannot be taken (`acquire` and `release`, naming its owner), a lock file that cannot be written, an AFK file that cannot be removed, and `acquire` with a `--harness` other than `claude`, `agy`, `opencode`, `pi` or `codex`. An unknown subcommand exits 2.
 
 ## kingpin afk
 
@@ -547,7 +590,40 @@ The dossier listener's `landing_sent` and `approve_pending` markers are checked 
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_SKIP_GUARD`; `KINGPIN_TASK_DIR` and `KINGPIN_WORKTREE` are read by the `guard hook worker` entry point (`lib/guard-hook.mjs`).
 
-`install` writes the hook into the checkout `--dir` names and refuses a linked worktree. The `orchestrator` hook denies `Edit`, `Write`, `NotebookEdit` and `Agent` in the main checkout of any repository, where the session's `git rev-parse --git-dir` equals `--git-common-dir`, and allows a linked worktree; a directory it cannot resolve to a git worktree is denied. `warn` is the quiet startup check `kingpin list` and `kingpin wait` run.
+`install` writes the hook into a `PreToolUse` entry of `.claude/settings.local.json` in the checkout `--dir` names, and refuses a linked worktree.
+
+### What install writes
+
+`install` also writes the orchestrator contract: the tracked `orchestrator/contract.md`,
+copied to `$KINGPIN_HOME/orchestrator.md`, to `.claude/rules/kingpin-orchestrator.md`, to
+`.agents/rules/kingpin.md` (with the `trigger: always_on` frontmatter agy needs) and to the
+`instructions` entry of `.opencode/opencode.json`. A checkout with no tracked contract skips
+the copies and keeps the guard-only behaviour. The two in-checkout copies and the OpenCode
+config are hidden in the `# kingpin guard` block of the checkout's `info/exclude`, which
+each install rewrites and which adopts a loose line an older install appended.
+
+`install` also removes the legacy `permissions.deny` rules, refuses an `opencode.json` that
+carries JSONC comments instead of rewriting it, and stops on a `.agents/rules/kingpin.md`
+it did not write. Only `install` refreshes a copy, because `kingpin spawn` and `kingpin sync`
+never do. `check` names a stale copy, and `warn` is the quiet startup check `kingpin list`
+and `kingpin wait` run: it prints one `warning:` line on stderr when the guard or the contract
+is missing or stale and exits 0 either way, so its exit status is never the verdict.
+
+### Fail-closed cases
+
+The orchestrator hook denies `Edit`, `Write`, `NotebookEdit` and `Agent` when the session's
+working directory is the main checkout of any git repository, where `git rev-parse --git-dir`
+equals `git rev-parse --git-common-dir`, and it denies when it cannot resolve that directory
+to a git worktree.
+
+The worker hook allows `Edit`, `Write` and `NotebookEdit` inside the worktree pinned by
+`KINGPIN_WORKTREE` or `WORKTREE=` in the task's `task.env`, and inside the task folder
+(`KINGPIN_TASK_DIR`, where `report.html` and `question.md` live). It denies every other path, a
+guarded call that names no file path, and a worker whose worktree cannot be resolved or is the
+main checkout.
+
+Both hooks fail closed: they deny when `kingpin-guard` cannot run (a missing script, a
+missing `node`) or cannot read its payload, because the hook is installed with `|| exit 2`.
 
 ## kingpin scope
 
