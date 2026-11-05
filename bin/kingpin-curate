@@ -100,6 +100,13 @@ curator_task_dir="$KP_HOME/tasks/curator"
 # before an automatic run is worth it.
 MIN_PENDING=3
 
+# The largest curator prompt Kingpin hands a harness, in bytes. stdin has no
+# per-argument cap, so this is Kingpin's own read cap rather than a platform
+# limit, and a fixed number keeps the same batch behaving the same on Linux and
+# macOS (issue #200). A prompt this large is already more than a harness can work
+# through in one turn, and a named refusal beats a window that hangs.
+CURATOR_PROMPT_MAX=8388608
+
 # skills_origin_slug
 # The "owner/repo" the skills checkout's origin names, lowercased so it compares
 # with gh's baseRepository.nameWithOwner. The URL is read as configured
@@ -569,8 +576,29 @@ last_event() {
   grep -vE '^(approved|feedback):' "\$STATUS_FILE" 2>/dev/null | tail -n 1 || true
 }
 
+# The prompt arrives on stdin, never as a command-line argument: Linux caps one
+# argv string at MAX_ARG_STRLEN (128 KiB), far below the ARG_MAX total budget, so
+# "\$(cat "\$PROMPT_FILE")" failed with E2BIG and a bare exit 126 once a collected
+# batch passed it. claude reads a piped prompt only with -p; without it the
+# interactive TUI starts and waits. Do not restore the argument form.
+if [ ! -r "\$PROMPT_FILE" ] || [ ! -s "\$PROMPT_FILE" ]; then
+  printf '%s\n' "failed: the curator prompt \$PROMPT_FILE is missing, empty or unreadable; the curator did not start" >> "\$STATUS_FILE"
+  exit 0
+fi
+# stdin has no per-string cap, so the ceiling here is Kingpin's own read cap, not
+# a platform limit: the number is a constant in bin/kingpin-curate, so the same
+# batch behaves the same on Linux and macOS. A prompt that large is already more
+# than a harness can work through in one turn, and refusing it with a cause beats
+# a window that hangs or dies unexplained.
+prompt_limit=$CURATOR_PROMPT_MAX
+prompt_bytes=\$(wc -c < "\$PROMPT_FILE" 2>/dev/null || echo 0)
+if [ "\$prompt_bytes" -gt "\$prompt_limit" ]; then
+  printf '%s\n' "failed: the curator prompt is \$prompt_bytes bytes, over Kingpin's \$prompt_limit-byte curator prompt cap; the batch is too large to deliver" >> "\$STATUS_FILE"
+  exit 0
+fi
+
 curator_rc=0
-$CLAUDE_CMD "\$(cat "\$PROMPT_FILE")" || curator_rc=\$?
+$CLAUDE_CMD -p < "\$PROMPT_FILE" || curator_rc=\$?
 
 pr_url=''
 [ -f "\$PR_FILE" ] && pr_url=\$(sed -n 1p "\$PR_FILE" 2>/dev/null || true)
@@ -605,7 +633,14 @@ case "\$last" in
     if [ -n "\$pr_url" ]; then
       printf '%s\n' "ready: branch=\$BRANCH review=PENDING report=\$REPORT_FILE pr=\$pr_url" >> "\$STATUS_FILE"
     elif [ "\$curator_rc" -ne 0 ]; then
-      printf '%s\n' "failed: the curator exited with status \$curator_rc and opened no PR" >> "\$STATUS_FILE"
+      # 126 and 127 are the shell's launch failures, not the harness's own status:
+      # name the cause so the fleet board does not show a bare number.
+      case "\$curator_rc" in
+        126) cause="the curator command could not be executed (status 126; check KINGPIN_CURATOR_CMD)" ;;
+        127) cause="the curator command was not found (status 127; check KINGPIN_CURATOR_CMD)" ;;
+        *) cause="the curator exited with status \$curator_rc and opened no PR" ;;
+      esac
+      printf '%s\n' "failed: \$cause" >> "\$STATUS_FILE"
     else
       printf '%s\n' "failed: the curator exited without opening a PR" >> "\$STATUS_FILE"
     fi
