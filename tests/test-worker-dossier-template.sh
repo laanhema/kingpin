@@ -3,9 +3,10 @@
 # the header pills sit on the pixel grid, the option rows keep their shape, the diffs keep a static
 # fallback, the shared style block stays identical and the page passes the report gate.
 #
-# assets/lavish/worker-dossier/ is what every worker's report.html and every page handed to the boss
-# is copied from, so a missing section, a lost Lavish guard or a prose regression there spreads to
-# every page made from it.
+# assets/lavish/worker-dossier/ stays shipped for pages already made from it; the case-file folder,
+# assets/lavish/kingpin-dossier/, is the default for new pages and has its own suite
+# (test-kingpin-dossier-template.sh). A missing section, a lost Lavish guard or a prose regression
+# here still breaks every older page copied from this folder.
 set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
