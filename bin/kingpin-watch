@@ -41,8 +41,8 @@ KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$KP_ROOT/lib/status.sh"
-# shellcheck source=../lib/tmux.sh
-. "$KP_ROOT/lib/tmux.sh"
+# shellcheck source=../lib/mux.sh
+. "$KP_ROOT/lib/mux.sh"
 # shellcheck source=../lib/landing.sh
 . "$KP_ROOT/lib/landing.sh"
 # shellcheck source=../lib/supervisor.sh
@@ -679,9 +679,12 @@ retire_dossiers() {
 # the server) and re-arms each window with a resume brief. This runs before the wait
 # pass, so a restored window is back before `exited` would be raised for it, and it runs
 # on every sweep, so a server that dies while the supervisor runs is brought back on the
-# next pass. Curator tasks are skipped (curate reaps its own window) and a terminal task
-# is skipped (restore would refuse it by name).
+# next pass. Curator tasks are skipped (curate reaps its own window), a terminal task is
+# skipped (restore would refuse it by name), and a Herdr record is skipped because it is
+# not on a tmux server at all (kp_mux_skips_tmux_socket); `kingpin restore` would refuse it
+# by name until #204 adds Herdr worker creation.
 restore_skips() {
+  kp_mux_skips_tmux_socket "$1" && return 0
   [ "$(kp_env_get "$1/task.env" NO_LEASE)" = "1" ] && return 0
   kp_status_is_terminal "$(kp_status_last "$1/status")"
 }

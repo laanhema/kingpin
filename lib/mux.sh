@@ -25,8 +25,14 @@
 # so a tmux-only host never reads that file.
 #
 # A caller that needs a new verb adds it here, never by calling a backend from a
-# command. Source `lib/status.sh` first (this file sources it, and `lib/tmux.sh`,
-# itself).
+# command. Since issue #203 every command in `bin/` reaches a terminal through this
+# file: no command calls `kp_tmux` or a `kp_window_*` function, and the static check
+# in `tests/test-mux.sh` keeps it that way. The reader verbs `target_session`,
+# `label`, `parts`, `name_claimed` and `skips_tmux_socket` exist for that, and each
+# one is a pure function of its arguments and the task record, so a loop over many
+# tasks cannot leak one record's backend into another's row.
+#
+# Source `lib/status.sh` first (this file sources it, and `lib/tmux.sh`, itself).
 #
 #   # shellcheck source=../lib/mux.sh
 #   . "$KP_ROOT/lib/mux.sh"
@@ -162,7 +168,8 @@ kp_mux_find() {
 # kp_mux_harness_live <task-dir>
 # Exit 0 only when the task's terminal is found and the recorded harness runs in
 # it. tmux keeps kp_window_harness_live's rule; Herdr compares the recorded
-# harness.pid against the pane's process info.
+# harness.pid against the pane's process info. Both are read-only: a liveness check
+# never rewrites a stale target in the record.
 kp_mux_harness_live() {
   local task_dir=${1:-} mux
   [ -n "$task_dir" ] || return 1
@@ -393,8 +400,9 @@ kp_mux_ensure_session() {
 
 # kp_mux_create <task-dir> <session> <name> <cwd> <launch> [--fresh]
 # Create the task's terminal and print its target id. tmux keeps kp_window_start;
-# Herdr refuses until the spawn path is migrated (issue #144 phase E), because the
-# unmigrated `kingpin list`/`kingpin wait` cannot see a Herdr worker yet.
+# Herdr refuses until Herdr worker creation lands with issue #204. The readers
+# (`kingpin list`, `kingpin wait`, `kingpin brief`) already read a Herdr record, so
+# creation is the only part of the Herdr path still missing.
 kp_mux_create() {
   local mux
   mux=$(_kp_mux_current) || return 1
@@ -431,6 +439,97 @@ kp_mux_record_label() {
   mux=$(kp_mux_record "$task_dir") || return 1
   [ "$mux" = herdr ] || return 0
   kp_env_set "$task_dir/task.env" MUX_LABEL "$label"
+}
+
+# kp_mux_target_session <task-dir> [target]
+# Print the session that holds the live <target>. tmux asks the server for the
+# window's session (`display-message -p -t <target> '#S'` on the record's socket);
+# a Herdr pane belongs to the record's session, and `pane get` reports no session,
+# so Herdr reads the record (see _kp_herdr_record_session). The target is required for
+# tmux and ignored for Herdr; a caller that has no resolved target yet (the list
+# footer) omits it. Read-only on both backends.
+kp_mux_target_session() {
+  local task_dir=${1:-} target=${2:-} mux
+  [ -n "$task_dir" ] || return 2
+  task_dir=${task_dir%/}
+  mux=$(kp_mux_record "$task_dir") || return 1
+  case $mux in
+    herdr)
+      _kp_mux_load_herdr
+      _kp_herdr_record_session "$task_dir"
+      ;;
+    *)
+      [ -n "$target" ] || return 2
+      kp_tmux "$(kp_tmux_socket_from_env "$task_dir/task.env")" display-message -p -t "$target" '#S'
+      ;;
+  esac
+}
+
+# kp_mux_label <task-dir>
+# How a message names the task's mux: `tmux`, `tmux -L <name>` or `tmux -S <path>`
+# from the record's socket, and `herdr --session <session>` for a Herdr record. A
+# Herdr session has no attach command, so none is invented here.
+kp_mux_label() {
+  local task_dir=${1:-} mux
+  [ -n "$task_dir" ] || return 2
+  task_dir=${task_dir%/}
+  mux=$(kp_mux_record "$task_dir") || return 1
+  case $mux in
+    herdr)
+      _kp_mux_load_herdr
+      printf 'herdr --session %s\n' "$(_kp_herdr_record_session "$task_dir")"
+      ;;
+    *) kp_tmux_label "$(kp_tmux_socket_from_env "$task_dir/task.env")" ;;
+  esac
+}
+
+# kp_mux_parts <task-dir>
+# Print `<session><TAB><name>` for the record. tmux keeps kp_window_parts; Herdr
+# reports the record's session and its pane label (`MUX_LABEL`, then `TASK_ID`, then
+# the task directory's basename), the same order _kp_herdr_find resolves by. This is
+# the session a dead row falls back to and the pair `kingpin restore` reads.
+kp_mux_parts() {
+  local task_dir=${1:-} mux
+  [ -n "$task_dir" ] || return 2
+  task_dir=${task_dir%/}
+  mux=$(kp_mux_record "$task_dir") || return 1
+  case $mux in
+    herdr)
+      _kp_mux_load_herdr
+      printf '%s\t%s\n' "$(_kp_herdr_record_session "$task_dir")" "$(_kp_herdr_record_label "$task_dir")"
+      ;;
+    *) kp_window_parts "$task_dir/task.env" ;;
+  esac
+}
+
+# kp_mux_name_claimed <task-dir> <session> <name>
+# Print the id of another *live* task record that claims the same terminal and exit
+# 0; print nothing and exit 1 when the name is this task's alone. tmux keeps
+# kp_window_name_claimed. No caller reaches a Herdr record: `kingpin restore` refuses
+# one by name before it asks, and the record-only Herdr identity rule lands with
+# Herdr worker creation (#204).
+kp_mux_name_claimed() {
+  local task_dir=${1:?kp_mux_name_claimed needs a task dir} session=${2:?} name=${3:?} mux
+  task_dir=${task_dir%/}
+  mux=$(kp_mux_record "$task_dir") || return 1
+  case $mux in
+    tmux) kp_window_name_claimed "$task_dir" "$session" "$name" ;;
+    *) return 1 ;;
+  esac
+}
+
+# kp_mux_skips_tmux_socket <task-dir>
+# Exit 0 when the record must be left out of the tmux socket checks: it names Herdr,
+# or its `MUX=` line cannot be read. Socket health is a tmux-server concern, and a
+# Herdr session has no equivalent failure mode (see `docs/cli.md`, `kingpin list`), so
+# this is the one place that decides it. A `kp_tmux_live_by_socket --skip` caller
+# passes it, and a tmux record never skips.
+kp_mux_skips_tmux_socket() {
+  local task_dir=${1:-} mux
+  [ -n "$task_dir" ] || return 1
+  task_dir=${task_dir%/}
+  mux=$(kp_mux_record "$task_dir" 2>/dev/null) || return 0
+  [ "$mux" = herdr ]
 }
 
 # _kp_mux_current

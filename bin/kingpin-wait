@@ -6,9 +6,9 @@
 #      `issue:` line does not wake the waiter; any other new line does. A status file
 #      rewritten under the cursor (the handled line is gone from its index) is a
 #      status event too, even when the line count did not change (issue #190).
-#   2. Unexpected window termination (tmux window gone without terminal status).
-#      A task whose `launching` marker is fresh (kingpin-spawn has not created the
-#      window yet) is not reported.
+#   2. Unexpected terminal termination (a tmux window or a Herdr pane gone without a
+#      terminal status). A task whose `launching` marker is fresh (kingpin-spawn has
+#      not created the window yet) is not reported.
 #   3. Qualified quiet worker (stopped newer than status, pane not waiting on subagents/turns).
 #      A worker whose last status is an acknowledged `needs-input:` is not reported
 #      again until its status or its pane activity changes (`seen_activity`, written by ack).
@@ -27,8 +27,8 @@ set -euo pipefail
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$(dirname "$0")/../lib/status.sh"
-# shellcheck source=../lib/tmux.sh
-. "$(dirname "$0")/../lib/tmux.sh"
+# shellcheck source=../lib/mux.sh
+. "$(dirname "$0")/../lib/mux.sh"
 # shellcheck source=../lib/portable.sh
 . "$(dirname "$0")/../lib/portable.sh"
 TIMEOUT=300
@@ -71,7 +71,9 @@ fi
 # its socket, so a dead fleet reads as `exited` events with no reason (issue #165).
 # Warn once per socket per process, on stderr, with the attach command; the check rides
 # every pass as well, so a server that dies during a long wait is still named once.
-# KINGPIN_SKIP_SOCKET_WARN=1 silences it, like KINGPIN_SKIP_GUARD=1 for the guard.
+# KINGPIN_SKIP_SOCKET_WARN=1 silences it, like KINGPIN_SKIP_GUARD=1 for the guard. Herdr
+# records are left out of the check: socket health is a tmux-server concern, and a Herdr
+# session has no equivalent failure mode (see docs/cli.md, `kingpin wait`).
 WARNED_SOCKETS=' '
 warn_unreachable_sockets() {
   local sock ids
@@ -81,7 +83,7 @@ warn_unreachable_sockets() {
     WARNED_SOCKETS="$WARNED_SOCKETS$sock "
     # shellcheck disable=SC2086 # ids is a space-separated list of task ids
     kp_tmux_socket_warn_line "$sock" $ids
-  done < <(kp_tmux_live_by_socket "$tasks_dir"/*)
+  done < <(kp_tmux_live_by_socket --skip kp_mux_skips_tmux_socket "$tasks_dir"/*)
 }
 warn_unreachable_sockets
 
@@ -109,12 +111,14 @@ is_launching() {
 # the Stop hook's waiting: line) and its pane shows no activity since that ack: a
 # stop in that state is the same idle wait.
 quiet_held() {
-  local dir=$1 target=$2 last=$3 count=$4 seen=$5 socket=$6
+  local dir=$1 target=$2 last=$3 count=$4 seen=$5
   kp_status_is_waiting "$last" || return 1
   [ "$count" -eq "$seen" ] || return 1
   [ -f "$dir/seen_activity" ] || return 1
   local now_act
-  now_act=$(kp_tmux "$socket" display-message -p -t "$target" '#{window_activity}' 2>/dev/null || true)
+  # The find this follows published the backend and the connection, so the activity
+  # read is the task's own terminal, tmux or Herdr.
+  now_act=$(kp_mux_activity "$target" 2>/dev/null || true)
   [ "$now_act" = "$(tr -d ' \n' < "$dir/seen_activity")" ]
 }
 
@@ -178,19 +182,19 @@ check_task() {
     return 0
   fi
 
-  # 2. Window liveness check. The resolver (lib/tmux.sh) finds the task's own window by
-  # name first, on the socket the record names (issue #142), so a stale recorded id that
-  # now names a foreign window cannot make a dead task look alive. `exited` keeps its old
-  # meaning: the *window* is gone. A window that exists while its harness is gone is the
-  # DEAD state `kingpin list` reports, not an event here (changing that would fire
-  # `exited` for every fixture pane running a shell).
-  local tmux_socket=""
-  local tmux_target=""
+  # 2. Terminal liveness check. The resolver (lib/mux.sh) finds the task's own terminal
+  # by name first, on the socket or in the session the record names (issue #142), so a
+  # stale recorded id that now names a foreign window cannot make a dead task look alive.
+  # `exited` keeps its old meaning: the *terminal* is gone. A window that exists while
+  # its harness is gone is the DEAD state `kingpin list` reports, not an event here
+  # (changing that would fire `exited` for every fixture pane running a shell). A live
+  # Herdr pane resolves, so a Herdr task is never `exited` while its session holds the
+  # pane, and a closed pane does not resolve, so it is.
+  local target=""
   local window_alive=0
-  if kp_window_find "$dir" >/dev/null 2>&1; then
+  if kp_mux_find "$dir" --no-record >/dev/null 2>&1; then
     window_alive=1
-    tmux_socket=$KP_WINDOW_SOCKET
-    tmux_target=$KP_WINDOW_ID
+    target=$KP_WINDOW_ID
   fi
 
   if [ "$window_alive" -eq 0 ]; then
@@ -211,13 +215,13 @@ check_task() {
     local seen_stop=0
     [ -f "$seen_stopped_file" ] && seen_stop=$(cat "$seen_stopped_file" 2>/dev/null | tr -d ' ' || echo 0)
 
-    if [ "$stop_time" -gt "$seen_stop" ] && ! quiet_held "$dir" "$tmux_target" "$last_status" "$status_count" "$seen_count" "$tmux_socket"; then
+    if [ "$stop_time" -gt "$seen_stop" ] && ! quiet_held "$dir" "$target" "$last_status" "$status_count" "$seen_count"; then
       local harness="claude"
       harness=$(kp_env_get "$task_env" HARNESS)
       [ -n "$harness" ] || harness="claude"
 
       local pane_tail
-      pane_tail=$(kp_tmux "$tmux_socket" capture-pane -pt "$tmux_target" -S -30 2>/dev/null || true)
+      pane_tail=$(kp_mux_capture "$target" --tail 30 2>/dev/null || true)
 
       # A pane that still shows a working marker is not quiet. The list lives in
       # lib/status.sh, shared with the Stop hook and kingpin-launch-check.

@@ -120,6 +120,32 @@ _kp_herdr_pane_exists() {
   _kp_herdr pane get "$1" >/dev/null 2>&1
 }
 
+# _kp_herdr_record_session <task-dir>
+# The session a Herdr record names: `MUX_SESSION`, then the fleet's Herdr session (a
+# pane belongs to its session, and `pane get` reports none). `_kp_herdr_find` resolves
+# by this and so do the readers that need only the record's identity, so the rule
+# lives in one place.
+_kp_herdr_record_session() {
+  local task_dir=${1:-} session=''
+  [ -n "$task_dir" ] && [ -f "$task_dir/task.env" ] && session=$(kp_env_get "$task_dir/task.env" MUX_SESSION)
+  [ -n "$session" ] || session=$(_kp_herdr_session_name)
+  printf '%s\n' "$session"
+}
+
+# _kp_herdr_record_label <task-dir>
+# The pane label a Herdr record resolves by: `MUX_LABEL`, then `TASK_ID`, then the
+# task directory's basename, in the order `_kp_herdr_find` matches panes.
+_kp_herdr_record_label() {
+  local task_dir=${1:-} label=''
+  task_dir=${task_dir%/}
+  [ -n "$task_dir" ] && [ -f "$task_dir/task.env" ] && label=$(kp_env_get "$task_dir/task.env" MUX_LABEL)
+  if [ -z "$label" ] && [ -n "$task_dir" ] && [ -f "$task_dir/task.env" ]; then
+    label=$(kp_env_get "$task_dir/task.env" TASK_ID)
+  fi
+  [ -n "$label" ] || label=$(basename "$task_dir")
+  printf '%s\n' "$label"
+}
+
 # _kp_herdr_find <task-dir> [no-record]
 # Resolve a task's pane. The order is: the recorded MUX_LABEL matched against
 # `pane list` (session-wide, so a cross-workspace move still resolves), then the
@@ -132,15 +158,8 @@ _kp_herdr_find() {
   [ -n "$task_dir" ] || return 1
   task_dir=${task_dir%/}
   env_file="$task_dir/task.env"
-  session=''
-  [ -f "$env_file" ] && session=$(kp_env_get "$env_file" MUX_SESSION)
-  [ -n "$session" ] || session=$(_kp_herdr_session_name)
-  label=''
-  [ -f "$env_file" ] && label=$(kp_env_get "$env_file" MUX_LABEL)
-  if [ -z "$label" ]; then
-    [ -f "$env_file" ] && label=$(kp_env_get "$env_file" TASK_ID)
-  fi
-  [ -n "$label" ] || label=$(basename "$task_dir")
+  session=$(_kp_herdr_record_session "$task_dir")
+  label=$(_kp_herdr_record_label "$task_dir")
   recorded=''
   [ -f "$env_file" ] && recorded=$(kp_env_get "$env_file" MUX_TARGET)
 
@@ -192,7 +211,9 @@ _kp_herdr_harness_live() {
   local task_dir=${1:-} pid_file pid info cmd
   [ -n "$task_dir" ] || return 1
   task_dir=${task_dir%/}
-  _kp_herdr_find "$task_dir" >/dev/null 2>&1 || return 1
+  # Resolve read-only: the harness check asks whether the recorded worker runs, and a
+  # reader must not rewrite a stale MUX_TARGET on the way (issue #203).
+  _kp_herdr_find "$task_dir" 1 >/dev/null 2>&1 || return 1
   pid_file="$task_dir/harness.pid"
   if [ -f "$pid_file" ]; then
     pid=$(tr -dc '0-9' < "$pid_file" 2>/dev/null || true)
@@ -322,9 +343,9 @@ _kp_herdr_ensure_session() {
 }
 
 # _kp_herdr_create <task-dir> <session> <name> <cwd> <launch> [--fresh]
-# Refused in this change: a Herdr worker cannot be created until `kingpin list`
-# and `kingpin wait` read a Herdr record too (issue #144 phase E), because a
-# worker the rest of the fleet cannot see is worse than a clear refusal.
+# Refused in this change: a Herdr worker cannot be created until Herdr worker
+# creation lands with issue #204. `kingpin list`, `kingpin wait` and `kingpin brief`
+# already read a Herdr record, so the readers are no longer the blocker.
 _kp_herdr_create() {
   printf 'herdr: creating a terminal for a task is not wired up yet (issue #144 phase E); run with KINGPIN_MUX=tmux\n' >&2
   return 1

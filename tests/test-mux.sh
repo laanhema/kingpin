@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The multiplexer adapter (issue #144): KINGPIN_MUX selection, the per-record mux
-# reader, every verb's argv against a fake herdr, and the two static checks that
-# keep a backend call inside its own file.
+# reader, every verb's argv against a fake herdr, the static checks that keep a backend
+# call inside its own file and every command out of the backend helpers (issue #203),
+# and the `list`/`wait`/`peek`/`send`/`launch-check` CLI against a Herdr record.
 #
 # The fake herdr comes from tests/lib.sh: it answers from the state this suite
 # declares with kp_test_fake_herdr_state, records every call's argv, and refuses to
@@ -456,5 +457,162 @@ if ( KP_TEST_ALLOW_REAL_HERDR=1 KP_TEST_HERDR_REAL_LOG="$T/unexpected-herdr-real
 else
   fail "the opt-in declaration did not pass the real-herdr guard"
 fi
+
+# Test 15: no command calls a backend helper directly
+# ---------------------------------------------------------------------------
+echo "--- Test 15: no command calls kp_tmux or kp_window_* ---"
+# Every command reaches a terminal through lib/mux.sh (issue #203). This scan names the
+# two shapes a command used to reach tmux with, leaves a whole-line comment out, and must
+# not match a prefixed helper such as kp_tmux_socket_from_env.
+direct_calls() {
+  grep -rnE 'kp_window_|kp_tmux([^_[:alnum:]]|$)' "$1" \
+    | grep -vE ':[0-9]+:[[:space:]]*#' || true
+}
+raw=$(direct_calls "$KP_ROOT/bin")
+if [ -z "$raw" ]; then
+  pass "t15: no command calls kp_tmux or kp_window_* directly"
+else
+  fail "t15: these commands bypass the adapter: $raw"
+fi
+# The negative control: a probe with two real calls, one whole-line comment and one
+# prefixed helper, so a scan that matched everything (or nothing) fails here too.
+mkdir -p "$T/direct-probe"
+cat > "$T/direct-probe/cmd" <<'PROBE'
+#!/usr/bin/env bash
+kp_window_find "$dir"
+# kp_window_find "$dir"
+kp_tmux "$sock" list-sessions
+sock=$(kp_tmux_socket_from_env "$env_file")
+PROBE
+probe=$(direct_calls "$T/direct-probe")
+probe_count=$(printf '%s\n' "$probe" | grep -c . || true)
+[ "$probe_count" = 2 ] \
+  && pass "t15: the probe finds exactly its two real calls" \
+  || fail "t15: the probe found $probe_count line(s): $probe"
+case "$probe" in
+  *":2:kp_window_find"*) pass "t15: the probe reports the direct window call" ;;
+  *) fail "t15: the probe did not report kp_window_find: $probe" ;;
+esac
+case "$probe" in
+  *":4:kp_tmux "*) pass "t15: the probe reports the direct tmux call" ;;
+  *) fail "t15: the probe did not report kp_tmux: $probe" ;;
+esac
+case "$probe" in
+  *":3:"*) fail "t15: the probe read a whole-line comment as a call: $probe" ;;
+  *) pass "t15: a whole-line comment is not a call" ;;
+esac
+case "$probe" in
+  *kp_tmux_socket_from_env*) fail "t15: a prefixed helper read as a direct call: $probe" ;;
+  *) pass "t15: a prefixed helper is not a direct call" ;;
+esac
+
+# Test 16: list and wait read a Herdr record through the fake
+# ---------------------------------------------------------------------------
+echo "--- Test 16: list and wait read a Herdr record ---"
+kp_test_fake_herdr_state
+mock_herdr w1:p7 kp-144-list 3
+# The harness identity is a real pid: this shell, which the fake reports as the pane's
+# shell and foreground process.
+kp_test_herdr_process w1:p7 "$$" node
+t16_home="$T/h16"
+t16_dir="$t16_home/tasks/t16-list"
+mkdir -p "$t16_dir"
+# The recorded id is stale; the label is what resolves, and neither reader may rewrite it.
+printf 'TASK_ID=t16-list\nPROJECT=demo\nHARNESS=claude\nMODE=review\nMUX=herdr\nMUX_SESSION=kp144\nMUX_TARGET=w9:p9\nMUX_LABEL=kp-144-list\nCREATED=%s\n' \
+  "$(kp_test_iso_ago 100)" > "$t16_dir/task.env"
+printf 'issue: #203\n' > "$t16_dir/status"
+printf '1\n' > "$t16_dir/seen"
+printf '%s\n' "$$" > "$t16_dir/harness.pid"
+# A logging tmux first on PATH: a Herdr reader that falls back to tmux is caught even
+# when the fallback would succeed.
+mkdir -p "$T/t16-shim"
+cat > "$T/t16-shim/tmux" << EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$T/t16-tmux.log"
+exec "$T/bin/tmux" "\$@"
+EOF
+chmod +x "$T/t16-shim/tmux"
+: > "$T/t16-tmux.log"
+t16_before=$(cksum "$t16_dir/task.env")
+
+t16_list='' t16_list_rc=0
+t16_list=$(env PATH="$T/t16-shim:$PATH" KINGPIN_HOME="$t16_home" "$KP_BIN/kingpin" list 2>"$T/t16-list.err") || t16_list_rc=$?
+[ "$t16_list_rc" -eq 0 ] \
+  && pass "t16: list exits 0 on a Herdr record" \
+  || fail "t16: list exited $t16_list_rc: $(cat "$T/t16-list.err")"
+[ "$(printf '%s\n' "$t16_list" | awk '$1 == "t16-list" { print $5 }')" = kp144 ] \
+  && pass "t16: the SESSION column names the Herdr session" \
+  || fail "t16: the row reads '$(printf '%s\n' "$t16_list" | awk '$1 == "t16-list"')'"
+case "$t16_list" in
+  *"herdr --session kp144 kp-144-list (w1:p7)"*) pass "t16: the window line names the mux, the session, the pane label and id" ;;
+  *) fail "t16: the window line: $(printf '%s\n' "$t16_list" | grep '↳ Window:' || true)" ;;
+esac
+case "$t16_list" in
+  *"Workers live in the herdr session 'kp144': kingpin peek <task-id> reads one pane"*) pass "t16: the footer names the Herdr session and the read the adapter supports" ;;
+  *) fail "t16: the footer: $(printf '%s\n' "$t16_list" | grep 'Workers live' || true)" ;;
+esac
+case "$t16_list" in
+  *"Workers live on the tmux server"*) fail "t16: a Herdr-only fleet printed a tmux footer: $t16_list" ;;
+  *) pass "t16: a Herdr-only fleet prints no tmux footer" ;;
+esac
+grep -q 'tmux server' "$T/t16-list.err" \
+  && fail "t16: list warned about a tmux server it never named: $(cat "$T/t16-list.err")" \
+  || pass "t16: list printed no tmux socket warning for a Herdr task"
+[ -s "$T/t16-tmux.log" ] \
+  && fail "t16: list ran tmux for a Herdr record: $(cat "$T/t16-tmux.log")" \
+  || pass "t16: list issued zero tmux commands"
+[ "$(cksum "$t16_dir/task.env")" = "$t16_before" ] \
+  && pass "t16: list leaves the record byte-identical (stale MUX_TARGET kept)" \
+  || fail "t16: list rewrote task.env: $(grep MUX_TARGET "$t16_dir/task.env")"
+
+: > "$T/t16-tmux.log"
+t16_wait='' t16_wait_rc=0
+t16_wait=$(env PATH="$T/t16-shim:$PATH" KINGPIN_HOME="$t16_home" "$KP_BIN/kingpin-wait" --once 2>"$T/t16-wait.err") || t16_wait_rc=$?
+[ "$t16_wait_rc" -eq 1 ] \
+  && pass "t16: wait --once raises no event for a live Herdr pane" \
+  || fail "t16: wait --once exited $t16_wait_rc with '$t16_wait': $(cat "$T/t16-wait.err")"
+[ -z "$t16_wait" ] \
+  && pass "t16: the live Herdr pass prints nothing" \
+  || fail "t16: wait printed '$t16_wait'"
+[ "$(cksum "$t16_dir/task.env")" = "$t16_before" ] \
+  && pass "t16: wait leaves the record byte-identical" \
+  || fail "t16: wait rewrote task.env: $(grep MUX_TARGET "$t16_dir/task.env")"
+kp_test_herdr_pane_remove w1:p7
+t16_gone='' t16_gone_rc=0
+t16_gone=$(env PATH="$T/t16-shim:$PATH" KINGPIN_HOME="$t16_home" "$KP_BIN/kingpin-wait" --once 2>"$T/t16-gone.err") || t16_gone_rc=$?
+[ "$t16_gone_rc" -eq 0 ] && [ "$t16_gone" = "t16-list exited" ] \
+  && pass "t16: a closed Herdr pane raises exited" \
+  || fail "t16: after the pane closed wait exited $t16_gone_rc with '$t16_gone': $(cat "$T/t16-gone.err")"
+[ -s "$T/t16-tmux.log" ] \
+  && fail "t16: wait ran tmux for a Herdr record: $(cat "$T/t16-tmux.log")" \
+  || pass "t16: wait issued zero tmux commands"
+
+# A dead Herdr row is DEAD in the table, but no restore hint: the hint is a tmux
+# remedy and `kingpin restore` refuses a Herdr record by name until #204 (review M1).
+: > "$T/t16-tmux.log"
+t16_dead='' t16_dead_rc=0
+t16_dead=$(env PATH="$T/t16-shim:$PATH" KINGPIN_HOME="$t16_home" "$KP_BIN/kingpin" list 2>"$T/t16-dead.err") || t16_dead_rc=$?
+[ "$t16_dead_rc" -eq 0 ] \
+  && pass "t16: list exits 0 on a dead Herdr row" \
+  || fail "t16: list exited $t16_dead_rc on a dead Herdr row: $(cat "$T/t16-dead.err")"
+[ "$(printf '%s\n' "$t16_dead" | awk '$1 == "t16-list" { print $6 }')" = DEAD ] \
+  && pass "t16: a gone Herdr pane reads DEAD" \
+  || fail "t16: the dead row reads '$(printf '%s\n' "$t16_dead" | awk '$1 == "t16-list"')'"
+case "$t16_dead" in
+  *"run kingpin restore"*) fail "t16: a dead Herdr row prints the tmux restore hint: $t16_dead" ;;
+  *) pass "t16: a dead Herdr row prints no tmux restore hint" ;;
+esac
+[ -s "$T/t16-tmux.log" ] \
+  && fail "t16: list ran tmux for a dead Herdr record: $(cat "$T/t16-tmux.log")" \
+  || pass "t16: a dead Herdr row issues zero tmux commands"
+t16_brief='' t16_brief_rc=0
+t16_brief=$(env PATH="$T/t16-shim:$PATH" KINGPIN_HOME="$t16_home" "$KP_BIN/kingpin-brief" 2>"$T/t16-brief-dead.err") || t16_brief_rc=$?
+[ "$t16_brief_rc" -eq 0 ] \
+  && pass "t16: brief exits 0 on a dead Herdr row" \
+  || fail "t16: brief exited $t16_brief_rc on a dead Herdr row: $(cat "$T/t16-brief-dead.err")"
+case "$t16_brief" in
+  *"run kingpin restore"*) fail "t16: brief prints the tmux restore hint for a dead Herdr row: $t16_brief" ;;
+  *) pass "t16: brief prints no tmux restore hint for a dead Herdr row" ;;
+esac
 
 kp_test_finish MUX

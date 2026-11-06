@@ -696,5 +696,27 @@ echo "$t_truncated_out" | grep -qF "did not report its sessions" && fail "the OK
 remove_live_fixture "$d" 'kingpin:=t-truncated'
 
 # ---------------------------------------------------------------------------
+# Test 22: a Herdr record is refused by name, before the tmux fields it lacks
+echo "=== Test 22: restore refuses a Herdr record by name ==="
+d="$KINGPIN_HOME/tasks/t-herdr"
+mkdir -p "$d"
+# The record names Herdr and carries no TMUX_TARGET at all, so the refusal must name the
+# mux rather than the tmux field it does not have.
+printf 'TASK_ID=t-herdr\nPROJECT=demo-auto\nPROJECT_PATH=%s\nHARNESS=agy\nMODE=review\nWORKTREE=%s\nMUX=herdr\nMUX_SESSION=kp144\nMUX_TARGET=w1:p7\nMUX_LABEL=t-herdr\n' \
+  "$T/proj" "$T/no-herdr-worktree" > "$d/task.env"
+printf 'issue: #203\n' > "$d/status"
+t_herdr_before=$(snapshot "$d")
+t_herdr_rc=0
+t_herdr_err=$("$KP_BIN/kingpin" restore t-herdr --dry-run 2>&1 >/dev/null) || t_herdr_rc=$?
+[ "$t_herdr_rc" -eq 1 ] && pass "a Herdr record is refused even by --dry-run" || fail "restore exited $t_herdr_rc: $t_herdr_err"
+grep -q "refused t-herdr:" <<< "$t_herdr_err" && pass "the refusal names the task" || fail "stderr: $t_herdr_err"
+grep -qF "the record names the herdr mux" <<< "$t_herdr_err" && pass "the refusal names the mux" || fail "stderr: $t_herdr_err"
+grep -qF "issue #204" <<< "$t_herdr_err" && pass "the refusal names the change that adds Herdr creation" || fail "stderr: $t_herdr_err"
+grep -qF "TMUX_TARGET missing" <<< "$t_herdr_err" && fail "the refusal named the missing tmux field instead: $t_herdr_err" || pass "the refusal comes before the tmux field requirement"
+window_named t-herdr && fail "the refused Herdr record created a window" || pass "no window was created"
+[ "$(snapshot "$d")" = "$t_herdr_before" ] && pass "the Herdr record is untouched" || fail "the refusal changed the task folder"
+rm -rf "$d"
+
+# ---------------------------------------------------------------------------
 
 kp_test_finish RESTORE

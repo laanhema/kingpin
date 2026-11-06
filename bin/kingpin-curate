@@ -520,7 +520,6 @@ settle_curator_window() {
   local saved_socket=${KP_WINDOW_SOCKET:-} state
   KP_WINDOW_SOCKET=$fleet_socket
   state=$(kp_mux_target_state "$tmux_target" 2>/dev/null) || state=none
-  KP_WINDOW_SOCKET=$saved_socket
   case $state in
     alive)
       # The settle probe above refuses the same state, and a tick that claimed nothing
@@ -533,7 +532,10 @@ settle_curator_window() {
       die "curator window $mux_label is already active"
       ;;
     dead)
-      if kp_tmux "$fleet_socket" kill-window -t "$tmux_target" 2>/dev/null; then
+      # The reap goes through the adapter inside the same KP_WINDOW_SOCKET window as the
+      # probe, so the tmux argv is the one this command issued before lib/mux.sh had
+      # the verb.
+      if kp_mux_kill "$tmux_target" 2>/dev/null; then
         info "reaped dead curator window $tmux_target"
       else
         # A reap that fails is not reported as done (issue #182).
@@ -542,6 +544,7 @@ settle_curator_window() {
       ;;
     *) : ;;
   esac
+  KP_WINDOW_SOCKET=$saved_socket
   return 0
 }
 

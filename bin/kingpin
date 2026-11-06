@@ -12,8 +12,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_BIN/../lib/afk.sh"
 # shellcheck source=../lib/checks.sh
 . "$KP_BIN/../lib/checks.sh"
-# shellcheck source=../lib/tmux.sh
-. "$KP_BIN/../lib/tmux.sh"
+# shellcheck source=../lib/mux.sh
+. "$KP_BIN/../lib/mux.sh"
 # shellcheck source=../lib/browser.sh
 . "$KP_BIN/../lib/browser.sh"
 # shellcheck source=../lib/dossier.sh
@@ -128,7 +128,7 @@ case "$cmd" in
         -h|--help)
           echo "usage: kingpin list [--all|-a]"
           echo "  Lists live fleet tasks; --all (or -a) also shows finished (archived) tasks."
-          echo "  The SESSION column names the tmux session each worker's window lives in."
+          echo "  The SESSION column names the mux session (tmux or Herdr) each worker lives in."
           echo "  Always prints a 'Supervisor: running (pid N, since HH:MM)' line, or"
           echo "  'Supervisor: none - run kingpin watch' when no fleet supervisor runs,"
           echo "  and 'AFK: on until HH:MM (pid N)' while AFK auto-landing is armed."
@@ -143,12 +143,11 @@ case "$cmd" in
     print_task_row() {
       local d=$1 suffix=${2:-}
       local tid env_file proj harness mode status_file st listen_info lpid url
-      local state lines seen window_alive tmux_target tmux_socket live_session
+      local state lines seen window_alive live_session live_name
       local liveness task_state
       tid=$(basename "$d")
       env_file="$d/task.env"
       proj="-" harness="claude" mode="review"
-      tmux_target='' tmux_socket=''
       if [ -f "$env_file" ]; then
         proj=$(kp_env_get "$env_file" PROJECT)
         [ -n "$proj" ] || proj="-"
@@ -156,31 +155,34 @@ case "$cmd" in
         [ -n "$harness" ] || harness="claude"
         mode=$(kp_env_get "$env_file" MODE)
         [ -n "$mode" ] || mode="review"
-        # Where the worker lives (issue #142): socket, session, window.
-        tmux_socket=$(kp_tmux_socket_from_env "$env_file")
-        tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
-        [ -n "$tmux_target" ] || tmux_target="kingpin:$tid"
       fi
-      # The task's own window, resolved once by name first and by id second (lib/tmux.sh),
-      # on the socket the record names. A stale recorded id that now names a stranger's
-      # window is not this task's, so a fleet whose tmux server died reads as dead instead
-      # of healthy (issue #149). An archived row never probes: its window was killed by
-      # `kingpin done`, and a window check would only say DEAD for good.
-      window_alive=0 live_session=''
-      if [ -z "$suffix" ] && kp_window_find "$d" >/dev/null 2>&1; then
+      # The task's own terminal, resolved once through lib/mux.sh: by name first and by
+      # id second for tmux (lib/tmux.sh), by label first and by pane id second for Herdr.
+      # A stale recorded id that now names a stranger's window is not this task's, so a
+      # fleet whose tmux server died reads as dead instead of healthy (issue #149). The
+      # find is read-only: a board must never rewrite a record's target (issue #203). An
+      # archived row never probes: its window was killed by `kingpin done`, and a terminal
+      # check would only say DEAD for good.
+      window_alive=0 live_session='' live_name=''
+      if [ -z "$suffix" ] && kp_mux_find "$d" --no-record >/dev/null 2>&1; then
         window_alive=1
-        tmux_socket=$KP_WINDOW_SOCKET
-        live_session=$(kp_tmux "$KP_WINDOW_SOCKET" display-message -p -t "$KP_WINDOW_ID" '#S' 2>/dev/null || true)
+        live_session=$(kp_mux_target_session "$d" "$KP_WINDOW_ID" 2>/dev/null || true)
+        # The `↳ Window:` line names where inside the mux the worker really is: the
+        # session for tmux, and the pane label for Herdr, because one Herdr session holds
+        # many panes and the session alone would not point at this worker.
+        if [ "$KP_MUX" = herdr ]; then live_name=$KP_WINDOW_NAME; else live_name=$live_session; fi
       fi
-      [ -n "$live_session" ] || live_session=${tmux_target%%:*}
+      if [ -z "$live_session" ]; then
+        IFS=$'\t' read -r live_session live_name < <(kp_mux_parts "$d") || true
+      fi
       [ -n "$live_session" ] || live_session='-'
       status_file="$d/status"
       st="(pending)"
       state="-"
-      # DEAD is a live task whose window is gone, or whose recorded harness is no
-      # longer in the window that carries its name, whether or not the record has a
+      # DEAD is a live task whose terminal is gone, or whose recorded harness is no
+      # longer in the terminal that carries its name, whether or not the record has a
       # status file or a `harness.pid`: an older record (or a curator record) has
-      # neither, and `kp_window_harness_live` falls back to the pane's command for it.
+      # neither, and `kp_mux_harness_live` falls back to the pane's command for it.
       # WAITING and SILENT still describe a pane that is really there, which is why
       # `pane` is a shape of its own: a window that outlived its harness is DEAD while
       # the job runs on, but a finished silent stop keeps the SILENT row it always had.
@@ -190,7 +192,7 @@ case "$cmd" in
       if [ -z "$suffix" ]; then
         if [ "$window_alive" -eq 0 ]; then
           liveness=dead
-        elif kp_window_harness_live "$d"; then
+        elif kp_mux_harness_live "$d"; then
           liveness=live
         else
           liveness=pane
@@ -216,17 +218,20 @@ case "$cmd" in
       task_state=$(kp_task_state "$status_file" "$liveness")
       if [ "$task_state" != none ]; then
         state=$task_state
-        if [ "$task_state" = DEAD ]; then
+        # The restore hint is a tmux remedy: `kingpin restore` refuses a Herdr record by
+        # name until #204, so a dead Herdr row reads DEAD but is not counted into it.
+        if [ "$task_state" = DEAD ] \
+           && [ "$(kp_mux_record "$d" 2>/dev/null || true)" != herdr ]; then
           dead_count=$((dead_count + 1))
         fi
       fi
       printf "%-22s %-10s %-8s %-12s %-10s %-18s %s%s\n" "$tid" "$proj" "$harness" "$mode" "$live_session" "$state" "$st" "$suffix"
-      # Name the server and session that hold a live worker, so an operator can
-      # attach to it (issue #142). A dead worker's window is gone, and so is an
+      # Name the server and the place inside it that hold a live worker, so an operator
+      # can attach to it (issue #142). A dead worker's terminal is gone, and so is an
       # archived row's, so neither names one.
       if [ -z "$suffix" ] && [ -f "$env_file" ] && [ "$window_alive" -eq 1 ]; then
         local where
-        where="$(kp_tmux_label "$tmux_socket") $live_session"
+        where="$(kp_mux_label "$d") $live_name"
         printf "  %-20s %s\n" "↳ Window:" "$where ($KP_WINDOW_ID)"
       fi
       # The browser daemons this task holds right now (issue #160), read from the one table
@@ -313,14 +318,16 @@ case "$cmd" in
     # One warning per server that no longer answers while live records still name it
     # (issue #165): a dead server reads as a table of DEAD rows, and the operator needs
     # the socket named, not only the tasks. The line goes to stderr and is silenced by
-    # KINGPIN_SKIP_SOCKET_WARN=1, the same shape as KINGPIN_SKIP_GUARD=1.
+    # KINGPIN_SKIP_SOCKET_WARN=1, the same shape as KINGPIN_SKIP_GUARD=1. Herdr records
+    # are left out: socket health is a tmux-server concern, and a Herdr session has no
+    # equivalent failure mode (see docs/cli.md, `kingpin list`).
     warn_unreachable_sockets() {
       local sock ids
       while IFS=$'\t' read -r sock ids; do
         kp_tmux_socket_reachable "$sock" && continue
         # shellcheck disable=SC2086 # ids is a space-separated list of task ids
         kp_tmux_socket_warn_line "$sock" $ids
-      done < <(kp_tmux_live_by_socket ${live_dirs[@]+"${live_dirs[@]}"})
+      done < <(kp_tmux_live_by_socket --skip kp_mux_skips_tmux_socket ${live_dirs[@]+"${live_dirs[@]}"})
     }
 
     # Dossiers left open on finished tasks (issue #186). A finished row is hidden from
@@ -359,14 +366,26 @@ case "$cmd" in
     # told to attach to a server that held no worker (issue #165). With no live task
     # the fleet's own socket is named instead, the one a spawn started outside tmux
     # uses; a spawn inside tmux follows the caller's socket, which this board cannot
-    # predict without resolving a target for it.
+    # predict without resolving a target for it. A Herdr record is not on a tmux server,
+    # so it gets one line per session, naming the read the adapter supports and no
+    # attach command Herdr does not have (issue #203).
     print_socket_footer() {
-      local sock ids any=0
+      local sock ids any=0 d record_mux session seen_sessions=' '
       while IFS=$'\t' read -r sock ids; do
         any=1
         printf "Workers live on the tmux server '%s': %s (kingpin peek <task-id> reads one pane)\n" \
           "$sock" "$(socket_attach_cmd "$sock")"
-      done < <(kp_tmux_live_by_socket ${live_dirs[@]+"${live_dirs[@]}"})
+      done < <(kp_tmux_live_by_socket --skip kp_mux_skips_tmux_socket ${live_dirs[@]+"${live_dirs[@]}"})
+      for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
+        record_mux=$(kp_mux_record "$d" 2>/dev/null) || continue
+        [ "$record_mux" = herdr ] || continue
+        session=$(kp_mux_target_session "$d" 2>/dev/null || true)
+        [ -n "$session" ] || continue
+        case "$seen_sessions" in *" $session "*) continue ;; esac
+        seen_sessions="$seen_sessions$session "
+        any=1
+        printf "Workers live in the herdr session '%s': kingpin peek <task-id> reads one pane\n" "$session"
+      done
       if [ "$any" -eq 0 ]; then
         sock=$(kp_tmux_socket_for "$KP_HOME")
         printf "Workers live on the tmux server '%s': %s (kingpin peek <task-id> reads one pane)\n" \
