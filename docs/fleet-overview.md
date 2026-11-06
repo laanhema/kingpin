@@ -57,35 +57,37 @@ Review the changes and click **Approve & Land** on the dossier or run:
 kingpin land <task-id>
 ```
 
-### 3. Handover Artifacts (handover template)
+### 3. Handover Artifacts (case-file handover template)
 
-Pages handed to the boss for a decision (proposals, plans, comparisons, review summaries) start from the handover template that ships with the repo, in the same folder as the worker dossier template:
+Pages handed to the boss for a decision (proposals, plans, comparisons, review summaries) start from the case-file handover template that ships with the repo:
 
 ```
-assets/lavish/worker-dossier/
-  handover.html   the page: decision header, stat cards, problem, inline-SVG diagram, options, risks, diff, decision forms
+assets/lavish/kingpin-dossier/
+  handover.html   the page: telegram, stat cards, problem, inline-SVG diagram, options, risks, decision forms
   template.html   a worker's report.html, section 4 below
+  hero.jpg        the banner picture, referenced beside the pages
   DESIGN.md       the rules the look depends on, beside the files they describe
 ```
 
-Copy `handover.html` into the artifact's directory (`.lavish/`), rename it, change the title first, then swap the sample content and `REPLACE` comments. `DESIGN.md` lists the rules (dark palette, what each colour means, option cards and one comparison table, one form per question) and how to trim the page into a review summary. Check it at 1280 and 1024 wide with nothing scrolling sideways, then open it:
+Copy `handover.html` and `hero.jpg` from the same folder into the artifact's directory (`.lavish/`), rename the page, change the title first, then swap the sample content and `REPLACE` comments. The hero travels with the page because both load it by relative path. `DESIGN.md` lists the rules (paper on ink, the stamped controls, option cards and one comparison table, one form per question) and how to trim the page into a review summary. A handover carries no diff section, so it takes `kingpin report check --prose-only`; the worker page takes the full check. Check it at 1280 and 1024 wide with nothing scrolling sideways, then open it:
 
 ```bash
 lavish-axi .lavish/<artifact>.html
 ```
 
-`tests/test-worker-dossier-template.sh` fails when the folder loses a file, when a section a page is read for goes missing, when a decision form loses its handler or its no-Lavish message, or when the page stops passing the full `kingpin report check`.
+`tests/test-kingpin-dossier-template.sh` fails when the folder loses a file, when a page loses one of its nine decisions, when a diff loses its static fallback, when a decision form loses its handler or its no-Lavish message, when either page stops passing its check, or when the preambles stop pointing at the folder.
 
-The noir dossier template (`assets/lavish/noir-dossier/`, tested by `tests/test-noir-template.sh`) stays in the repo for a future parchment look. Nothing uses it by default.
+The older worker dossier template (`assets/lavish/worker-dossier/`, tested by `tests/test-worker-dossier-template.sh`) stays in the repo for pages already made from it. The noir dossier template (`assets/lavish/noir-dossier/`, tested by `tests/test-noir-template.sh`) stays for a future parchment look. Neither is the default for a new page.
 
-### 4. Worker Review Dossiers (worker dossier template)
+### 4. Worker Review Dossiers (case-file dossier template)
 
-A worker's `report.html` starts from the worker dossier template, which is the default for every task:
+A worker's `report.html` starts from the case-file dossier template, which is the default for every task:
 
 ```
-assets/lavish/worker-dossier/
-  template.html   the page: action bar, stat cards, what changed, review findings, validation, diffs
-  DESIGN.md       the rules the look depends on, beside the file they describe
+assets/lavish/kingpin-dossier/
+  template.html   the page: hero, telegram, stat cards, what changed, acceptance, review findings, validation, diffs
+  hero.jpg        the banner picture, referenced as src="hero.jpg"
+  DESIGN.md       the rules the look depends on, beside the files they describe
 ```
 
-`worker/curator-preamble.md` gives the curator the same template, with a note on how its critiques, skipped items and `PENDING` verdict fit the sections. `worker/preamble.md` tells the worker to copy `template.html` to the task folder as `report.html`, swap the sample values and `REPLACE` comments for the task's own, and paste the output of `kingpin report diffs` over the sample diff section. The look came from the dossiers that read most clearly: a dark GitHub palette on Tailwind and DaisyUI, one numbered Problem and Solution block per change, every review finding as a table row with its pass, ID, severity and outcome, and a validation table. `DESIGN.md` records the rules, including what each colour means. `tests/test-worker-dossier-template.sh` fails when the folder loses a file, when a section the dossier is read for goes missing, when the page stops passing the full `kingpin report check`, or when the preamble stops pointing at it. The handover template shares its look, so a report and a proposal read the same way.
+`worker/curator-preamble.md` gives the curator the same template, with a note on how its critiques, skipped items and `PENDING` verdict fit the sections. `worker/preamble.md` tells the worker to copy `template.html` and `hero.jpg` into the task folder, name the page `report.html`, swap the sample values and `REPLACE` comments for the task's own, and paste the output of `kingpin report diffs` over the sample diff section. The look is a case file: parchment cards on ink, a framed hero with a sideways stamp, four typefaces with one job each, stamped controls, and one dark code region. `DESIGN.md` records the rules, including the palette and the retire hook a finished worker dossier reads. `tests/test-kingpin-dossier-template.sh` fails when the folder loses a file, when a page loses one of its nine decisions, when a diff loses its static fallback, or when the preamble stops pointing at it. The handover template shares its look, so a report and a proposal read the same way.

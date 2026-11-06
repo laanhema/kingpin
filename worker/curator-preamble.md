@@ -43,14 +43,18 @@ and every curation is a pull request a person reviews before it merges.
 
 ## The review dossier
 
-Before you report, write `{{REPORT_FILE}}`: one self-contained page that shows which critiques were
+Before you report, write `{{REPORT_FILE}}`: one page that shows which critiques were
 applied and why, the diff of every changed skill file, and how you verified the result. Start from the
-worker dossier template: copy `{{KP_ROOT}}/assets/lavish/worker-dossier/template.html` to that path,
-replace every sample value and every `REPLACE` comment with this batch's content, and keep its
-stylesheet, root tag, section order and component classes. Read
-`{{KP_ROOT}}/assets/lavish/worker-dossier/DESIGN.md` first; it records the rules the look depends on.
+fleet's case-file template: copy `{{KP_ROOT}}/assets/lavish/kingpin-dossier/template.html` to that path
+and copy `{{KP_ROOT}}/assets/lavish/kingpin-dossier/hero.jpg` beside it, because the page loads its hero
+by relative path and a copy without it ships a broken banner. Then replace every sample value and every
+`REPLACE` comment with this batch's content, and keep its hero, stylesheet, root tag, section order and
+component classes. Read
+`{{KP_ROOT}}/assets/lavish/kingpin-dossier/DESIGN.md` first; it records the rules the look depends on.
+The older `{{KP_ROOT}}/assets/lavish/worker-dossier/template.html` is still shipped for pages already
+made from it.
 
-The template already carries the dark palette, the layout block, the `data-lavish-annotate="off"` root
+The template already carries the case-file palette, the layout block, the `data-lavish-annotate="off"` root
 tag and the action bar. In the two buttons change the task id to `curator`, so 'Approve & Land' queues
 `kingpin land curator` and 'Request Changes' still sends the reviewer's note to the orchestrator.
 Fit the curator's content to the template's sections:
