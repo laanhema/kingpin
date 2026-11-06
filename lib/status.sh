@@ -110,7 +110,8 @@ kp_status_worker_events() {
 # kp_status_note <status-file> <stopped-file> <line>
 # Append a note that is not the worker's report (an approved:/feedback: line)
 # without moving the Stop hook's turn boundary. kingpin-stop treats a status file
-# newer than the `stopped` marker as written during this turn (bin/kingpin-stop:82-90),
+# newer than the `stopped` marker as written during this turn (the turn-boundary
+# check in `bin/kingpin-stop`),
 # so a note must leave that boundary as it found it when the worker already
 # reported, and move it when the note arrived instead of a report. Otherwise the
 # next silent turn looks reported and never gets its `failed: no status:` line.

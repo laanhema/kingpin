@@ -77,7 +77,7 @@ A rule that only a person keeps is one that goes stale; each rule below names wh
 | a test script captures a status with `kp_run`, never on a `NAME=$?` assignment after an unguarded command while errexit is on | `tests/lint.sh` |
 | every parsed flag and `KINGPIN_*` variable is documented, and every one a page shows reaches `docs/cli.md` | `tests/readme-cli-reference.sh` |
 | command behaviour (refusals, exit codes, flags) is written in full only in `docs/cli.md`; `README.md`, `AGENTS.md` and `orchestrator/contract.md` keep what their reader acts on and point at the section | review |
-| no page the citation check reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md`, `worker/*.md`) cites a source file by line number | `tests/doc-citations.sh` |
+| no page the citation check reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md`, `worker/*.md`) and no whole-comment line in `bin/*`, `lib/*.sh` or `lib/*.mjs` cites a source file by line number | `tests/doc-citations.sh` |
 | nothing under `.agents/` is tracked | `tests/lint.sh` |
 | `tmux` is reached only through `lib/tmux.sh` and `herdr` only through `lib/mux-herdr.sh` | the static checks in `tests/test-tmux-isolation.sh` and `tests/test-mux.sh` |
 | the shipped `systemd/kingpin-watch.service` mirrors `kingpin-queue.service` (`Type=simple`, `Restart=always`, `RestartSec=30`), starts the daemon rather than `--once`, and the no-supervisor warning names the unit | `tests/test-watch-supervisor.sh` |

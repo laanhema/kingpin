@@ -664,4 +664,108 @@ else
 fi
 cp "$T/ci.yml.saved" "$FIX/.github/workflows/ci.yml"
 
+echo "=== Test 39: a bare and a span-closed citation in a bin/ code comment fail the lint ==="
+cp "$FIX/bin/kingpin-fixture" "$T/bin-fixture.saved"
+cat >> "$FIX/bin/kingpin-fixture" << 'F'
+# See bin/kingpin-fixture:42 for the detail.
+# The span can also close before the colon: see `bin/kingpin-fixture`:43.
+F
+comment_line=$(grep -n '^# See bin/kingpin-fixture:42' "$FIX/bin/kingpin-fixture" | cut -d: -f1)
+span_line=$(grep -n '^# The span can also close' "$FIX/bin/kingpin-fixture" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] \
+  && grep -qF "bin/kingpin-fixture:$comment_line" <<< "$LINT_OUT" \
+  && grep -qF 'bin/kingpin-fixture:42' <<< "$LINT_OUT" \
+  && grep -qF "bin/kingpin-fixture:$span_line" <<< "$LINT_OUT" \
+  && grep -qF "\`bin/kingpin-fixture\`:43" <<< "$LINT_OUT" \
+  && grep -qF 'cite the function or the command by name' <<< "$LINT_OUT"; then
+  pass "a path:line citation in a bin/ comment fails the lint and names both forms, their lines and the remedy"
+else
+  fail "the lint accepted a path:line citation in a bin/ comment (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/bin-fixture.saved" "$FIX/bin/kingpin-fixture"
+
+echo "=== Test 40: a citation in a lib/*.sh and a lib/*.mjs comment fails the lint ==="
+cp "$FIX/lib/fixture.sh" "$T/lib-fixture.sh.saved"
+cp "$FIX/lib/fixture.mjs" "$T/lib-fixture.mjs.saved"
+cat >> "$FIX/lib/fixture.sh" << 'F'
+# Straight out of bin/kingpin-fixture:9.
+F
+cat >> "$FIX/lib/fixture.mjs" << 'F'
+// See lib/fixture.sh:3 before you rewrite this.
+F
+sh_comment_line=$(grep -n '^# Straight out of' "$FIX/lib/fixture.sh" | cut -d: -f1)
+mjs_comment_line=$(grep -n '^// See lib/fixture' "$FIX/lib/fixture.mjs" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] \
+  && grep -qF "lib/fixture.sh:$sh_comment_line" <<< "$LINT_OUT" \
+  && grep -qF 'bin/kingpin-fixture:9' <<< "$LINT_OUT" \
+  && grep -qF "lib/fixture.mjs:$mjs_comment_line" <<< "$LINT_OUT" \
+  && grep -qF 'lib/fixture.sh:3' <<< "$LINT_OUT"; then
+  pass "a citation in each comment kind fails the lint and names both files"
+else
+  fail "the citation check missed a lib comment (rc=$LINT_RC): $LINT_OUT"
+fi
+
+echo "=== Test 41: a comment that cites the function instead keeps the lint green ==="
+cp "$T/lib-fixture.sh.saved" "$FIX/lib/fixture.sh"
+cp "$T/lib-fixture.mjs.saved" "$FIX/lib/fixture.mjs"
+cat >> "$FIX/bin/kingpin-fixture" << 'F'
+# The same pid check as kp_fixture in lib/fixture.sh.
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "a comment citing a function by name passes the citation check"
+else
+  fail "the lint rejected a function-shaped citation (rc=$LINT_RC): $LINT_OUT"
+fi
+rm -f "$T/lib-fixture.sh.saved" "$T/lib-fixture.mjs.saved" "$T/bin-fixture.saved"
+
+echo "=== Test 42: a citation crossing a */ or sitting in a trailing comment is unread while block comments are caught ==="
+# The header promise of tests/doc-citations.sh: only whole-comment lines are
+# read, so a /* -opener with code after a mid-line */ is a code line whose
+# trailing comment goes unread, whether the citation itself sits before the
+# */ or after it, and a block comment a citation sits inside still fails.
+cp "$FIX/lib/fixture.mjs" "$T/mjs-defect.saved"
+cat >> "$FIX/lib/fixture.mjs" << 'F'
+/* x=1 */ const u = 1; // cites lib/fixture.sh:3
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && ! grep -q 'lib/fixture.sh:3' <<< "$LINT_OUT"; then
+  pass "a /* -opener line with code after a mid-line */ is a code line whose trailing comment is unread"
+else
+  fail "the check read the trailing comment of a /* -opener line with code (rc=$LINT_RC): $LINT_OUT"
+fi
+
+echo "=== Test 43: a citation inside a whole block-comment line still fails the lint ==="
+cat >> "$FIX/lib/fixture.mjs" << 'F'
+/* opens on this line, cites lib/fixture.sh:5
+* continues the same block, cites lib/fixture.sh:6
+* closes on this whole-comment line: lib/fixture.sh:7 */
+F
+open_line=$(grep -n '^/\* opens on this line' "$FIX/lib/fixture.mjs" | cut -d: -f1)
+cont_line=$(grep -n '^\* continues the same block' "$FIX/lib/fixture.mjs" | cut -d: -f1)
+close_line=$(grep -n '^\* closes on this whole-comment line' "$FIX/lib/fixture.mjs" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] \
+  && grep -qF "lib/fixture.mjs:$open_line" <<< "$LINT_OUT" \
+  && grep -qF 'lib/fixture.sh:5' <<< "$LINT_OUT" \
+  && grep -qF "lib/fixture.mjs:$cont_line" <<< "$LINT_OUT" \
+  && grep -qF 'lib/fixture.sh:6' <<< "$LINT_OUT" \
+  && grep -qF "lib/fixture.mjs:$close_line" <<< "$LINT_OUT" \
+  && grep -qF 'lib/fixture.sh:7' <<< "$LINT_OUT" \
+  && ! grep -q 'lib/fixture.sh:3' <<< "$LINT_OUT"; then
+  pass "an open, a continuing and a closing block-comment line each fail the lint while the trailing comment beside them stays unread"
+else
+  fail "the check missed a whole block-comment line or read the trailing one (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/mjs-defect.saved" "$FIX/lib/fixture.mjs"
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "restoring the module makes the lint green again"
+else
+  fail "the lint stayed red after the module was restored (rc=$LINT_RC): $LINT_OUT"
+fi
+rm -f "$T/mjs-defect.saved"
+
 kp_test_finish LINT

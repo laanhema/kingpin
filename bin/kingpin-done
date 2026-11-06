@@ -67,8 +67,9 @@ fi
 env_file="$task_dir/task.env"
 [ -f "$env_file" ] || die "task.env missing in $task_dir"
 
-# Two callers can run this cleanup for one task: `kingpin run` (bin/kingpin:267)
-# and the fleet supervisor's retry (bin/kingpin-watch:207). Without a lock both
+# Two callers can run this cleanup for one task: `kingpin run` (the `run)` case
+# of `bin/kingpin`) and the fleet supervisor's retry (`retry_pending_cleanups`
+# in `bin/kingpin-watch`). Without a lock both
 # call `treehouse return` for the same path and a lease a spawn took in between
 # is returned from under it (issue #75). The lock is a file, not a directory:
 # link(2) is atomic and fails when the file exists, and a stale lock is reclaimed
@@ -82,7 +83,8 @@ _cleanup_lock_owner_alive() {
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   [ "$pid" -gt 1 ] 2>/dev/null || return 1
   kill -0 "$pid" 2>/dev/null || return 1
-  # A recycled pid is not a holder (same check as lib/supervisor.sh:14-25).
+  # A recycled pid is not a holder (same check as `kp_supervisor_pid` in
+  # `lib/supervisor.sh`).
   args=$(ps -o args= -p "$pid" 2>/dev/null || true)
   case "$args" in *kingpin-done*) return 0 ;; esac
   return 1
@@ -236,7 +238,8 @@ refuse_cleanup() {
 }
 
 # A lost lease does not heal by retrying. `kingpin-watch` retries every task whose
-# last status is `cleanup-refused:` (bin/kingpin-watch:207), and before this marker
+# last status is `cleanup-refused:` (`retry_pending_cleanups` in `bin/kingpin-watch`),
+# and before this marker
 # each retry re-ran `git fetch origin`, `git ls-remote --symref origin HEAD` and a
 # `treehouse return` that is known to fail (issue #75). The marker records the
 # refusal, so a later run without --force re-emits it and stops before any network

@@ -122,7 +122,8 @@ refuse() {
 }
 
 # set_env_key <env-file> <KEY> <value>: rewrite one KEY=value line, adding it when the
-# record has none (bin/kingpin-rename:55-58 shape: a temp file in the same folder).
+# record has none (the `_kp_mux_record_set` shape in `lib/mux.sh`: a temp file in
+# the same folder).
 set_env_key() {
   local env_file=$1 key=$2 value=$3 cur tmp
   cur=$(kp_env_get "$env_file" "$key")
