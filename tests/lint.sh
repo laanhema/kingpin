@@ -4,8 +4,8 @@
 # Every suite has to be a leg of the CI matrix and have a row in docs/testing.md, the ci-ok
 # merge-gate check below has to find one aggregate job that needs every other job and carries
 # no display `name:`, the fixed sleeps before assertions check and the unguarded `$?` check
-# below have to stay quiet, and no page the citation check reads may cite a source file by
-# line number (tests/doc-citations.sh).
+# below have to stay quiet, and neither a page the citation check reads nor a whole-comment
+# line in bin/ or lib may cite a source file by line number (tests/doc-citations.sh).
 # The README/docs CLI-reference check runs in both directions: every parsed flag and
 # KINGPIN_* variable has to be documented, and every flag a docs page shows has to reach
 # docs/cli.md.

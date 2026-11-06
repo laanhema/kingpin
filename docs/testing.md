@@ -29,7 +29,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | Suite | Covers |
 |---|---|
 | `test-lifecycle.sh` | `init`, `list`, `watch` auto-lifecycle, `run`, fleet-server targeting |
-| `test-wait.sh` | `wait` and `ack`: blocking, wake filtering, exit codes, the `seen_line` anchor a written cursor carries, the `--rewind` rules, and the event a file shorter than its cursor raises |
+| `test-wait.sh` | `wait` and `ack`: blocking, wake filtering, exit codes, the `seen_line` anchor a written cursor carries, the `--rewind` rules, the event a file shorter than its cursor raises, and a static check that `bin/kingpin-wait` sources each library once |
 | `test-watch-once.sh` | `watch --once`: one status line dispatched once by two concurrent `--once` sweeps and by a `--once` sweep beside a running supervisor, the heartbeat that keeps a slow sweep's lock fresh past the mutex staleness rule, the shared sweep lock (`--once` skips a held lock and names the holder, never refuses, and leaves the pidfile alone; the daemon logs a skipped pass and dispatches the un-acked line on a later wait), and a fresh pass after the lock is released |
 | `test-watch-supervisor.sh` | `watch`: single supervisor with a pidfile, stale reclaim, `list` line, `lock acquire` warning that names `kingpin-watch.service`, the shipped user unit (`Type=simple`, `Restart=always`, `RestartSec=30`, daemon `ExecStart`), events handled across turns, a status file rewritten under the cursor and the one-time repair line it logs |
 | `test-lock.sh` | `lock`: lifecycle, collisions, stale locks, recorded harness, parallel acquire race, atomic publish, release ownership |
@@ -49,7 +49,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-send-peek.sh` | `send` and `peek` |
 | `test-spawn.sh` | `spawn`: window ID tracking, descriptive slugs, pinned window names, and the tmux target precedence (config pair, env and flag over config, the caller-session default, the stale-`$TMUX` and out-of-tmux fallbacks) |
 | `test-stats.sh` | `stats`: the summary counts on a three-task fixture, `--since`, archived records and their dossier links, curator and undated records skipped, the merged and failed precedence rules, and the no-write guarantee |
-| `test-tmux-isolation.sh` | tmux isolation: the operator's session and server killed under a running worker, the static checks that every tmux call goes through `lib/tmux.sh` and every session check goes through `kp_tmux_has_session`, `list` naming the socket and session, and `done` closing the fleet window |
+| `test-tmux-isolation.sh` | tmux isolation: the operator's session and server killed under a running worker, the static checks that every tmux call goes through `lib/tmux.sh`, every session check goes through `kp_tmux_has_session` and no caller types a second socket fallback, `kp_tmux_live_by_socket` grouping live tasks by socket, `list` naming the socket and session, and `done` closing the fleet window |
 | `test-fleet-server.sh` | the fleet tmux server: a dead server read as `DEAD`, the socket warning, the supervisor's restore sweep, the spawn line that says it started the server, and the `-S` attach hint and warning a socket-path record gets |
 | `test-mux.sh` | the mux contract: `KINGPIN_MUX` selection, the per-record mux reader, every verb's argv against a fake Herdr, and the two static checks |
 | `test-mux-herdr-real.sh` | the opt-in real-Herdr leg: `lib/mux.sh`'s backend against the installed `herdr`, self-skipping when it is absent |
@@ -58,7 +58,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-cli-help.sh` | `--help` on every command in `kingpin --help`: usage text, exit 0, no window or task started |
 | `test-launch-check.sh` | `kingpin-launch-check`: workers that die at launch |
 | `test-worker-stop.sh` | `bin/kingpin-stop`: the outcome a Stop leaves (`failed:`/`waiting:`), fail-soft, `WAITING`/`SILENT`/`Unseen` in `list`, all four harnesses |
-| `test-status.sh` | `lib/status.sh`, the shared status protocol |
+| `test-status.sh` | `lib/status.sh`, the shared status protocol, and `kp_env_set`, the one `task.env` key writer: an unchanged value leaves the file untouched, a missing key is added, values with `\|` or `&` land verbatim, and a failed write leaves the record intact |
 | `test-report.sh` | `report`: generated diffs are renderable, blank-diff reports are rejected |
 | `test-markdown.sh` | `report check`: markdown prose masking, CRLF line numbers, the full rule list |
 | `test-ranks.sh` | rank voice: the contract's Ranks section, the capo preamble, and the neutral status lines |

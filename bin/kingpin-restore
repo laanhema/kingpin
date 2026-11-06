@@ -121,24 +121,6 @@ refuse() {
   refused=$((refused + 1))
 }
 
-# set_env_key <env-file> <KEY> <value>: rewrite one KEY=value line, adding it when the
-# record has none (bin/kingpin-rename:55-58 shape: a temp file in the same folder).
-set_env_key() {
-  local env_file=$1 key=$2 value=$3 cur tmp
-  cur=$(kp_env_get "$env_file" "$key")
-  [ "$cur" = "$value" ] && return 0
-  tmp="$env_file.set.$$"
-  if grep -q "^$key=" "$env_file"; then
-    sed "s|^$key=.*|$key=$value|" "$env_file" > "$tmp" \
-      || { rm -f "$tmp"; return 1; }
-  else
-    { cat "$env_file" && printf '%s=%s\n' "$key" "$value"; } > "$tmp" \
-      || { rm -f "$tmp"; return 1; }
-  fi
-  mv -f "$tmp" "$env_file" || { rm -f "$tmp"; return 1; }
-  return 0
-}
-
 # next_step <task-dir> <task-id> <project> <last-status-line>
 # The one instruction the resumed worker needs, keyed by its last *worker* event (notes
 # included never decide it). The landing-lane row wins: a task whose landing was already
@@ -529,7 +511,7 @@ for id in ${ids[@]+"${ids[@]}"}; do
   # refused first. HARNESS is recorded before the preamble because the preamble's pi
   # sentence is chosen by that record (lib/launch.sh): a --harness override has to be
   # visible there, not only after the window has started.
-  if [ -n "$harness_cli" ] && ! set_env_key "$env_file" HARNESS "$harness"; then
+  if [ -n "$harness_cli" ] && ! kp_env_set "$env_file" HARNESS "$harness"; then
     refuse "$id" "cannot record HARNESS=$harness in $env_file"
     continue
   fi
@@ -556,7 +538,7 @@ for id in ${ids[@]+"${ids[@]}"}; do
   # The resumed session is recorded before the window starts, so the next restore
   # resumes the same conversation rather than the newest one in a pooled slot. A stale
   # value is harmless: selection only prefers it while the id is still in the list.
-  if [ -n "$session_id" ] && ! set_env_key "$env_file" HARNESS_SESSION "$session_id"; then
+  if [ -n "$session_id" ] && ! kp_env_set "$env_file" HARNESS_SESSION "$session_id"; then
     refuse "$id" "cannot record HARNESS_SESSION in $env_file"
     continue
   fi

@@ -1,5 +1,6 @@
 # shellcheck shell=bash
-# Shared reader for the task protocol files, plus the one writer every note shares.
+# Shared reader for the task protocol files, plus the one writer every note shares and
+# the task.env reader and writer (`kp_env_get`, `kp_env_set`).
 # Source it; it only defines functions (no `set` options, no output beyond what each
 # states, every function returns 0 unless stated).
 #
@@ -110,7 +111,8 @@ kp_status_worker_events() {
 # kp_status_note <status-file> <stopped-file> <line>
 # Append a note that is not the worker's report (an approved:/feedback: line)
 # without moving the Stop hook's turn boundary. kingpin-stop treats a status file
-# newer than the `stopped` marker as written during this turn (bin/kingpin-stop:82-90),
+# newer than the `stopped` marker as written during this turn (the turn-boundary
+# check in `bin/kingpin-stop`),
 # so a note must leave that boundary as it found it when the worker already
 # reported, and move it when the note arrived instead of a report. Otherwise the
 # next silent turn looks reported and never gets its `failed: no status:` line.
@@ -303,6 +305,32 @@ kp_verdict_kind() {
 kp_env_get() {
   [ -f "${1:-}" ] || return 0
   sed -n "s/^${2:?}=//p" "$1" 2>/dev/null | tail -n 1 || true
+}
+
+# kp_env_set <env-file> <KEY> <value>
+# Rewrite every `KEY=` line of the record to `KEY=<value>`, or append the line when the
+# record has none. An unchanged value writes nothing, so a repeated call leaves the file
+# (and its inode) as it was; an absent key set to an empty value is unchanged too, since
+# kp_env_get reads both as empty. The new file is written beside the record and moved in
+# with `mv -f`. The value goes through the environment, not a sed expression, so `|`, `&`,
+# `\` and `/` land verbatim. A value holding a newline is refused. Exit 1 with a stderr
+# reason when the record is missing or cannot be read or written; the record is then
+# unchanged and no temp file is left.
+kp_env_set() {
+  local env_file=${1:?kp_env_set needs an env file} key=${2:?kp_env_set needs a key} value=${3?kp_env_set needs a value} tmp
+  [ -f "$env_file" ] || { printf 'cannot record %s: %s is missing\n' "$key" "$env_file" >&2; return 1; }
+  case $value in
+    *$'\n'*) printf 'cannot record %s: the value holds a newline\n' "$key" >&2; return 1 ;;
+  esac
+  [ "$(kp_env_get "$env_file" "$key")" = "$value" ] && return 0
+  tmp="$env_file.$key.$$"
+  KP_ENV_KEY=$key KP_ENV_VALUE=$value awk '
+    BEGIN { k = ENVIRON["KP_ENV_KEY"] "="; v = k ENVIRON["KP_ENV_VALUE"] }
+    index($0, k) == 1 { print v; found = 1; next }
+    { print }
+    END { if (!found) print v }
+  ' "$env_file" > "$tmp" || { rm -f "$tmp"; printf 'cannot write %s\n' "$tmp" >&2; return 1; }
+  mv -f "$tmp" "$env_file" || { rm -f "$tmp"; printf 'cannot write %s\n' "$env_file" >&2; return 1; }
 }
 
 # kp_skill_command <harness> <skill> [args...]
