@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # case-file dossier template: the four files ship together, every ref stays inside the folder, both
-# pages keep the nine approved decisions, the worker page keeps the retire hook, the diffs keep a
-# static fallback, the decision forms keep their handlers and the pages pass their report check.
+# pages keep the nine approved decisions (the hero markup on both pages, the dark code region on the
+# worker page), the worker page keeps the retire hook, the diffs keep a static fallback, the decision
+# forms keep their handlers and the pages pass their report check.
 #
 # assets/lavish/kingpin-dossier/ is what every worker's report.html, every curator report and every
 # page handed to the boss is copied from, so a missing file, a lost rule or a prose regression there
@@ -120,6 +121,21 @@ check_decisions() {
     || { echo "decision 8 lost the 2px heading rule" >&2; return 1; }
 }
 
+# check_hero <file>: 0 when decision 2 survives as markup, not only as CSS: the framed picture,
+# the sideways stamp, the kicker and the blood-red word. Both pages carry it. The markup greps read
+# the page without its comments, because a comment can name hero.jpg without the page showing it.
+check_hero() {
+  local f=$1
+  grep -q '\.noir-hero {' "$f" || { echo "decision 2 lost the hero block" >&2; return 1; }
+  stripped "$f" | grep -q '<header class="noir-hero">' || { echo "decision 2 lost the hero markup" >&2; return 1; }
+  stripped "$f" | grep -q 'class="noir-figure"' || { echo "decision 2 lost the framed figure markup" >&2; return 1; }
+  stripped "$f" | grep -q 'src="hero.jpg"' || { echo "decision 2: the hero is not the relative hero.jpg" >&2; return 1; }
+  stripped "$f" | grep -q 'class="noir-stamp"' || { echo "decision 2 lost the sideways stamp markup" >&2; return 1; }
+  stripped "$f" | grep -q 'class="noir-kicker"' || { echo "decision 2 lost the kicker markup" >&2; return 1; }
+  stripped "$f" | grep -q '<em style="color:#7d2020;font-style:normal">' \
+    || { echo "decision 2: the hero title lost its blood-red word" >&2; return 1; }
+}
+
 # check_diffs <file>: 0 when every diff block keeps its fallback and the renderer's data lines up.
 check_diffs() {
   local f=$1 surfaces fallbacks out
@@ -156,6 +172,7 @@ check_handover() {
   [ -s "$f" ] || { echo "missing or empty: handover.html" >&2; return 1; }
   check_refs "$dir" "$f" || return 1
   check_decisions "$f" || return 1
+  check_hero "$f" || return 1
   check_fonts "$f" || return 1
   grep -q '<html [^>]*data-theme="dark"' "$f" || { echo "<html> has no data-theme=\"dark\"" >&2; return 1; }
   grep -q '<html [^>]*data-lavish-annotate="off"' "$f" || { echo "<html> has no data-lavish-annotate=\"off\"" >&2; return 1; }
@@ -190,7 +207,7 @@ check_handover() {
 # check_dir <dir>: 0 when the folder is a complete, self-contained, gate-clean template.
 # Prints the reason on stderr when it is not, so a negative case explains itself.
 check_dir() {
-  local dir=$1 f s hide
+  local dir=$1 f s hide region
   for f in template.html handover.html DESIGN.md hero.jpg; do
     [ -s "$dir/$f" ] || { echo "missing or empty: $f" >&2; return 1; }
   done
@@ -200,12 +217,7 @@ check_dir() {
   grep -q '<html [^>]*data-theme="dark"' "$dir/template.html" || { echo "<html> has no data-theme=\"dark\"" >&2; return 1; }
   grep -q '<html [^>]*data-lavish-annotate="off"' "$dir/template.html" || { echo "<html> has no data-lavish-annotate=\"off\"" >&2; return 1; }
   # The hero: the framed picture, the sideways stamp, the kicker and the blood-red word.
-  grep -q '\.noir-hero {' "$dir/template.html" || { echo "the template lost the hero block" >&2; return 1; }
-  grep -q 'src="hero.jpg"' "$dir/template.html" || { echo "the hero is not the relative hero.jpg" >&2; return 1; }
-  grep -q 'class="noir-stamp"' "$dir/template.html" || { echo "the hero lost its sideways stamp" >&2; return 1; }
-  grep -q 'class="noir-kicker"' "$dir/template.html" || { echo "the hero lost its kicker" >&2; return 1; }
-  grep -q '<em style="color:#7d2020;font-style:normal">' "$dir/template.html" \
-    || { echo "the hero title lost its blood-red word" >&2; return 1; }
+  check_hero "$dir/template.html" || return 1
   # The sections a dossier is read for.
   for s in 'What Changed and Why' 'Acceptance Criteria Verification' 'Review Verdict and Every Finding' 'Validation' 'Code Changes'; do
     grep -q ">$s</h[23]>" "$dir/template.html" || { echo "missing section: $s" >&2; return 1; }
@@ -231,6 +243,16 @@ check_dir() {
   grep -q 'data-kp-finished-hide class="kp-stamp' "$dir/template.html" \
     || { echo "the status stamp lost its data-kp-finished-hide hook" >&2; return 1; }
   check_diffs "$dir/template.html" || return 1
+  # Decision 6: Code Changes is the one dark region, a #0d1117 block with a #30363d border.
+  region=$(perl -0ne 'print $1 if /\.kp-codepanel \.kp-diff\s*\{([^}]*)\}/s' "$dir/template.html" || true)
+  case "$region" in
+    *'#0d1117'*) ;;
+    *) echo "decision 6: the code region lost the #0d1117 surface" >&2; return 1 ;;
+  esac
+  case "$region" in
+    *'#30363d'*) ;;
+    *) echo "decision 6: the code region lost the #30363d border" >&2; return 1 ;;
+  esac
   grep -q 'Run the unslop skill' "$dir/template.html" || { echo "the how-to no longer tells the author to run the unslop skill" >&2; return 1; }
   check_source_data "$dir" || return 1
   check_handover "$dir" || return 1
@@ -395,6 +417,20 @@ sed -i 's|border-bottom: 2px solid rgba(27,23,18,.45);|border-bottom: 1px solid 
 out=$(check_dir "$T/no-heading-rule" 2>&1) && fail "a brief heading without its 2px rule passed" || pass "a brief heading without its 2px rule fails"
 echo "$out" | grep -q '2px heading rule' && pass "the failure names the heading rule" || fail "unclear reason: $out"
 
+rm -rf "$T/d-surface"
+cp -a "$TPL" "$T/d-surface"
+sed -i '/^\.kp-codepanel \.kp-diff {/,/^}/s/#0d1117/#fbf7ec/' "$T/d-surface/template.html"
+cmp -s "$TPL/template.html" "$T/d-surface/template.html" && fail "the d-surface mutation changed nothing"
+out=$(check_dir "$T/d-surface" 2>&1) && fail "a code region without the dark surface passed" || pass "a code region without the dark surface fails"
+echo "$out" | grep -q 'lost the #0d1117 surface' && pass "the failure names the dark surface" || fail "unclear reason: $out"
+
+rm -rf "$T/d-border"
+cp -a "$TPL" "$T/d-border"
+sed -i '/^\.kp-codepanel \.kp-diff {/,/^}/s/#30363d/#6f5a40/' "$T/d-border/template.html"
+cmp -s "$TPL/template.html" "$T/d-border/template.html" && fail "the d-border mutation changed nothing"
+out=$(check_dir "$T/d-border" 2>&1) && fail "a code region without the dark border passed" || pass "a code region without the dark border fails"
+echo "$out" | grep -q 'lost the #30363d border' && pass "the failure names the dark border" || fail "unclear reason: $out"
+
 rm -rf "$T/no-font"
 cp -a "$TPL" "$T/no-font"
 sed -i '/@fontsource\/commit-mono@5\/700.css/d' "$T/no-font/template.html"
@@ -527,6 +563,20 @@ cp -a "$TPL" "$T/h-hide"
 sed -i 's|class="kp-telegram"|data-kp-finished-hide class="kp-telegram"|' "$T/h-hide/handover.html"
 out=$(check_handover "$T/h-hide" 2>&1) && fail "a handover carrying the retire hook passed" || pass "a handover carrying the retire hook fails"
 echo "$out" | grep -q 'retire hook' && pass "the failure names the stray retire hook" || fail "unclear reason: $out"
+
+rm -rf "$T/h-hero"
+cp -a "$TPL" "$T/h-hero"
+sed -i 's|<img src="hero.jpg"[^>]*>||' "$T/h-hero/handover.html"
+cmp -s "$TPL/handover.html" "$T/h-hero/handover.html" && fail "the h-hero mutation changed nothing"
+out=$(check_handover "$T/h-hero" 2>&1) && fail "a handover without its hero picture passed" || pass "a handover without its hero picture fails"
+echo "$out" | grep -q 'hero is not the relative hero.jpg' && pass "the failure names the lost hero picture" || fail "unclear reason: $out"
+
+rm -rf "$T/h-header"
+cp -a "$TPL" "$T/h-header"
+sed -i 's|<header class="noir-hero">|<header class="x">|' "$T/h-header/handover.html"
+cmp -s "$TPL/handover.html" "$T/h-header/handover.html" && fail "the h-header mutation changed nothing"
+out=$(check_handover "$T/h-header" 2>&1) && fail "a handover without its hero header passed" || pass "a handover without its hero header fails"
+echo "$out" | grep -q 'lost the hero markup' && pass "the failure names the lost hero markup" || fail "unclear reason: $out"
 
 if [ "$FAILED" -eq 0 ]; then
   echo "ALL KINGPIN-DOSSIER-TEMPLATE TESTS PASSED"
