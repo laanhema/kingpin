@@ -21,6 +21,10 @@ printf '%s\n' "ready: branch=b review=APPROVE report=r" "feedback: Request Chang
 [ "$(kp_status_worker_events "$t62_st")" = "1" ] && pass "t62: notes are not worker events" || fail "t62: kp_status_worker_events = $(kp_status_worker_events "$t62_st")"
 : > "$t62_dir/empty"
 [ -z "$(kp_status_last "$t62_dir/empty")" ] && [ -z "$(kp_status_last "$t62_dir/missing")" ] && [ -z "$(kp_status_newest "$t62_dir/missing")" ] && pass "t62: empty and missing status files give no line" || fail "t62: empty/missing status gave a line"
+t62_ck=$t62_dir/checks-note
+printf '%s\n' "merged: pr=u" "checks: pr=u checks=FAILED" > "$t62_ck"
+[ "$(kp_status_last "$t62_ck")" = "merged: pr=u" ] && [ "$(kp_status_worker_events "$t62_ck")" = "1" ] && [ "$(kp_status_newest "$t62_ck")" = "checks: pr=u checks=FAILED" ] \
+  && pass "t62: a checks: note is a note, not the worker's last event" || fail "t62: checks: note handling: last=$(kp_status_last "$t62_ck") events=$(kp_status_worker_events "$t62_ck")"
 printf '%s\n' "approved: x" > "$t62_dir/notes-only"
 [ -z "$(kp_status_last "$t62_dir/notes-only")" ] && [ "$(kp_status_worker_events "$t62_dir/notes-only")" = "0" ] && pass "t62: a file of notes only has no worker event" || fail "t62: notes-only file reported an event"
 for t62_l in "merged: pr=u" "failed: no status: x" "cleanup-refused: x"; do

@@ -32,6 +32,10 @@ case "${1:-} ${2:-}" in
     if [ -f "${KP_TEST_GH_CLOSE_FAILS:-/nonexistent}" ]; then exit 1; fi
     printf 'CLOSED\n' > "${KP_TEST_GH_STATE:?}"
     ;;
+  "pr view")
+    # The check rollup of a merged: pr=<url> status (issue #221): a repository with no checks.
+    printf '{"statusCheckRollup":[]}\n'
+    ;;
   *) exit 1 ;;
 esac
 GHEOF
@@ -972,7 +976,7 @@ printf 'OPEN\n' > "$GH_STATE"
 ISSUE=999 PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t26-norecord >"$T/t26-norecord.out" 2>&1 \
   && pass "t26: cleanup succeeds for a record with no issue" || fail "t26: cleanup failed: $(cat "$T/t26-norecord.out")"
 ! grep -q "999" "$GH_LOG" && pass "t26: an inherited ISSUE never reaches gh" || fail "t26: gh was called for the inherited ISSUE: $(cat "$GH_LOG")"
-[ -s "$GH_LOG" ] && fail "t26: a record with no issue still called gh: $(cat "$GH_LOG")" || pass "t26: a record with no issue asks gh nothing"
+! grep -q '^issue' "$GH_LOG" && pass "t26: a record with no issue asks gh nothing about an issue" || fail "t26: a record with no issue still asked gh about one: $(cat "$GH_LOG")"
 ! grep -q "issue #" "$T/t26-norecord.out" && pass "t26: a record with no issue gets no issue readout" || fail "t26: a record with no issue got a readout: $(cat "$T/t26-norecord.out")"
 
 # (f) gh is not installed: the readout says so and the cleanup still succeeds

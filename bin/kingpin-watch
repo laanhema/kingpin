@@ -3,7 +3,9 @@
 #
 # Listens for fleet events via kingpin-wait:
 #   1. When a worker in 'auto' mode reports 'ready:', automatically triggers kingpin-land.
-#   2. When a worker reports 'merged:', automatically runs kingpin-done to clean up.
+#   2. When a worker reports 'merged:', reads the checks of its pull request (lib/checks.sh)
+#      and automatically runs kingpin-done to clean up. While AFK is armed, a FAILED or
+#      PENDING rollup holds the cleanup for the operator instead (issue #221).
 #
 # Every unprocessed status line is dispatched once, in file order. The cursor is
 # the task's `seen` count, advanced line by line through `kingpin-ack --through`,
@@ -53,7 +55,10 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_ROOT/lib/dossier.sh"
 # shellcheck source=../lib/mutex.sh
 . "$KP_ROOT/lib/mutex.sh"
+# shellcheck source=../lib/checks.sh
+. "$KP_ROOT/lib/checks.sh"
 KP_BIN="$KP_ROOT/bin"
+GH_CMD=${KINGPIN_GH:-gh}
 
 ONCE=0
 INTERVAL=300
@@ -392,6 +397,7 @@ dispatch_status_line() {
   local task_dir=$2
   local mode=$3
   local line=$4
+  local checks_word
 
   case "$line" in
     ready:*)
@@ -444,9 +450,27 @@ dispatch_status_line() {
       ;;
     merged:*)
       if [ ! -f "$task_dir/done_cleaned" ]; then
+        # Read the pull request's checks first (once: the result is recorded in the
+        # task record). While AFK is armed a FAILED or PENDING rollup holds the
+        # cleanup, so a merge on red does not archive without an operator seeing
+        # it; an unreadable rollup never holds. Without AFK the cleanup runs and
+        # `kingpin done` reports the result.
+        kp_checks_ensure "$task_dir" "$GH_CMD" "$(kp_env_get "$task_dir/task.env" PROJECT_PATH)"
+        checks_word=$(kp_checks_result "$task_dir")
+        case "$checks_word" in
+          FAILED|PENDING)
+            if kp_afk_armed "$KP_HOME"; then
+              echo "[kingpin-watch] $id merged but its pull request checks are $checks_word (afk on); holding the cleanup for the operator: kingpin done $id"
+              return 0
+            fi
+            ;;
+        esac
         echo "[kingpin-watch] $id merged; running cleanup..."
         "$KP_BIN/kingpin-done" "$id" || true
       fi
+      ;;
+    checks:*)
+      echo "[kingpin-watch] $id merged with checks that were not green: $line"
       ;;
     cleanup-refused:*)
       echo "[kingpin-watch] $id cleanup refused: ${line#cleanup-refused: }"

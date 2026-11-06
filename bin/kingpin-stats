@@ -106,7 +106,7 @@ kp_stats_record() {
         ready:*) has_ready=1; failed_last=0; verdict=$(kp_status_verdict "$line") ;;
         fixed:*) has_fixed=1; failed_last=0; last=$line ;;
         cleanup-refused:*) cleanup_refused=$((cleanup_refused + 1)); failed_last=0; last=$line ;;
-        ''|approved:*|feedback:*) ;;
+        ''|approved:*|feedback:*|checks:*) ;;
         *) failed_last=0; last=$line ;;
       esac
     done < "$st"
