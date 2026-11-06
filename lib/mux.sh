@@ -45,7 +45,8 @@
 # without `kp_mux_find` first (the curator gate) reads a record or falls back to
 # `kp_mux_name`, and `KP_MUX_SOCKET`/`KP_MUX_SESSION` override the connection.
 
-# The task-record readers (kp_env_get, kp_task_is_live) live in lib/status.sh.
+# The task-record readers and writer (kp_env_get, kp_env_set, kp_task_is_live) live in
+# lib/status.sh.
 # shellcheck source=status.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/status.sh"
 # The tmux backend (kp_tmux, kp_window_*) lives in lib/tmux.sh.
@@ -415,7 +416,7 @@ kp_mux_record_id() {
   task_dir=${task_dir%/}
   mux=$(kp_mux_record "$task_dir") || return 1
   case $mux in
-    herdr) _kp_mux_record_set "$task_dir" MUX_TARGET "$id" ;;
+    herdr) kp_env_set "$task_dir/task.env" MUX_TARGET "$id" ;;
     *) kp_window_record_id "$task_dir" "$id" ;;
   esac
 }
@@ -429,7 +430,7 @@ kp_mux_record_label() {
   task_dir=${task_dir%/}
   mux=$(kp_mux_record "$task_dir") || return 1
   [ "$mux" = herdr ] || return 0
-  _kp_mux_record_set "$task_dir" MUX_LABEL "$label"
+  kp_env_set "$task_dir/task.env" MUX_LABEL "$label"
 }
 
 # _kp_mux_current
@@ -469,27 +470,4 @@ _kp_mux_tmux_target_state() {
   else
     printf 'dead\n'
   fi
-}
-
-# _kp_mux_record_set <task-dir> <KEY> <value>
-# Rewrite one `KEY=` line through a temp file beside the record, adding it when
-# the record has none. Only a changed value is written, so a repeated call leaves
-# task.env byte-identical.
-_kp_mux_record_set() {
-  local task_dir=${1:?} key=${2:?} value=${3:?} env_file cur tmp
-  task_dir=${task_dir%/}
-  env_file="$task_dir/task.env"
-  [ -f "$env_file" ] || { printf 'cannot record %s: %s is missing\n' "$key" "$env_file" >&2; return 1; }
-  cur=$(kp_env_get "$env_file" "$key")
-  [ "$cur" = "$value" ] && return 0
-  tmp="$env_file.$key.$$"
-  if grep -q "^$key=" "$env_file"; then
-    sed "s|^$key=.*|$key=$value|" "$env_file" > "$tmp" \
-      || { rm -f "$tmp"; printf 'cannot write %s\n' "$tmp" >&2; return 1; }
-  else
-    { cat "$env_file" && printf '%s=%s\n' "$key" "$value"; } > "$tmp" \
-      || { rm -f "$tmp"; printf 'cannot write %s\n' "$tmp" >&2; return 1; }
-  fi
-  mv -f "$tmp" "$env_file" || { rm -f "$tmp"; printf 'cannot write %s\n' "$env_file" >&2; return 1; }
-  return 0
 }

@@ -319,4 +319,12 @@ t6b_exit=$?
 set -e
 [ "$t6b_exit" -ne 0 ] && echo "$t6b_out" | grep -q "^kingpin-wait: " && pass "kingpin-wait unusable fleet dir exits non-zero with a message" || fail "bad fleet dir: exit $t6b_exit, out '$t6b_out'"
 
+# t206: the script sources each library once (a second source of lib/tmux.sh was a leftover).
+t206_dup=$(grep -o '^\. .*lib/[a-z-]*\.sh' "$KP_BIN/kingpin-wait" | sed 's|.*lib/||' | sort | uniq -d | tr '\n' ' ')
+[ -z "$t206_dup" ] && pass "t206: kingpin-wait sources no library twice" || fail "t206: kingpin-wait sources twice: $t206_dup"
+for t206_lib in status tmux portable; do
+  [ "$(grep -c "^\. .*lib/$t206_lib\.sh" "$KP_BIN/kingpin-wait" || true)" = 1 ] \
+    && pass "t206: kingpin-wait sources lib/$t206_lib.sh once" || fail "t206: lib/$t206_lib.sh is not sourced exactly once"
+done
+
 kp_test_finish WAIT

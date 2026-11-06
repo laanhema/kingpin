@@ -67,9 +67,8 @@ if [ "$mux" = herdr ]; then
   kp_mux_record_label "$task_dir" "$new"
 else
   session=${target%%:*}
-  tmp=$env_file.rename.$$
-  sed "s|^TMUX_TARGET=.*|TMUX_TARGET=$session:$new|" "$env_file" > "$tmp"
-  mv "$tmp" "$env_file"
+  kp_env_set "$env_file" TMUX_TARGET "$session:$new" \
+    || { echo "kingpin-rename: cannot record the new name in $env_file" >&2; exit 1; }
 fi
 printf '%s\n' "$new" > "$task_dir/renamed"
 echo "kingpin-rename: $id window renamed to $new"

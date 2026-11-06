@@ -240,6 +240,19 @@ wait "$other_pid" 2>/dev/null || true
 echo "--- Test 8: record id, create refusal, reachability ---"
 kp_mux_record_id "$t7" w1:p5
 grep -qx 'MUX_TARGET=w1:p5' "$t7/task.env" && pass "t8: kp_mux_record_id writes MUX_TARGET" || fail "t8: record: $(cat "$t7/task.env")"
+# Both Herdr writers go through kp_env_set: a repeat of the same value leaves the record
+# byte-identical, and a tmux record needs no label so it is never written.
+cp -p "$t7/task.env" "$T/t8.before"
+kp_mux_record_id "$t7" w1:p5
+cmp -s "$t7/task.env" "$T/t8.before" && pass "t8: recording the same target again leaves the record byte-identical" || fail "t8: a repeated record_id rewrote the record"
+kp_mux_record_label "$t7" kp-206-label
+grep -qx 'MUX_LABEL=kp-206-label' "$t7/task.env" && pass "t8: kp_mux_record_label writes MUX_LABEL" || fail "t8: label: $(cat "$t7/task.env")"
+cp -p "$t7/task.env" "$T/t8.before"
+kp_mux_record_label "$t7" kp-206-label
+cmp -s "$t7/task.env" "$T/t8.before" && pass "t8: recording the same label again leaves the record byte-identical" || fail "t8: a repeated record_label rewrote the record"
+cp -p "$t2_tmux/task.env" "$T/t8.tmux.before"
+kp_mux_record_label "$t2_tmux" kp-206-label
+cmp -s "$t2_tmux/task.env" "$T/t8.tmux.before" && pass "t8: a tmux record is left untouched by kp_mux_record_label" || fail "t8: a tmux record gained a label"
 rc=0
 t8_err=$(kp_mux_create "$t7" kingpin curator "$T" "$T/bin/tmux" 2>&1 >/dev/null) || rc=$?
 [ "$rc" -eq 1 ] && pass "t8: creating a Herdr terminal is refused" || fail "t8: create exited $rc"

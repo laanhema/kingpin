@@ -34,7 +34,8 @@
 # the pane pids means the window came back as a plain shell (a resurrected fleet).
 #
 # Source lib/status.sh first: `kp_tmux_socket_from_env` reads the task record with
-# `kp_env_get`. These functions print only what they document.
+# `kp_env_get`, and `kp_window_record_id` writes it with `kp_env_set`. These functions
+# print only what they document.
 #
 #   # shellcheck source=../lib/status.sh
 #   . "$KP_ROOT/lib/status.sh"
@@ -469,26 +470,14 @@ kp_window_harness_live() {
 }
 
 # kp_window_record_id <task-dir> <window-id>
-# Rewrite the TMUX_WINDOW_ID= line through a temp file beside it, and add the line
-# when the record has none. Only a changed value is written, so a repeated restore
-# leaves task.env byte-identical. Exit 1 with a stderr reason when it cannot write.
+# Record the TMUX_WINDOW_ID= line of the task's record, and add the line when the record
+# has none. `kp_env_set` (lib/status.sh) does the write: only a changed value is
+# written, so a repeated restore leaves task.env byte-identical. Exit 1 with a stderr
+# reason when it cannot write.
 kp_window_record_id() {
   local task_dir=${1:?kp_window_record_id needs a task dir} id=${2:?kp_window_record_id needs a window id}
   task_dir=${task_dir%/}
-  local env_file="$task_dir/task.env" cur tmp
-  [ -f "$env_file" ] || { echo "cannot record the window id: $env_file is missing" >&2; return 1; }
-  cur=$(kp_env_get "$env_file" TMUX_WINDOW_ID)
-  [ "$cur" = "$id" ] && return 0
-  tmp="$env_file.id.$$"
-  if grep -q '^TMUX_WINDOW_ID=' "$env_file"; then
-    sed "s|^TMUX_WINDOW_ID=.*|TMUX_WINDOW_ID=$id|" "$env_file" > "$tmp" \
-      || { rm -f "$tmp"; echo "cannot write $tmp" >&2; return 1; }
-  else
-    { cat "$env_file" && printf 'TMUX_WINDOW_ID=%s\n' "$id"; } > "$tmp" \
-      || { rm -f "$tmp"; echo "cannot write $tmp" >&2; return 1; }
-  fi
-  mv -f "$tmp" "$env_file" || { rm -f "$tmp"; echo "cannot write $env_file" >&2; return 1; }
-  return 0
+  kp_env_set "$task_dir/task.env" TMUX_WINDOW_ID "$id"
 }
 
 # _kp_window_same_name <socket> <session> <name>: prints the id of a window on

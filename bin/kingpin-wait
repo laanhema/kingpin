@@ -31,8 +31,6 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$(dirname "$0")/../lib/tmux.sh"
 # shellcheck source=../lib/portable.sh
 . "$(dirname "$0")/../lib/portable.sh"
-# shellcheck source=../lib/tmux.sh
-. "$(dirname "$0")/../lib/tmux.sh"
 TIMEOUT=300
 ONCE=0
 
