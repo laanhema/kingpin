@@ -166,8 +166,15 @@ install_contract() {
 }
 
 check_contract() {
+  local verdict=${1:-} rc=0
+  # The verdict must be one of the tokens the node call prints (lib/guard-check.mjs):
+  # a caller that forgets it would otherwise turn the omission into a contract
+  # message about a config nothing read.
+  case $verdict in
+    ok|missing|badjson|none) ;;
+    *) die "internal: check_contract needs a node verdict (ok|missing|badjson|none), got: '${verdict}'" ;;
+  esac
   [ -f "$contract_src" ] || { echo "contract: skipped (no orchestrator/contract.md in $dir)"; return 0; }
-  local rc=0
   cmp -s "$contract_src" "$home_contract" \
     || { echo "contract: $home_contract is stale or missing; run 'kingpin guard install'" >&2; rc=1; }
   cmp -s "$contract_src" "$claude_contract" \
@@ -175,31 +182,18 @@ check_contract() {
   # The agy copy carries a five-line frontmatter block before the contract body.
   [ -f "$agy_contract" ] && tail -n +6 "$agy_contract" | cmp -s - "$contract_src" \
     || { echo "contract: $agy_contract is stale or missing; run 'kingpin guard install'" >&2; rc=1; }
-  # A config that is not plain JSON must not spill a Node stack trace from `guard
-  # check` / `list` (issue #96 review, L1): name the file and what to do. `install`
-  # refuses such a file up front; see check_opencode_config.
-  if [ ! -f "$opencode_cfg" ]; then
-    echo "contract: $opencode_cfg does not load it; run 'kingpin guard install'" >&2
-    rc=1
-  else
-    local oc_rc=0
-    # shellcheck disable=SC2016 # single quotes are intentional: the program runs in node
-    node -e '
-      const fs = require("fs");
-      const [file, entry] = [process.argv[1], process.argv[2]];
-      let cfg;
-      try { cfg = JSON.parse(fs.readFileSync(file, "utf8")); }
-      catch (e) {
-        console.error(`contract: ${file} is not valid JSON; remove any comments if it is JSONC, then run \"kingpin guard install\"`);
-        process.exit(2);
-      }
-      process.exit(cfg && Array.isArray(cfg.instructions) && cfg.instructions.includes(entry) ? 0 : 1);
-    ' "$opencode_cfg" "$home_contract" || oc_rc=$?
-    case $oc_rc in
-      0) ;;
-      2) rc=1 ;;
+  # A config that is not plain JSON must not spill a Node stack trace from `guard check` /
+  # `list` (issue #96 review, L1): name the file and what to do. `install` refuses such a
+  # file up front; see check_opencode_config. The verdict tokens are what the one node call
+  # in the `check` case read; the messages stay here, in the order they were printed.
+  if [ "$verdict" != badjson ]; then
+    case $verdict in
+      ok) ;;
       *) echo "contract: $opencode_cfg does not load it; run 'kingpin guard install'" >&2; rc=1 ;;
     esac
+  else
+    echo "contract: $opencode_cfg is not valid JSON; remove any comments if it is JSONC, then run \"kingpin guard install\"" >&2
+    rc=1
   fi
   [ "$rc" = 0 ] && echo "contract: active ($home_contract)"
   return "$rc"
@@ -208,26 +202,22 @@ check_contract() {
 case "$cmd" in
   check)
     [ -f "$file" ] || { echo "guard: missing ($file); run 'kingpin guard install'" >&2; exit 1; }
-    node -e '
-      const fs = require("fs");
-      let cfg;
-      try { cfg = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch (e) { process.exit(1); }
-      const legacy = JSON.parse(process.argv[2]);
-      const deny = cfg && cfg.permissions && cfg.permissions.deny;
-      // Legacy deny rules leak into every worker worktree, so they fail the check.
-      if (Array.isArray(deny) && legacy.some((t) => deny.includes(t))) process.exit(2);
-      const entries = (cfg && cfg.hooks && cfg.hooks.PreToolUse) || [];
-      const ok = Array.isArray(entries) && entries.some((e) => e && e.matcher === process.argv[4] &&
-        Array.isArray(e.hooks) && e.hooks.some((h) => h && h.type === "command" && h.command === process.argv[3]));
-      process.exit(ok ? 0 : 1);
-    ' "$file" "$LEGACY_DENY" "$hook_cmd" "$MATCHER" && rc=0 || rc=$?
-    case $rc in
+    # One node start reads both files the check needs (the guard settings and the OpenCode
+    # config) and prints `<guard> <contract>` verdict tokens (lib/guard-check.mjs); the
+    # messages below are the ones the two node calls this replaced printed. A node start
+    # that prints no verdict line (node missing, or failing before its output) makes the
+    # read fail, which is told through the same incomplete message below.
+    read -r guard_rc contract_verdict < <(
+      node "$KP_ROOT/lib/guard-check.mjs" "$file" "$LEGACY_DENY" "$hook_cmd" "$MATCHER" \
+        "$contract_src" "$opencode_cfg" "$home_contract"
+    ) || { echo "guard: incomplete ($file); run 'kingpin guard install'" >&2; exit 1; }
+    case $guard_rc in
       0) ;;
       2) echo "guard: stale deny rules in $file reach worker worktrees; run 'kingpin guard install'" >&2; exit 1 ;;
       *) echo "guard: incomplete ($file); run 'kingpin guard install'" >&2; exit 1 ;;
     esac
     echo "guard: active ($file)"
-    check_contract || exit 1
+    check_contract "$contract_verdict" || exit 1
     ;;
   warn)
     # `check` prints "contract: ..." when a contract copy is the problem and "guard: ..."
