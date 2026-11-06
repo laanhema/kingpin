@@ -725,10 +725,10 @@ DEFAULT_BRANCH='$default_branch'
 DEFAULT_SHA='$default_sha'
 export PROMPT_FILE PR_FILE REPORT_FILE STATUS_FILE SKILLS_DIR BRANCH GH_CMD DEFAULT_BRANCH DEFAULT_SHA
 
-# The worker's last event is the last line that is not an approved:/feedback: note.
+# The worker's last event is the last line that is not an approved:/feedback:/checks: note.
 last_event() {
   [ -f "\$STATUS_FILE" ] || return 0
-  grep -vE '^(approved|feedback):' "\$STATUS_FILE" 2>/dev/null | tail -n 1 || true
+  grep -vE '^(approved|feedback|checks):' "\$STATUS_FILE" 2>/dev/null | tail -n 1 || true
 }
 
 # The prompt arrives on stdin, never as a command-line argument: Linux caps one

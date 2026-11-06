@@ -96,7 +96,7 @@ A host without systemd can still run `kingpin watch` directly, in the foreground
 
 It loops, so it keeps handling events after it handles one; there is nothing to restart each turn. It:
 - Automatically triggers `kingpin land` for workers in `auto` mode when they report `ready:`, and continues a landing after `fixed:` only when the review gate allows it. [`kingpin land`](docs/cli.md#fix-passes) has the gate and the fix pass.
-- Automatically triggers `kingpin done` when workers report `merged:`, releasing worktrees back to the treehouse pool.
+- Automatically triggers `kingpin done` when workers report `merged:`, releasing worktrees back to the treehouse pool, and records a `checks:` note when the merged pull request had a red or unfinished check rollup (see [`kingpin done`](docs/cli.md#the-checks-of-the-merged-pull-request)).
 - Notifies when tasks in `review` mode are ready for inspection or need input.
 - Advances a project's landing queue whose holder released or is gone.
 - Re-arms a review task's dossier listener that died, so a reviewer's clicks always reach a session someone reads.

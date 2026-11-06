@@ -3,6 +3,8 @@
 #
 # A task record that names an issue is checked after the merge: the issue is
 # closed when it is still open, and the OK: line reports its state (issue #170).
+# After a verified merge the checks of the task's pull request are read too, and a
+# rollup that was FAILED or PENDING is named in the OK: line and on stderr (issue #221).
 #
 # Usage: kingpin-done <task-id> [--force]
 set -euo pipefail
@@ -27,6 +29,8 @@ KP_BIN=$(cd "$(dirname "$0")" && pwd)
 . "$KP_BIN/../lib/browser.sh"
 # shellcheck source=../lib/dossier.sh
 . "$KP_BIN/../lib/dossier.sh"
+# shellcheck source=../lib/checks.sh
+. "$KP_BIN/../lib/checks.sh"
 GH_CMD=${KINGPIN_GH:-gh}
 FORCE=0
 
@@ -38,6 +42,9 @@ Verify the merge, release the worktree lease, advance the landing queue and
 archive the task record. --force bypasses a recorded lease-lost refusal.
 A task record that names an issue is checked too: after a verified merge the
 issue is closed when it is still open, and the OK: line reports its state.
+After a verified merge the checks of the pull request on the merged: line are read
+too (KINGPIN_GH); a FAILED or PENDING rollup is named in the OK: line and on stderr,
+and the cleanup still completes.
 HELP
 }
 
@@ -480,6 +487,27 @@ if [ -n "$issue" ]; then
   fi
 fi
 
+# 3d. The checks of the pull request on the merged: line (issue #221). A worker that
+# merges on a red or unfinished rollup must not archive as a clean task. The read is
+# made only after a verified merge, the same permission step 3c uses, and a result
+# the supervisor already recorded is reported whatever this run verified. The merge
+# already happened, so the result is a note and a warning, never a refusal.
+checks_note=''
+if [ "$merge_verified" -eq 1 ]; then
+  kp_checks_ensure "$task_dir" "$GH_CMD" "$PROJECT_PATH"
+fi
+checks_result=$(kp_checks_result "$task_dir")
+checks_phrase=$(kp_checks_describe "$task_dir")
+if [ -n "$checks_phrase" ]; then
+  checks_note="; $checks_phrase"
+fi
+case "$checks_result" in
+  FAILED|PENDING)
+    checks_url=$(sed -n 2p "$task_dir/checks.result" 2>/dev/null || true)
+    echo "kingpin-done: warning: the checks on $checks_url were $checks_result when the task merged" >&2
+    ;;
+esac
+
 # 4. Release project landing lock and pop next task in queue
 release_landing_lock_and_advance_queue
 
@@ -562,4 +590,4 @@ fi
 # this cleanup; its lines go to stderr so the OK: line stays last on stdout.
 kp_curate_maybe "$KP_HOME" "$KP_BIN" >&2
 
-echo "OK: cleaned up task $id (archived to $archive_dir$browser_note$issue_note$dossier_note)"
+echo "OK: cleaned up task $id (archived to $archive_dir$browser_note$issue_note$checks_note$dossier_note)"

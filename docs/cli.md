@@ -46,7 +46,7 @@ A worker that reported a status line and whose window is gone before a terminal 
 
 ### Terminal status lines
 
-`merged:`, `failed:` and `cleanup-refused:` keep the exits they had.
+`merged:`, `failed:` and `cleanup-refused:` keep the exits they had, with one addition for `merged:`: when the checks on the merged pull request were FAILED or PENDING (see [`The checks of the merged pull request`](#the-checks-of-the-merged-pull-request)), `run` prints `kingpin run: <id> merged and cleaned up, but pull request checks FAILED (<url>)` on stderr in place of the `OK:` line, and still exits 0. While AFK is armed it does not run `kingpin done` itself over the supervisor's hold: it prints `kingpin run: <id> merged but pull request checks FAILED (<url>) (afk on); the cleanup is held for the operator: kingpin done <id>` on stderr and exits 1, leaving the task live. A PASSED or UNREADABLE result keeps the `OK:` line.
 
 ## kingpin watch
 
@@ -54,7 +54,7 @@ A worker that reported a status line and whose window is gone before a terminal 
 
 **Flags:** `--once`, `--interval <sec>`
 
-**Environment:** `KINGPIN_HOME`, `KINGPIN_LAVISH`
+**Environment:** `KINGPIN_HOME`, `KINGPIN_LAVISH`, `KINGPIN_GH`
 
 ### Each cycle
 
@@ -64,7 +64,7 @@ It also retires a finished task's dossier. For a finished record that reached th
 
 ### What a status line dispatches
 
-Every unprocessed status line is dispatched once, in file order, and the task's `seen` cursor advances line by line, so a line a dispatch appends stays pending for the next pass and a supervisor restart resumes at the first undispatched line. A blank line and an `issue:` line advance the cursor without dispatching anything. A `ready:` line starts a landing in `auto` mode; in `review` mode it continues a landing already in progress, or opens the task's dossier listener. `fixed:` continues a landing in `auto` mode or after a fix pass. `merged:` runs `kingpin done` unless the task carries a `done_cleaned` marker. `cleanup-refused:` is logged and the cleanup is retried on every cycle. `approved:`, `feedback:`, `needs-input:`, `waiting:` and `failed:` are logged for the operator, and nothing else runs for them. While AFK is armed, a `ready:` or `fixed:` line goes through the AFK path first (see [`kingpin afk`](#kingpin-afk)).
+Every unprocessed status line is dispatched once, in file order, and the task's `seen` cursor advances line by line, so a line a dispatch appends stays pending for the next pass and a supervisor restart resumes at the first undispatched line. A blank line and an `issue:` line advance the cursor without dispatching anything. A `ready:` line starts a landing in `auto` mode; in `review` mode it continues a landing already in progress, or opens the task's dossier listener. `fixed:` continues a landing in `auto` mode or after a fix pass. `merged:` reads the checks of the pull request on the line first (see [`The checks of the merged pull request`](#the-checks-of-the-merged-pull-request)) and then runs `kingpin done` unless the task carries a `done_cleaned` marker; while AFK is armed, a FAILED or PENDING rollup holds the cleanup instead, with a line that names `kingpin done <id>`. `cleanup-refused:` is logged and the cleanup is retried on every cycle. `approved:`, `feedback:`, `checks:`, `needs-input:`, `waiting:` and `failed:` are logged for the operator, and nothing else runs for them. While AFK is armed, a `ready:` or `fixed:` line goes through the AFK path first (see [`kingpin afk`](#kingpin-afk)).
 
 ### A status file rewritten under its cursor
 
@@ -216,6 +216,8 @@ A `codex` spawn writes only per-skill links at `<worktree>/.codex/skills/<name>`
 The `SESSION` column names the tmux session the worker's window lives in. It is read from the live window, so a window moved to another session is reported where it really is, not where it was spawned; a task with no recorded window and no recorded target shows `-`.
 
 A finished task is shown from `archive/` (with `--all`), never from the dossier link `kingpin done` leaves at its old `tasks/` path: that path resolves a review page, it is not a live task. An archived row has no live window left to read, so its `SESSION` shows the session recorded at spawn, or `-` when none was recorded.
+
+A `checks:` note on a merged task is the row's last status, so a merge on a red rollup shows `checks: pr=<url> checks=FAILED` in the row (see [`The checks of the merged pull request`](#the-checks-of-the-merged-pull-request)).
 
 The `STATE` column marks `WAITING` (blocked on a human), `SILENT` (a Stop without a report) and `DEAD`: a live task whose window is gone, or whose recorded harness pid (`harness.pid`) is no longer the pane's. A tmux server that died therefore reads as a dead fleet instead of a healthy one, and one `Fleet: <n> live task(s) have no live window; run kingpin restore` line follows the table. `DEAD` combines with `Unseen: N` the way the other states do.
 
@@ -585,6 +587,23 @@ A refusal is recorded as a `cleanup-refused:` status line only for a finished ta
 
 A task record that carries `ISSUE` (or, for an older record, a worker's `issue: #<n>` line) gets one more step before the archive. When the merge check passed and `gh` reports the issue `OPEN`, `done` closes it and the `OK:` line says `closed issue #<n> after the merge`; an issue that is already closed is left alone and named `issue #<n> is closed`. A close that fails is reported as `issue #<n> is still open (close it by hand)`, and a state that cannot be read as `issue #<n> state could not be read (check that it is closed)`. The merge check is the permission: a `--force` cleanup or a missing worktree reports `issue #<n> not checked (the merge was not verified)` and never closes anything. A record that names no issue, such as a curator record, gets no readout at all. Every `gh` failure is part of the `OK:` line and never fails the cleanup. `KINGPIN_GH` overrides the command, as it does for `kingpin spawn`, `kingpin rename` and `kingpin curate`.
 
+### The checks of the merged pull request
+
+A worker that merges on a red check rollup used to archive as a clean task. When the worker's last event is a `merged:` line with a `pr=<url>` field, whichever runs first, the `merged:` dispatch of `kingpin watch` or `kingpin done`, reads `gh pr view <url> --json statusCheckRollup` from the project path, with `KINGPIN_GH` as the command, and classifies it:
+
+- `FAILED`: any entry with the conclusion `FAILURE`, `CANCELLED`, `TIMED_OUT`, `ACTION_REQUIRED`, `STARTUP_FAILURE` or `STALE`, or a commit status in the state `FAILURE` or `ERROR`.
+- `PENDING`: no failed entry, and a check run that has not completed or a commit status in the state `PENDING` or `EXPECTED`.
+- `PASSED`: everything else, including an empty rollup, because a repository with no checks has nothing red to report.
+- `UNREADABLE`: the rollup could not be read (no `gh`, no `node`, a `gh` failure or an answer that is not JSON). The reason is recorded.
+
+The result is kept in `<task>/checks.result`, three lines (the word, the pull request URL, and the names of the failing checks or the reason), and the file moves with the record into `archive/`. It is also the guard: the pull request is read once, and deleting the file is how a later read is asked for. A PENDING or UNREADABLE result is a snapshot of merge time and is not polled again.
+
+A FAILED or PENDING result appends one note line to the status, `checks: pr=<url> checks=FAILED` (or `checks=PENDING`). The note is not a worker event: `kingpin list` shows it as the row's newest status, but `merged:` stays the last event, so the task stays finished for `kingpin brief`, `kingpin stats`, `kingpin restore` and the landing lane. A PASSED or UNREADABLE result writes no note, and a `merged:` line with no `pr=` field is skipped silently.
+
+`kingpin done` appends the result to its `OK:` line after a verified merge: `; pull request checks FAILED (<url>)`, `; pull request checks still PENDING at merge (<url>)` or `; pull request checks not read (<reason>)`, and for FAILED and PENDING it also prints `kingpin-done: warning: the checks on <url> were <RESULT> when the task merged` on stderr. The cleanup is not refused and the exit status stays 0, because the merge already happened. A `--force` cleanup or a missing worktree reads nothing, though a result the supervisor already recorded is still reported.
+
+While AFK is armed, `kingpin watch` holds the cleanup of a task whose result is FAILED or PENDING: it logs `merged but its pull request checks are <RESULT> (afk on); holding the cleanup for the operator: kingpin done <id>` and leaves the task live. The operator reads the pull request and runs `kingpin done <id>`. UNREADABLE never holds, because an offline host would otherwise stall every cleanup. Without AFK the cleanup runs and the `OK:` line carries the result.
+
 ### The dossier link
 
 After a successful archive, `done` leaves a symlink at `~/.kingpin/tasks/<task-id>` pointing at `~/.kingpin/archive/<task-id>`. A Lavish session, and a link handed to someone in chat, keep resolving `report.html` and the dossier's sibling assets through that path, where before the merge the page went blank. The link is not a live task: every fleet reader treats a symlinked `tasks/` entry as finished (it has no list row, raises no `wait` event, is never dispatched by `watch`, landed, listened to or cleaned again), and `kingpin done` answers a repeat run from it without touching treehouse. The archive itself is never pruned: it is the record.
@@ -621,7 +640,7 @@ The recorded harness is relaunched through the same `lib/launch.sh` a spawn uses
 
 ### The resume brief
 
-The harness restarts with no conversational memory, so `<task-dir>/resume-prompt.txt` names the task, project, worktree, branch, mode and harness, repeats the last *worker* status line (an `approved:` or `feedback:` note never decides it), and maps that line to one next step: a `ready:` task is told the review stands and not to land, a `fixed:` task checks the PR state for the merge, an open question waits for its answer, and a task whose landing was already sent is told to check whether the merge happened and never to run `kingpin land` again. The brief also repeats the house rules: one literal status line per event, questions through `question.md` and `needs-input:`, and never `kingpin spawn`, `lock`, `land`, `done`, `listen` or `send`. The window's launch script reads that file instead of the original `prompt.txt`, which stays in the task folder for reference.
+The harness restarts with no conversational memory, so `<task-dir>/resume-prompt.txt` names the task, project, worktree, branch, mode and harness, repeats the last *worker* status line (an `approved:`, `feedback:` or `checks:` note never decides it), and maps that line to one next step: a `ready:` task is told the review stands and not to land, a `fixed:` task checks the PR state for the merge, an open question waits for its answer, and a task whose landing was already sent is told to check whether the merge happened and never to run `kingpin land` again. The brief also repeats the house rules: one literal status line per event, questions through `question.md` and `needs-input:`, and never `kingpin spawn`, `lock`, `land`, `done`, `listen` or `send`. The window's launch script reads that file instead of the original `prompt.txt`, which stays in the task folder for reference.
 
 ### Refusals
 
@@ -695,6 +714,8 @@ While armed, `kingpin watch` reacts to a new `ready:` line:
 - a clean `APPROVE` verdict goes through `kingpin land` exactly as an operator's `kingpin land` would, and a landing that starts gains `approved: auto (afk)`; a line that only queues behind a busy project lane gains none, because the note records a decision that has completed;
 - a findings verdict reaches the same command, which lands it when the review report's open findings are all Low, and runs the fix pass when one is Medium or above, when the report cannot be read, or when the verdict is `NEEDS CHANGES`. A landing past Low findings gains the same note and leaves `followups.md`, while a fix pass waits for the re-review. A clean `fixed:` landing that follows an AFK-started pass gains the same `approved: auto (afk)` note in `review` and `auto` mode alike, while a `fixed:` line that only queues gains none and drops its marker; a pass that still leaves High findings asks for `/review` and gains none. If the arm is off or expired by the time that `fixed:` line arrives, the landing still continues but gains no note;
 - an unreadable verdict, a `needs-input:` question, a `cleanup-refused:` case and a `failed:` task hold for the operator, and nothing is forced.
+
+A `merged:` line gets the same treatment in one case: when the checks on its pull request were FAILED or PENDING, the supervisor leaves the task live for the operator instead of running `kingpin done` ([`The checks of the merged pull request`](#the-checks-of-the-merged-pull-request)). A rollup that could not be read never holds it.
 
 The dossier listener's `landing_sent` and `approve_pending` markers are checked first, so an approval the listener already took is never landed twice. AFK adds no merge path: the verdict gate and the per-project landing lane are the ones `kingpin land` always uses. The `kingpin report check` warning belongs to `kingpin watch`, not to `kingpin land`: the supervisor runs it on the dossier in its review branch and, while AFK is armed, in the clean branch before it lands. With AFK off or expired, `kingpin watch` behaves exactly as before.
 
@@ -861,7 +882,7 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 | `KINGPIN_OPENCODE` | Command `spawn` and `restore` launch for the `opencode` harness (default `opencode`). |
 | `KINGPIN_PI` | Command `spawn` and `restore` launch for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
 | `KINGPIN_CODEX` | Command `spawn` and `restore` launch for the `codex` harness (default `codex`); `kingpin scope doctor --harness codex` probes the same command. |
-| `KINGPIN_GH` | `gh` command `spawn` uses to read an issue title for the task slug, `curate` uses to create, view and merge the curator's PR, and `done` uses to read and close the issue a finished task names (default `gh`). |
+| `KINGPIN_GH` | `gh` command `spawn` uses to read an issue title for the task slug, `curate` uses to create, view and merge the curator's PR, and `done` uses to read and close the issue a finished task names, and `watch` and `done` use to read the check rollup of a merged pull request (default `gh`). |
 | `KINGPIN_TMUX_SESSION` | tmux session that `spawn` and `curate` place the worker window in when `--tmux-session` is not given, read before `TMUX_SESSION` in `$KINGPIN_HOME/config.env`. The session must already exist on the resolved socket; an unknown name is refused with its source and the server. Unset, the spawn follows the caller's own tmux session, then uses the one attached session or the only session on the fleet server, and refuses when several are unattached or more than one is attached. |
 | `KINGPIN_SEND_DELAY` | Seconds between the literal text and the Enter key (default `0.2`). |
 | `KINGPIN_MUX` | Multiplexer the fleet creates and reads workers with: `tmux`, `herdr`, or `auto` (default). `auto` selects Herdr only inside a Herdr pane (`HERDR_ENV=1`) and tmux everywhere else; any other value is refused by name. A task record's `MUX=` line, not this variable, decides where an existing task lives. |

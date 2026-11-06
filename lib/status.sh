@@ -10,8 +10,9 @@
 # The task `status` file is the fleet's state machine. Workers append one event
 # per line (ready:, fixed:, needs-input:, merged:, failed:, ...). kingpin-listen
 # appends the approved: and feedback: notes, and kingpin-watch appends the
-# approved: auto (afk) note; both write through `kp_status_note`, so neither can
-# move the Stop hook's turn boundary on its own. They are reminders for the
+# approved: auto (afk) note and, through lib/checks.sh, the checks: note of a
+# merged pull request whose checks were not green; all write through
+# `kp_status_note`, so none can move the Stop hook's turn boundary on its own. They are reminders for the
 # orchestrator, not worker events, so the worker's current state is the last line
 # that is not one of them.
 #
@@ -36,11 +37,11 @@
 # archived task, so every reader that globs tasks/* has to tell the two apart.
 
 # kp_status_last <status-file>
-# The worker's last event: the last line that is not an approved:/feedback: note.
+# The worker's last event: the last line that is not an approved:/feedback:/checks: note.
 # Empty for a missing or empty file. Use it to decide what state a task is in.
 kp_status_last() {
   [ -f "${1:-}" ] || return 0
-  grep -vE '^(approved|feedback):' "$1" 2>/dev/null | tail -n 1 || true
+  grep -vE '^(approved|feedback|checks):' "$1" 2>/dev/null | tail -n 1 || true
 }
 
 # kp_status_newest <status-file>
@@ -104,12 +105,12 @@ kp_status_cursor_resume() {
 # How many lines the worker reported (notes do not count). Always prints a number.
 kp_status_worker_events() {
   local n=0
-  [ -f "${1:-}" ] && n=$(grep -vcE '^(approved|feedback):' "$1" 2>/dev/null || true)
+  [ -f "${1:-}" ] && n=$(grep -vcE '^(approved|feedback|checks):' "$1" 2>/dev/null || true)
   printf '%s\n' "${n:-0}"
 }
 
 # kp_status_note <status-file> <stopped-file> <line>
-# Append a note that is not the worker's report (an approved:/feedback: line)
+# Append a note that is not the worker's report (an approved:/feedback:/checks: line)
 # without moving the Stop hook's turn boundary. kingpin-stop treats a status file
 # newer than the `stopped` marker as written during this turn (the turn-boundary
 # check in `bin/kingpin-stop`),
