@@ -207,6 +207,9 @@ for f in "$KP_ROOT/worker/preamble.md" "$KP_ROOT/worker/curator-preamble.md"; do
     || fail "$(basename "$f") no longer says the older worker-dossier template still ships"
 done
 grep -q 'kingpin land curator' "$KP_ROOT/worker/curator-preamble.md" && pass "the curator preamble keeps the curator land command" || fail "worker/curator-preamble.md lost the 'kingpin land curator' command"
+grep -q 'references/' "$KP_ROOT/worker/curator-preamble.md" && pass "the curator preamble sends stack-specific lessons to references/" || fail "worker/curator-preamble.md lost the instruction to send stack-specific lessons to references/"
+grep -q 'lint-skills\.sh' "$KP_ROOT/worker/curator-preamble.md" && pass "the curator preamble runs lint-skills.sh before the commit" || fail "worker/curator-preamble.md lost the instruction to run lint-skills.sh --quiet before the commit"
+grep -q 'gh pr checks' "$KP_ROOT/worker/curator-preamble.md" && pass "the curator preamble reads the pull request's lint check" || fail "worker/curator-preamble.md lost the instruction to read the pull request's lint check with gh pr checks"
 grep -q 'assets/lavish/worker-dossier/template.html' "$KP_ROOT/AGENTS.md" \
   && grep -q 'still shipped for pages already' "$KP_ROOT/AGENTS.md" \
   && pass "AGENTS.md keeps the legacy worker-dossier mention" \
