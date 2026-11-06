@@ -82,6 +82,10 @@ Before the wait pass of every cycle, and in `--once`, the supervisor checks each
 
 It claims `~/.kingpin/supervisor.pid`, refuses a second copy with the running pid named, reclaims a pidfile left by a dead supervisor, and `--once` runs one pass without claiming it (that is the path `kingpin run` and the tests use). `kingpin wait` is the primitive it drives.
 
+### One sweep at a time
+
+The loop and `--once` dispatch events and run the maintenance steps through one shared sweep, holding `$KINGPIN_HOME/locks/watch-sweep.mutex` for the pass. That is what keeps a line to one dispatch when `kingpin run` sweeps beside the supervisor: the second sweep reads the cursor after the first acknowledged the line and finds nothing pending. A sweep that finds the lock held waits a few seconds for it and then skips this pass, naming the holder on stderr. `--once` exits 0 and never refuses; the loop logs the skip and tries again on its next wait, because the line is still un-acked. A live sweep refreshes the mutex file's mtime every 15 seconds while it holds the lock, so a pass that runs past the one-minute staleness rule (a slow `merged:` cleanup, a dossier retirement over a long archive) is not taken for a dead holder. A sweep that dies while holding the lock leaves a stale one, which the next sweep reclaims when its pid is gone or the file is a minute old.
+
 ### Running it as a systemd user service
 
 The normal deployment is the `kingpin-watch` user unit shipped with the checkout at `systemd/kingpin-watch.service`. It mirrors `kingpin-queue.service`: `Type=simple`, `Restart=always`, `RestartSec=30` and `WantedBy=default.target`, so a crashed supervisor is back within 30 seconds and starts again after a reboot. Install it from the Kingpin checkout:

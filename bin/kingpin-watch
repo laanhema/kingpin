@@ -22,6 +22,16 @@
 # Linux-only, so it is not used). `--once`, the one-shot pass that `kingpin run`
 # and the tests use, returns before the guard and touches no pidfile.
 #
+# One sweep at a time: the loop and `--once` dispatch and run the maintenance
+# steps through the shared watch_sweep, which holds
+# $KINGPIN_HOME/locks/watch-sweep.mutex. Without it, a `--once` sweep from
+# `kingpin run` and the supervisor's sweep can both read the same `seen` cursor
+# and dispatch one status line twice (issue #209). The pidfile and the sweep lock
+# answer different questions: the pidfile decides who may run a daemon, the sweep
+# lock who may dispatch this pass, and `--once` taking the sweep lock does not
+# claim the supervisor slot (#99). A sweep keeps its lock file's mtime fresh while
+# it runs, so a slow dispatch is not mistaken for a dead holder.
+#
 # Usage: kingpin-watch [--once] [--interval <seconds>]
 set -euo pipefail
 
@@ -41,6 +51,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_ROOT/lib/curator.sh"
 # shellcheck source=../lib/dossier.sh
 . "$KP_ROOT/lib/dossier.sh"
+# shellcheck source=../lib/mutex.sh
+. "$KP_ROOT/lib/mutex.sh"
 KP_BIN="$KP_ROOT/bin"
 
 ONCE=0
@@ -88,11 +100,57 @@ done
 
 SUPERVISOR_PID_FILE="$KP_HOME/supervisor.pid"
 CLAIM_TMP="$SUPERVISOR_PID_FILE.claim.$$"
+# Every dispatch and maintenance pass goes through this lock, whether it comes
+# from the loop or from --once (issue #209).
+SWEEP_MUTEX="$KP_HOME/locks/watch-sweep.mutex"
+# A sweep holds the mutex for its whole pass, and kp_mutex_acquire reclaims a
+# mutex file that is more than a minute old (lib/mutex.sh). A pass can run longer
+# than that: a `merged:` line runs kingpin-done, whose git fetch has no timeout,
+# and retire_dossiers walks the whole archive. This heartbeat refreshes the file's
+# mtime every 15 seconds, four times inside the staleness window, so a live sweep
+# is never mistaken for an abandoned one while a dead holder's lock still ages out
+# and is reclaimed.
+SWEEP_HEARTBEAT_INTERVAL=15
+SWEEP_HEARTBEAT_PID=''
+
+# Start the mtime heartbeat for the held $SWEEP_MUTEX. The child exits as soon as
+# the file no longer names this shell or this shell is gone, so it cannot keep a
+# released lock alive. It must not outlive its owner either: an orphan that kept
+# touching the file would make the lock look live forever and defeat the stale
+# reclaim that recovers a hung holder. Both release paths stop it as well (the
+# EXIT trap here and release_supervisor below).
+sweep_heartbeat_start() {
+  local owner=$$
+  sweep_heartbeat_stop
+  (
+    while kill -0 "$owner" 2>/dev/null; do
+      sleep "$SWEEP_HEARTBEAT_INTERVAL"
+      kill -0 "$owner" 2>/dev/null || exit 0
+      [ "$(head -n 1 "$SWEEP_MUTEX" 2>/dev/null || true)" = "$owner" ] || exit 0
+      touch -c "$SWEEP_MUTEX" 2>/dev/null || exit 0
+    done
+  ) &
+  SWEEP_HEARTBEAT_PID=$!
+}
+
+# Stop the heartbeat and reap it. Called before every release of $SWEEP_MUTEX, so
+# no child can touch the file after its owner let go of it.
+sweep_heartbeat_stop() {
+  [ -n "${SWEEP_HEARTBEAT_PID:-}" ] || return 0
+  kill "$SWEEP_HEARTBEAT_PID" 2>/dev/null || true
+  wait "$SWEEP_HEARTBEAT_PID" 2>/dev/null || true
+  SWEEP_HEARTBEAT_PID=''
+}
+
+# release_supervisor replaces this trap for the daemon; both release the sweep lock.
+trap 'sweep_heartbeat_stop; kp_mutex_release "$SWEEP_MUTEX"' EXIT
 
 # Remove the pidfile only when it still names this process. Runs on a normal exit,
 # on a signal, and when a second copy is refused. Another supervisor's pidfile is
 # never touched: the file is that supervisor's claim on the slot.
 release_supervisor() {
+  sweep_heartbeat_stop
+  kp_mutex_release "$SWEEP_MUTEX"
   if [ -f "$SUPERVISOR_PID_FILE" ] \
      && [ "$(sed -n 1p "$SUPERVISOR_PID_FILE" 2>/dev/null | tr -d ' ' || true)" = "$$" ]; then
     rm -f "$SUPERVISOR_PID_FILE"
@@ -629,29 +687,81 @@ restore_fleet_sockets() {
   done
 }
 
-step_supervision() {
-  local updates
-  updates=$("$KP_BIN/kingpin-wait" --once 2>/dev/null || true)
+# Dispatch one batch of kingpin-wait events. The batch may have been read before
+# the sweep lock was taken, and that is safe: process_task_event starts from the
+# task's on-disk `seen` cursor, so an event another sweep already handled reads as
+# nothing pending here.
+dispatch_updates() {
+  local updates=${1:-} id reason
+  [ -n "$updates" ] || return 0
+  while IFS=' ' read -r id reason; do
+    [ -n "$id" ] || continue
+    process_task_event "$id" "$reason"
+  done <<< "$updates"
+}
 
-  if [ -n "$updates" ]; then
-    while IFS=' ' read -r id reason; do
-      [ -n "$id" ] || continue
-      process_task_event "$id" "$reason"
-    done <<< "$updates"
+# Run one maintenance step, naming it and carrying on when it fails. A failure is
+# logged so it reaches the fleet log even though the sweep also runs unattended;
+# the rest of the pass still runs, because a step that fails once must not take the
+# supervisor down with it. The `||` suppresses errexit only for this step, whose
+# status is inspected here, not for the sweep.
+sweep_step() {
+  local name=$1 rc=0
+  shift
+  "$@" || rc=$?
+  [ "$rc" -eq 0 ] || echo "[kingpin-watch] sweep step '$name' failed (exit $rc); continuing" >&2
+  return 0
+}
+
+# The steps every sweep runs after its event batch. Listed once here so `--once`
+# and the loop cannot drift apart (issue #209).
+sweep_steps() {
+  sweep_step retry_pending_cleanups retry_pending_cleanups
+  sweep_step advance_landing_queues advance_landing_queues
+  sweep_step rearm_listeners rearm_listeners
+  sweep_step retire_dossiers retire_dossiers
+  # issue #88: one non-blocking auto-curate chance per idle sweep.
+  sweep_step auto-curate kp_curate_maybe "$KP_HOME" "$KP_BIN"
+}
+
+# watch_sweep <updates>: dispatch this pass's event batch and run the maintenance
+# steps, holding $SWEEP_MUTEX for the whole pass. The lock is what makes the `seen`
+# read, the dispatch and the ack one step: a concurrent sweep waits here and then
+# finds the line already acknowledged (issue #209). A sweep that finds the lock
+# held names the holder and skips this pass; the caller carries on, so `kingpin
+# run` keeps working beside a supervisor. Both paths call this as a plain command
+# (it always returns 0), so errexit stays on inside the sweep and a step failure
+# is reported by sweep_step instead of being hidden by a `|| true` (review L4). A
+# live holder's lock is kept fresh by the heartbeat above; a dead holder's is
+# reclaimed by the helper.
+watch_sweep() {
+  local updates=${1:-}
+  if ! kp_mutex_acquire "$SWEEP_MUTEX"; then
+    echo "[kingpin-watch] another sweep is running (pid ${kp_mutex_owner:-unknown}); skipping this pass" >&2
     return 0
   fi
-  return 1
+  sweep_heartbeat_start
+  dispatch_updates "$updates"
+  sweep_steps
+  sweep_heartbeat_stop
+  kp_mutex_release "$SWEEP_MUTEX"
+  return 0
+}
+
+# The step every pass runs before its wait: a socket whose server died is restored
+# first, so `kingpin-wait` cannot raise `exited` for a window that is about to come
+# back (issue #149). Listed once so the `--once` and loop entry points cannot drift
+# apart (issue #209 review L1). It stays outside the sweep lock because the wait
+# runs before the sweep.
+watch_pass_begin() {
+  restore_fleet_sockets
 }
 
 if [ "$ONCE" -eq 1 ]; then
-  restore_fleet_sockets
-  step_supervision || true
-  retry_pending_cleanups
-  advance_landing_queues
-  rearm_listeners
-  retire_dossiers
-  # issue #88: one non-blocking auto-curate chance per idle sweep.
-  kp_curate_maybe "$KP_HOME" "$KP_BIN"
+  watch_pass_begin
+  # The wait may run before the lock: a batch another sweep handles meanwhile
+  # leaves this pass with nothing pending, not with a second dispatch.
+  watch_sweep "$("$KP_BIN/kingpin-wait" --once 2>/dev/null || true)"
   exit 0
 fi
 
@@ -677,7 +787,7 @@ stop_waiter() {
 trap stop_waiter INT TERM
 
 while true; do
-  restore_fleet_sockets
+  watch_pass_begin
   EVENTS_FILE=$(mktemp "$KP_HOME/watch-events.XXXXXX")
   WAIT_ERR=$(mktemp "$KP_HOME/watch-wait-err.XXXXXX")
   "$KP_BIN/kingpin-wait" --timeout "$INTERVAL" >"$EVENTS_FILE" 2>"$WAIT_ERR" &
@@ -723,16 +833,8 @@ while true; do
   rm -f "$EVENTS_FILE" "$WAIT_ERR"
   EVENTS_FILE=''
   WAIT_ERR=''
-  if [ -n "$updates" ]; then
-    while IFS=' ' read -r id reason; do
-      [ -n "$id" ] || continue
-      process_task_event "$id" "$reason"
-    done <<< "$updates"
-  fi
-  retry_pending_cleanups
-  advance_landing_queues
-  rearm_listeners
-  retire_dossiers
-  # issue #88: one non-blocking auto-curate chance per idle sweep.
-  kp_curate_maybe "$KP_HOME" "$KP_BIN"
+  # One sweep at a time (issue #209): a --once pass from kingpin run can hold this
+  # lock; when it does, watch_sweep names the holder and this pass skips dispatch
+  # and maintenance, and the un-acked line is raised again on the next wait.
+  watch_sweep "$updates"
 done

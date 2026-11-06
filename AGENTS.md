@@ -178,6 +178,10 @@ An instruction file a harness silently ignores is a bug, not a preference:
 
 `bin/kingpin-watch` is the fleet's one supervisor. It dispatches each unprocessed status
 line once, runs the cleanup on `merged:`, and re-arms a dossier listener that died.
+The loop and `--once` share one sweep, serialized by
+`$KINGPIN_HOME/locks/watch-sweep.mutex`, so a `kingpin run` sweep beside the
+supervisor cannot dispatch a line twice; what a contended sweep does is in
+[`One sweep at a time`](docs/cli.md#one-sweep-at-a-time).
 It also retires a finished task's dossier: it marks the page of a record that finished
 without `kingpin done`, and ends the Lavish session a reviewer left open on it, once,
 recorded in the record's `dossier.ended` marker.
