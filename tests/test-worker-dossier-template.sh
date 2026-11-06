@@ -199,11 +199,18 @@ out=$(check_dir "$TPL" 2>&1) && pass "the template is complete, relative and gat
 [ -s "$TPL/handover.html" ] && pass "handover.html ships with the template" || fail "handover.html is missing or empty"
 out=$(check_handover "$TPL" 2>&1) && pass "the handover template is complete, relative and gate-clean" || fail "the handover template does not check out: $out"
 
-echo "=== it is the default for worker dossiers ==="
-grep -q 'assets/lavish/worker-dossier/template.html' "$KP_ROOT/worker/preamble.md" && pass "the worker preamble points at the template" || fail "worker/preamble.md does not name assets/lavish/worker-dossier/template.html"
-grep -q 'assets/lavish/worker-dossier/template.html' "$KP_ROOT/worker/curator-preamble.md" && pass "the curator preamble points at the template" || fail "worker/curator-preamble.md does not name assets/lavish/worker-dossier/template.html"
+echo "=== it stays shipped for pages already made from it ==="
+for f in "$KP_ROOT/worker/preamble.md" "$KP_ROOT/worker/curator-preamble.md"; do
+  grep -q 'assets/lavish/worker-dossier/template.html' "$f" \
+    && grep -q 'still shipped for pages already' "$f" \
+    && pass "$(basename "$f") keeps the legacy worker-dossier mention" \
+    || fail "$(basename "$f") no longer says the older worker-dossier template still ships"
+done
 grep -q 'kingpin land curator' "$KP_ROOT/worker/curator-preamble.md" && pass "the curator preamble keeps the curator land command" || fail "worker/curator-preamble.md lost the 'kingpin land curator' command"
-grep -q 'assets/lavish/worker-dossier/template.html' "$KP_ROOT/AGENTS.md" && pass "AGENTS.md names the worker template" || fail "AGENTS.md does not name assets/lavish/worker-dossier/template.html"
+grep -q 'assets/lavish/worker-dossier/template.html' "$KP_ROOT/AGENTS.md" \
+  && grep -q 'still shipped for pages already' "$KP_ROOT/AGENTS.md" \
+  && pass "AGENTS.md keeps the legacy worker-dossier mention" \
+  || fail "AGENTS.md no longer says the older worker-dossier templates still ship"
 grep -q 'assets/lavish/worker-dossier/handover.html' "$KP_ROOT/AGENTS.md" && pass "AGENTS.md names the handover template" || fail "AGENTS.md does not name assets/lavish/worker-dossier/handover.html"
 grep -q 'start a handover artifact from the noir' -i "$KP_ROOT/AGENTS.md" && fail "AGENTS.md still starts handover pages from the noir template" || pass "AGENTS.md no longer starts handover pages from noir"
 [ -s "$KP_ROOT/assets/lavish/noir-dossier/template.html" ] && pass "the noir dossier template is still in the repo" || fail "the noir dossier template was removed"
