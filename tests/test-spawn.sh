@@ -117,6 +117,9 @@ grep -qE '^CREATED=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9
 tmux list-windows -t kingpin -F '#{window_name}' | grep -qx "$t17_id" && pass "t17: tmux window is named $t17_id" || fail "t17: window name wrong"
 t17_wt=$(sed -n 's/^WORKTREE=//p' "$t17_env")
 [ "$(git -C "$t17_wt" branch --show-current)" = "kingpin/$t17_id" ] && pass "t17: worktree is on kingpin/$t17_id" || fail "t17: worktree branch wrong"
+grep -qE '^BASE_SHA=[0-9a-f]{40}$' "$t17_env" \
+  && [ "$(sed -n 's/^BASE_SHA=//p' "$t17_env")" = "$(git -C "$t17_wt" rev-parse HEAD)" ] \
+  && pass "t17: BASE_SHA is the commit the branch was leased at" || fail "t17: BASE_SHA missing or not the lease commit: $(grep '^BASE_SHA=' "$t17_env")"
 [ ! -e "$KINGPIN_HOME/tasks/$t17_id/launching" ] && grep -q '^TMUX_WINDOW_ID=' "$t17_env" && pass "t45: spawn removes the launching marker" || fail "t45: launching marker left behind"
 "$KP_BIN/kingpin" send "$t17_id" "echo t17-ok" | grep -q "OK: sent to kingpin:$t17_id" && pass "t17: kingpin send reaches the slugged window" || fail "t17: kingpin send failed"
 "$KP_BIN/kingpin" "done" "$t17_id" --force >/dev/null

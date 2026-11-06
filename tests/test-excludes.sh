@@ -430,7 +430,9 @@ printf 'PROJECT_PATH=%q\nSETUP_CMD=%q\n' "$T/reuse-proj" "" > "$KINGPIN_HOME/pro
 
 "$KP_BIN/kingpin-spawn" demo-reuse --issue 915 --id excl-reuse-a --harness claude >/dev/null 2>&1
 wt_reuse=$(sed -n 's/^WORKTREE=//p' "$KINGPIN_HOME/tasks/excl-reuse-a/task.env" || true)
-"$KP_BIN/kingpin-done" excl-reuse-a >/dev/null 2>&1 || true
+# --force: this task's worker commits nothing, and done refuses a branch with no commit
+# of its own (issue #242); the fixture only needs the slot returned.
+"$KP_BIN/kingpin-done" excl-reuse-a --force >/dev/null 2>&1 || true
 [ -n "$wt_reuse" ] && [ -d "$wt_reuse" ] && pass "the first task left one returned slot to reuse" \
   || fail "the first task left no worktree to reuse"
 
@@ -507,6 +509,10 @@ echo "$reuse_status" | grep -qF '.opencode/plugins' \
   && fail "the worker's git status names the stale .opencode/plugins pair" \
   || pass "the worker's git status stays silent about .opencode/plugins after the lines are gone"
 
+# The second worker lands a commit of its own, so the merge check passes and the
+# refusal this case watches for can only come from the leftovers (issue #242).
+git -C "${wt_reuse:-/nonexistent}" commit -q --allow-empty -m "excl-reuse-b work"
+git -C "${wt_reuse:-/nonexistent}" push -q origin HEAD:main
 rc=0
 done_out=$("$KP_BIN/kingpin-done" excl-reuse-b 2>&1) || rc=$?
 [ "$rc" -eq 0 ] && pass "done returned the reused slot without --force" \

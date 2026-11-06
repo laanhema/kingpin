@@ -211,7 +211,8 @@ sleep 2
 t22_out=$(KINGPIN_STATUS_GRACE=1 "$KP_BIN/kingpin" wait --once 2>/dev/null || true)
 echo "$t22_out" | grep -q "^t22-spawn status" && pass "t22: a spawned worker that exits at once is reported" || fail "t22: spawned dead worker not reported (got: $t22_out)"
 "$KP_BIN/kingpin" list 2>/dev/null | grep '^t22-spawn ' | grep -q "failed: no status: t22-spawn (agy)" && pass "t22: list shows the spawned worker as failed" || fail "t22: list row for t22-spawn: $("$KP_BIN/kingpin" list 2>/dev/null | grep '^t22-spawn ')"
-"$KP_BIN/kingpin" "done" t22-spawn >/dev/null 2>&1 && [ -d "$KINGPIN_HOME/archive/t22-spawn" ] && pass "t22: kingpin done releases the failed task without --force" || fail "t22: kingpin done refused the dead task"
+# --force: the dead worker committed nothing, and done refuses a branch with no commit of its own (issue #242).
+"$KP_BIN/kingpin" "done" t22-spawn --force >/dev/null 2>&1 && [ -d "$KINGPIN_HOME/archive/t22-spawn" ] && pass "t22: kingpin done --force releases the failed task" || fail "t22: kingpin done --force refused the dead task"
 
 # kingpin run stops on a worker that died at launch instead of polling forever
 t22_run_rc=0

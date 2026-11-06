@@ -124,6 +124,8 @@ A host without systemd, or a one-off run under a supervisor of your own, still s
 
 **Environment:** `KINGPIN_HOME`, `KINGPIN_CLAUDE`, `KINGPIN_AGY`, `KINGPIN_OPENCODE`, `KINGPIN_PI`, `KINGPIN_CODEX`, `KINGPIN_GH`, `KINGPIN_TMUX_SOCKET`, `KINGPIN_TMUX_SESSION`; `TMUX_SOCKET` and `TMUX_SESSION` in `$KINGPIN_HOME/config.env` are the fleet-wide default for both, read when the matching environment variable is unset. The `kingpin scope check` it runs reads `KINGPIN_ALLOW_GLOBAL_CONTRACT`, and a codex spawn also reads `KINGPIN_SKILLS_DIR` and `CODEX_HOME`.
 
+The task record carries `BASE_SHA`, the commit the branch was leased at, before any worker commit. `kingpin done` compares it with the branch's `HEAD` to tell a branch with work from one without.
+
 ### Which harness
 
 The spawn picks the first of these that is set: `--harness <name>`, `HARNESS` in the
@@ -557,6 +559,7 @@ Every refusal names its reason on stderr and exits 1 with the record still in `t
 
 - `worktree <path> has uncommitted changes` when a changed or untracked file is left in the worktree; `--force` discards them and continues.
 - `HEAD <sha> is not yet merged into refs/remotes/origin/<branch>` when the worker's commits never reached the remote default branch. `--force` tears the worktree down anyway, and the remote branch is left in place because the merge was not verified.
+- `branch <name> carries no commit of its own` when the worker's `HEAD` is still the commit the spawn leased the branch at (`BASE_SHA` in `task.env`). That commit is on the default branch only because the branch never left it, so nothing from it landed. The test is only that `HEAD` never moved off `BASE_SHA`: a worker that pulled the default tip without committing has moved, so it passes. This refusal does not clear by itself, so the supervisor retrying it will not help. `--force` tears the worktree down anyway, the issue is left unchecked as for the other merge-check refusals, and the remote branch is left in place.
 - `HEAD <sha> cannot be verified: refs/remotes/origin/<branch> is missing` when the default branch ref is not there to compare against, with any `git fetch` failure named in the same line; `--force` is the way past it.
 - `worktree <path> is held by unfinished task <id>` when another live task records the same worktree. This one is refused even with `--force`.
 - `treehouse return failed for worktree <path>: <reason>` when the slot could not go back to the pool. The reason is recorded in the task's `lease-lost` marker (next section), and `--force` re-attempts the full cleanup.
@@ -567,7 +570,7 @@ The supervisor still retries a refused cleanup, but a task whose lease was lost 
 
 ### Default-branch resolution and the merge check
 
-The merge check resolves the default branch from the remote's `HEAD` (a read-only `git ls-remote --symref`, when the remote is reachable), then `origin/HEAD`, then `origin/master`, then `origin/main`, then the checkout's own `HEAD`, and a failed `git fetch` is reported on stderr rather than read as an unmerged commit: cleanup still succeeds when the last-known refs prove the merge, and the refusal names the fetch failure when they cannot. `KINGPIN_SKIP_MERGE_CHECK=1` skips the whole check, for a caller that verified the merge itself; the curator's automatic reconcile sets it.
+The merge check resolves the default branch from the remote's `HEAD` (a read-only `git ls-remote --symref`, when the remote is reachable), then `origin/HEAD`, then `origin/master`, then `origin/main`, then the checkout's own `HEAD`, and a failed `git fetch` is reported on stderr rather than read as an unmerged commit: cleanup still succeeds when the last-known refs prove the merge, and the refusal names the fetch failure when they cannot. The check is the ancestor test plus a second test: a branch whose `HEAD` is still the `BASE_SHA` the spawn recorded has no commit of its own and is refused. The test is "`HEAD` never moved off `BASE_SHA`", and a worker that fast-forwards or merges the default tip without committing (for example a `git pull` after its blocker cleared) moves `HEAD` and still passes. That gap is accepted: a stronger test would have to tell the worker's own commits from the commits it pulled, and once the branch lands by fast-forward or merge both sit on the default branch, so no check separates them without refusing a branch that landed legitimately. A record with no `BASE_SHA`, written before this check or by the curator, gets the ancestor test alone. `KINGPIN_SKIP_MERGE_CHECK=1` skips the whole check, for a caller that verified the merge itself; the curator's automatic reconcile sets it.
 
 ### Queue handoff
 
@@ -583,7 +586,7 @@ A refusal is recorded as a `cleanup-refused:` status line only for a finished ta
 
 ### The issue a finished task names
 
-A task record that carries `ISSUE` (or, for an older record, a worker's `issue: #<n>` line) gets one more step before the archive. When the merge check passed and `gh` reports the issue `OPEN`, `done` closes it and the `OK:` line says `closed issue #<n> after the merge`; an issue that is already closed is left alone and named `issue #<n> is closed`. A close that fails is reported as `issue #<n> is still open (close it by hand)`, and a state that cannot be read as `issue #<n> state could not be read (check that it is closed)`. The merge check is the permission: a `--force` cleanup or a missing worktree reports `issue #<n> not checked (the merge was not verified)` and never closes anything. A record that names no issue, such as a curator record, gets no readout at all. Every `gh` failure is part of the `OK:` line and never fails the cleanup. `KINGPIN_GH` overrides the command, as it does for `kingpin spawn`, `kingpin rename` and `kingpin curate`.
+A task record that carries `ISSUE` (or, for an older record, a worker's `issue: #<n>` line) gets one more step before the archive. When the merge check passed and `gh` reports the issue `OPEN`, `done` closes it and the `OK:` line says `closed issue #<n> after the merge`; an issue that is already closed is left alone and named `issue #<n> is closed`. A close that fails is reported as `issue #<n> is still open (close it by hand)`, and a state that cannot be read as `issue #<n> state could not be read (check that it is closed)`. The merge check is the permission, and a branch with no commit of its own does not pass it, so a failed worker's issue is never closed. A `--force` cleanup or a missing worktree reports `issue #<n> not checked (the merge was not verified)` and never closes anything. A record that names no issue, such as a curator record, gets no readout at all. Every `gh` failure is part of the `OK:` line and never fails the cleanup. `KINGPIN_GH` overrides the command, as it does for `kingpin spawn`, `kingpin rename` and `kingpin curate`.
 
 ### The dossier link
 
