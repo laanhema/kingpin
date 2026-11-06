@@ -37,7 +37,7 @@
 #   KP_WINDOW_ID       the target to address (`@N` for tmux, `w1:p3` for Herdr)
 #   KP_WINDOW_NAME     the recorded name or label
 #   KP_WINDOW_SESSION  the recorded session/socket session
-#   KP_WINDOW_SOCKET   the tmux socket, empty for the default server (Herdr: empty)
+#   KP_WINDOW_SOCKET   the tmux socket, `default` for the default server (Herdr: empty)
 #   KP_WINDOW_LABEL    a human-readable `<session>:<name>` (plus the id when found)
 #
 # Verbs that take a target address the value `kp_mux_find` published (`KP_WINDOW_ID`)

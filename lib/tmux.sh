@@ -46,7 +46,7 @@
 #   KP_WINDOW_ID       the window id to address (`@N`), empty when none was found
 #   KP_WINDOW_NAME     the recorded window name from TMUX_TARGET
 #   KP_WINDOW_SESSION  the recorded session from TMUX_TARGET
-#   KP_WINDOW_SOCKET   the socket the record names, empty for the default server
+#   KP_WINDOW_SOCKET   the socket the record names, `default` for the default server
 #   KP_WINDOW_LABEL    `<session>:<name>` or `<session>:<name> (@N)` when found
 
 # The task-record readers (kp_env_get, kp_task_is_live) live in lib/status.sh.
@@ -75,11 +75,13 @@ kp_tmux_socket_for() {
 }
 
 # kp_tmux_socket_from_env <task-env-file>
-# The socket a task record names, or nothing for a record written before the
-# fleet moved to its own server (those windows live on the default socket).
+# The socket a task record names, or `default` for a record written before the
+# fleet moved to its own server (those windows live on the default socket). A
+# missing file reads the same, so no caller has to normalize an empty value.
 kp_tmux_socket_from_env() {
-  [ -f "${1:-}" ] || return 0
-  kp_env_get "$1" TMUX_SOCKET
+  local sock=''
+  [ -f "${1:-}" ] && sock=$(kp_env_get "$1" TMUX_SOCKET)
+  printf '%s\n' "${sock:-default}"
 }
 
 # kp_tmux <socket> [tmux-args...]
@@ -164,8 +166,40 @@ kp_tmux_socket_warn_line() {
   kp_tmux_socket_reachable "$sock" && return 0
   hint=$(kp_tmux_attach_cmd "$sock")
   printf "kingpin: the tmux server '%s' is not running; live tasks %s name it and their windows are gone. Attach once it is back: %s; kingpin watch restarts it and runs kingpin restore (or run kingpin restore yourself)\n" \
-    "${sock:-default}" "$ids" "$hint" >&2
+    "$sock" "$ids" "$hint" >&2
   return 0
+}
+
+# kp_tmux_live_by_socket [--skip <fn>] <task-dir>...
+# Groups the live tasks among the given task dirs by the tmux socket their record
+# names, so the commands that walk the fleet by server share one reader. Prints one
+# `<socket><TAB><id> <id>...` line per socket, in first-seen order, ids being the dir
+# basenames in the order given; a record with no socket groups under `default`
+# (kp_tmux_socket_from_env). A dir counts when kp_task_is_live passes and it holds a
+# task.env. With `--skip <fn>`, a task for which `<fn> <dir>` returns 0 is left out of
+# its group, and a socket whose tasks are all left out prints nothing. It never calls
+# tmux: whether a server answers stays with the caller.
+kp_tmux_live_by_socket() {
+  local skip='' dir other sock osock ids seen=' '
+  if [ "${1:-}" = --skip ]; then
+    skip=${2:?kp_tmux_live_by_socket --skip needs a function}
+    shift 2
+  fi
+  for dir in "$@"; do
+    kp_task_is_live "$dir" && [ -f "$dir/task.env" ] || continue
+    sock=$(kp_tmux_socket_from_env "$dir/task.env")
+    case "$seen" in *" $sock "*) continue ;; esac
+    seen="$seen$sock "
+    ids=''
+    for other in "$@"; do
+      kp_task_is_live "$other" && [ -f "$other/task.env" ] || continue
+      osock=$(kp_tmux_socket_from_env "$other/task.env")
+      [ "$osock" = "$sock" ] || continue
+      if [ -n "$skip" ] && "$skip" "$other"; then continue; fi
+      ids=${ids:+"$ids "}$(basename "$other")
+    done
+    if [ -n "$ids" ]; then printf '%s\t%s\n' "$sock" "$ids"; fi
+  done
 }
 
 # kp_tmux_resolve_target <kp-home> [<explicit-session> <explicit-source>]
@@ -224,7 +258,7 @@ kp_tmux_resolve_target() {
     [ -n "$resolved" ] \
       || {
         printf "the session '%s' from %s does not exist on the tmux server '%s' (%s); start it, or name a session that does\n" \
-          "$name" "$source" "${socket:-default}" "$(kp_tmux_label "$socket")"
+          "$name" "$source" "$socket" "$(kp_tmux_label "$socket")"
         return 1
       }
     printf '%s\t%s\tfrom %s\t0\n' "$socket" "$resolved" "$source"
@@ -245,7 +279,7 @@ kp_tmux_resolve_target() {
     # Only a set-but-stale $TMUX is worth a note: outside tmux is the normal case, and
     # the fallback is the documented one, so a plain shell gets no warning.
     if [ -n "${TMUX:-}" ]; then
-      printf "kingpin: \$TMUX names no reachable session; falling back to the fleet tmux server '%s'\n" "${socket:-default}" >&2
+      printf "kingpin: \$TMUX names no reachable session; falling back to the fleet tmux server '%s'\n" "$socket" >&2
     fi
   fi
 
@@ -268,15 +302,15 @@ kp_tmux_resolve_target() {
   if [ "${#all[@]}" -gt 1 ]; then
     for name in "${all[@]}"; do joined=${joined:+"$joined, "}$name; done
     if [ "${#attached_names[@]}" -eq 0 ]; then
-      measured="the tmux server '${socket:-default}' has ${#all[@]} sessions and none has a client attached ($joined)"
+      measured="the tmux server '$socket' has ${#all[@]} sessions and none has a client attached ($joined)"
     else
       for name in "${attached_names[@]}"; do
         attached_joined=${attached_joined:+"$attached_joined, "}$name
       done
-      measured="the tmux server '${socket:-default}' has ${#all[@]} sessions and ${#attached_names[@]} of them have a client attached ($attached_joined)"
+      measured="the tmux server '$socket' has ${#all[@]} sessions and ${#attached_names[@]} of them have a client attached ($attached_joined)"
     fi
     printf "no single target session on the tmux server '%s', and %s; name one with --tmux-session <name>, KINGPIN_TMUX_SESSION=<name>, or TMUX_SESSION in %s/config.env\n" \
-      "${socket:-default}" "$measured" "$home"
+      "$socket" "$measured" "$home"
     return 1
   fi
   # Nothing to join: the one case where a session is created, and the caller says so.
@@ -284,10 +318,10 @@ kp_tmux_resolve_target() {
   kp_tmux "$socket" new-session -d -s kingpin -n home \
     || {
       printf "no session on the tmux server '%s' (%s) and the fallback session 'kingpin' could not be created\n" \
-        "${socket:-default}" "$(kp_tmux_label "$socket")"
+        "$socket" "$(kp_tmux_label "$socket")"
       return 1
     }
-  printf "kingpin: no session on the fleet tmux server '%s'; created and using \"kingpin\" (name one with --tmux-session or KINGPIN_TMUX_SESSION)\n" "${socket:-default}" >&2
+  printf "kingpin: no session on the fleet tmux server '%s'; created and using \"kingpin\" (name one with --tmux-session or KINGPIN_TMUX_SESSION)\n" "$socket" >&2
   printf '%s\t%s\t%s\t%s\n' "$socket" kingpin 'the named fallback (no session existed)' "$started"
   return 0
 }
