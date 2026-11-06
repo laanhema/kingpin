@@ -88,6 +88,83 @@ kp_tmux_ensure_session "$pfx_socket" kingpin
 kp_tmux_has_session "$pfx_socket" kingpin && pass "t1c: ensure created the exact session" || fail "t1c: ensure did not create the exact session"
 tmux -L "$pfx_socket" kill-server 2>/dev/null || true
 
+# Test 1d: the live tasks are read by socket in one place
+# ---------------------------------------------------------------------------
+# A record with no socket and one naming `default` are the same server, so the
+# reader groups them together and nothing downstream normalizes again. The static
+# check keeps a caller from typing the fallback a second time.
+echo "--- Test 1d: kp_tmux_live_by_socket groups live tasks by socket ---"
+live_root=$T/live-by-socket
+mkdir -p "$live_root/a-old" "$live_root/b-noenv" "$live_root/c-other" "$live_root/d-skipped" "$live_root/z-new" "$live_root/archived"
+printf 'HARNESS=agy\n' > "$live_root/a-old/task.env"
+printf 'TMUX_SOCKET=other\n' > "$live_root/c-other/task.env"
+printf 'TMUX_SOCKET=other\nNO_LEASE=1\n' > "$live_root/d-skipped/task.env"
+printf 'TMUX_SOCKET=default\n' > "$live_root/z-new/task.env"
+ln -s "$live_root/c-other" "$live_root/link-c"
+tab=$(printf '\t')
+live_out=$(kp_tmux_live_by_socket "$live_root"/*)
+live_want="default${tab}a-old z-new
+other${tab}c-other d-skipped"
+if [ "$live_out" = "$live_want" ]; then
+  pass "t1d: no socket and TMUX_SOCKET=default share one group; a symlink and a dir with no task.env are left out"
+else
+  fail "t1d: unexpected grouping: got [$live_out] want [$live_want]"
+fi
+live_skip_one() { [ "$(kp_env_get "$1/task.env" NO_LEASE)" = 1 ]; }
+live_skip_all() { true; }
+live_out=$(kp_tmux_live_by_socket --skip live_skip_one "$live_root"/*)
+live_want="default${tab}a-old z-new
+other${tab}c-other"
+if [ "$live_out" = "$live_want" ]; then
+  pass "t1d: --skip drops the skipped task from its group"
+else
+  fail "t1d: unexpected --skip grouping: got [$live_out] want [$live_want]"
+fi
+live_out=$(kp_tmux_live_by_socket --skip live_skip_all "$live_root"/*)
+if [ -z "$live_out" ]; then
+  pass "t1d: a socket whose tasks are all skipped prints nothing"
+else
+  fail "t1d: a fully skipped fleet still printed: $live_out"
+fi
+if [ -z "$(kp_tmux_live_by_socket)" ]; then
+  pass "t1d: no task dir prints nothing"
+else
+  fail "t1d: an empty argument list printed a group"
+fi
+if [ "$(kp_tmux_socket_from_env "$live_root/missing/task.env")" = default ] \
+  && [ "$(kp_tmux_socket_from_env "$live_root/a-old/task.env")" = default ] \
+  && [ "$(kp_tmux_socket_from_env "$live_root/c-other/task.env")" = other ]; then
+  pass "t1d: kp_tmux_socket_from_env prints default for a missing file or key, and the named socket otherwise"
+else
+  fail "t1d: kp_tmux_socket_from_env did not normalize"
+fi
+
+# The fallback is typed once: kp_tmux_socket_from_env and kp_tmux turn an empty
+# socket into `default`, and a caller that types `${sock:-default}` again is a
+# grouping loop that skipped the reader. The scan drops those two lines by their
+# text, the PROJECT defaults of kingpin-done and kingpin-land, and whole-line comments.
+default_scan() {
+  local root=${1:?}
+  grep -rnF ':-default}' "$root/bin" "$root/lib" 2>/dev/null \
+    | grep -vE '(printf .%s.n. |tmux -L )"[$][{]sock:-default[}]"' \
+    | grep -vF 'PROJECT:-default}' \
+    | grep -vE ':[0-9]+:[[:space:]]*#' || true
+}
+default_hits=$(default_scan "$KP_ROOT")
+if [ -z "$default_hits" ]; then
+  pass "t1d: no caller types a second socket fallback"
+else
+  fail "t1d: these normalize a socket again; read it through kp_tmux_socket_from_env or kp_tmux_live_by_socket: $default_hits"
+fi
+mkdir -p "$T/fixture-default/bin"
+# shellcheck disable=SC2016 # the fixture writes a literal expansion
+printf '%s\n' 'echo "${sock:-default}"' > "$T/fixture-default/bin/loop"
+if [ -n "$(default_scan "$T/fixture-default")" ]; then
+  pass "t1d: the scan catches a second fallback"
+else
+  fail "t1d: the scan missed a second fallback"
+fi
+
 # Test 2: a spawn from inside the operator's tmux session lands on the fleet server
 # ---------------------------------------------------------------------------
 echo "--- Test 2: spawn from inside the operator's session ---"

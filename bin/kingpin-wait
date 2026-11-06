@@ -74,27 +74,14 @@ fi
 # KINGPIN_SKIP_SOCKET_WARN=1 silences it, like KINGPIN_SKIP_GUARD=1 for the guard.
 WARNED_SOCKETS=' '
 warn_unreachable_sockets() {
-  local dir sock checked=' ' ids id isock
-  for dir in "$tasks_dir"/*; do
-    kp_task_is_live "$dir" || continue
-    sock=$(kp_tmux_socket_from_env "$dir/task.env")
-    case "$checked" in *" ${sock:-default} "*) continue ;; esac
-    checked="$checked${sock:-default} "
+  local sock ids
+  while IFS=$'\t' read -r sock ids; do
     kp_tmux_socket_reachable "$sock" && continue
-    case "$WARNED_SOCKETS" in *" ${sock:-default} "*) continue ;; esac
-    WARNED_SOCKETS="$WARNED_SOCKETS${sock:-default} "
-    ids=''
-    for id in "$tasks_dir"/*; do
-      kp_task_is_live "$id" || continue
-      # Normalized on both sides: no socket and `default` name the same server, and the
-      # dedupe above already treats them as one (issue #165 review M2).
-      isock=$(kp_tmux_socket_from_env "$id/task.env")
-      [ "${isock:-default}" = "${sock:-default}" ] || continue
-      ids=${ids:+"$ids "}$(basename "$id")
-    done
+    case "$WARNED_SOCKETS" in *" $sock "*) continue ;; esac
+    WARNED_SOCKETS="$WARNED_SOCKETS$sock "
     # shellcheck disable=SC2086 # ids is a space-separated list of task ids
     kp_tmux_socket_warn_line "$sock" $ids
-  done
+  done < <(kp_tmux_live_by_socket "$tasks_dir"/*)
 }
 warn_unreachable_sockets
 

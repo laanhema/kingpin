@@ -313,24 +313,12 @@ case "$cmd" in
     # the socket named, not only the tasks. The line goes to stderr and is silenced by
     # KINGPIN_SKIP_SOCKET_WARN=1, the same shape as KINGPIN_SKIP_GUARD=1.
     warn_unreachable_sockets() {
-      local d sock seen=' ' ids id isock
-      for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
-        sock=$(kp_tmux_socket_from_env "$d/task.env")
-        case "$seen" in *" ${sock:-default} "*) continue ;; esac
-        seen="$seen${sock:-default} "
+      local sock ids
+      while IFS=$'\t' read -r sock ids; do
         kp_tmux_socket_reachable "$sock" && continue
-        ids=''
-        for id in ${live_dirs[@]+"${live_dirs[@]}"}; do
-          # Compare the normalized socket: a record written before the split names no
-          # socket and one naming `default` are the same server, and the dedupe above
-          # already treats them as one (issue #165 review M2).
-          isock=$(kp_tmux_socket_from_env "$id/task.env")
-          [ "${isock:-default}" = "${sock:-default}" ] || continue
-          ids=${ids:+"$ids "}$(basename "$id")
-        done
         # shellcheck disable=SC2086 # ids is a space-separated list of task ids
         kp_tmux_socket_warn_line "$sock" $ids
-      done
+      done < <(kp_tmux_live_by_socket ${live_dirs[@]+"${live_dirs[@]}"})
     }
 
     # Dossiers left open on finished tasks (issue #186). A finished row is hidden from
@@ -371,15 +359,12 @@ case "$cmd" in
     # uses; a spawn inside tmux follows the caller's socket, which this board cannot
     # predict without resolving a target for it.
     print_socket_footer() {
-      local d sock seen=' ' any=0
-      for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
-        sock=$(kp_tmux_socket_from_env "$d/task.env")
-        case "$seen" in *" ${sock:-default} "*) continue ;; esac
-        seen="$seen${sock:-default} "
+      local sock ids any=0
+      while IFS=$'\t' read -r sock ids; do
         any=1
         printf "Workers live on the tmux server '%s': %s (kingpin peek <task-id> reads one pane)\n" \
-          "${sock:-default}" "$(socket_attach_cmd "$sock")"
-      done
+          "$sock" "$(socket_attach_cmd "$sock")"
+      done < <(kp_tmux_live_by_socket ${live_dirs[@]+"${live_dirs[@]}"})
       if [ "$any" -eq 0 ]; then
         sock=$(kp_tmux_socket_for "$KP_HOME")
         printf "Workers live on the tmux server '%s': %s (kingpin peek <task-id> reads one pane)\n" \
