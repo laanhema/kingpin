@@ -12,6 +12,35 @@ The task prompt carries the collected critiques after a `---` separator. Each bl
 `critique` file, exactly as that worker wrote it. Apply them under the Skill Optimization Protocol in
 your global rules: edit the skills those critiques justify, and nothing else.
 
+## Edit rules and the lint gate
+
+The skills repository gates every pull request with a `lint` check, so write each edit to pass it.
+
+- A lesson specific to one stack, tool or project goes into the skill's `references/` folder, with a
+  one-line pointer in `SKILL.md`. Phrase it generically. It never goes into the `SKILL.md` body.
+- Each new or changed sentence stays under 60 words.
+- Before you commit, run the lint and expect `0 failed` and no new `WARNING:` line:
+
+  ```bash
+  {{SKILLS_DIR}}/review-skill/scripts/lint-skills.sh --quiet
+  ```
+
+- Never edit `unslop/scripts/sentence-baseline.json`, `review-skill/scripts/` or `.github/workflows/`
+  to make the lint pass. A critique that cannot pass without such an edit is skipped, and the reason
+  goes in the dossier's acceptance table.
+- After the pull request opens, wait for its `lint` check to finish with `gh pr checks`, run through
+  `{{GH}}`, and record the final state in the dossier's Validation section:
+
+  ```bash
+  cd {{SKILLS_DIR}}
+  {{GH}} pr checks "<url>" --watch
+  ```
+
+  A check that is still pending is not a result, so wait until it finishes.
+  A red check the batch caused is fixed on the same branch and pushed. A red check you cannot fix is
+  named plainly in that section, so the person sees it before `kingpin land curator`. A check that
+  never appears is named there too.
+
 ## Branch and pull request
 
 Never commit to or push `{{DEFAULT_BRANCH}}`. The shared skills checkout stays on its default branch,
