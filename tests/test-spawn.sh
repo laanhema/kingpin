@@ -150,6 +150,15 @@ t17_calls=$(wc -l < "$T/t17-gh-calls")
 "$KP_BIN/kingpin-wait" --once >/dev/null || true
 "$KP_BIN/kingpin-rename" "$t17_text" >/dev/null
 [ "$(wc -l < "$T/t17-gh-calls")" = "$t17_calls" ] && [ "$(tmux display-message -p -t "$t17_twid" '#{window_name}')" = "$t17_new" ] && pass "t17: a second rename is a no-op" || fail "t17: second rename was not a no-op"
+# A retry after a lost marker finds TMUX_TARGET already at the new name: kp_env_set
+# writes nothing, so the record keeps its bytes and its inode.
+cp -p "$t17_tenv" "$T/t17-env.before"
+rm -f "$T/t17-env.link"
+ln "$t17_tenv" "$T/t17-env.link"
+rm -f "$KINGPIN_HOME/tasks/$t17_text/renamed"
+"$KP_BIN/kingpin-rename" "$t17_text" >/dev/null
+cmp -s "$t17_tenv" "$T/t17-env.before" && [ "$t17_tenv" -ef "$T/t17-env.link" ] && [ -f "$KINGPIN_HOME/tasks/$t17_text/renamed" ] \
+  && pass "t17: a rename retried after a lost marker leaves task.env untouched" || fail "t17: the retried rename rewrote task.env or left no marker"
 "$KP_BIN/kingpin" "done" "$t17_text" --force >/dev/null
 "$KP_BIN/kingpin" "done" kp-refactor-authentication-2 --force >/dev/null
 ! tmux list-windows -t kingpin -F '#{window_name}' | grep -qE "^kp-(303|refactor)" && pass "t17: kingpin done closed the renamed windows" || fail "t17: windows left behind"

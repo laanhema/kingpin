@@ -259,4 +259,102 @@ t198_finished noted 0
 t198_finished missing 1
 rm -rf "$t198_home"
 
+# t206: kp_env_set is the one rewrite of a task.env key (lib/status.sh); the four copies it
+# replaced shared the skip-unchanged, temp-file-beside-the-record and stderr behaviour.
+echo "=== Test t206: kp_env_set rewrites one task.env key ==="
+t206_dir=$T/t206; mkdir -p "$t206_dir"
+t206_env=$t206_dir/task.env
+t206_count() { find "$1" -mindepth 1 | wc -l; }
+t206_reset() { printf '%s\n' "MODE=review" "KEY=old" "KEYX=keep" "PATH_X=a=b" > "$t206_env"; }
+
+# An unchanged value touches nothing: same bytes, same inode (a hard link taken before
+# still names the file), no temp file left beside it.
+t206_reset
+cp -p "$t206_env" "$T/t206.before"
+rm -f "$T/t206.link"
+ln "$t206_env" "$T/t206.link"
+kp_env_set "$t206_env" KEY old
+cmp -s "$t206_env" "$T/t206.before" && [ "$t206_env" -ef "$T/t206.link" ] \
+  && pass "t206: an unchanged value leaves the file byte-identical and unreplaced" \
+  || fail "t206: an unchanged value rewrote the file"
+[ "$(t206_count "$t206_dir")" -eq 1 ] && pass "t206: no temp file is left beside the record" || fail "t206: $(find "$t206_dir" -mindepth 1 | tr '\n' ' ')"
+kp_env_set "$t206_env" NEVER_SET ''
+cmp -s "$t206_env" "$T/t206.before" && pass "t206: an absent key set to an empty value stays absent" || fail "t206: an empty value added a line"
+
+# A changed value rewrites that key only; a key that is a prefix of another is not touched.
+kp_env_set "$t206_env" KEY new
+printf '%s\n' "MODE=review" "KEY=new" "KEYX=keep" "PATH_X=a=b" > "$T/t206.want"
+cmp -s "$t206_env" "$T/t206.want" && pass "t206: a changed value rewrites that key only" || fail "t206: rewrote: $(tr '\n' ' ' < "$t206_env")"
+
+# A missing key is appended as the last line.
+t206_reset
+kp_env_set "$t206_env" ADDED value
+{ cat "$T/t206.before"; echo "ADDED=value"; } > "$T/t206.want"
+cmp -s "$t206_env" "$T/t206.want" && pass "t206: a missing key is added as the last line" || fail "t206: add: $(tr '\n' ' ' < "$t206_env")"
+
+# Every line of a duplicated key takes the value, so the last-wins reader sees it.
+printf '%s\n' "KEY=one" "MODE=review" "KEY=two" > "$t206_env"
+kp_env_set "$t206_env" KEY three
+printf '%s\n' "KEY=three" "MODE=review" "KEY=three" > "$T/t206.want"
+cmp -s "$t206_env" "$T/t206.want" && [ "$(kp_env_get "$t206_env" KEY)" = three ] \
+  && pass "t206: a duplicated key is rewritten on every line" || fail "t206: duplicate: $(tr '\n' ' ' < "$t206_env")"
+
+# A record whose last line has no newline does not glue the new key onto it.
+printf 'MODE=review\nPATH_X=a=b' > "$t206_env"
+kp_env_set "$t206_env" ADDED value
+printf 'MODE=review\nPATH_X=a=b\nADDED=value\n' > "$T/t206.want"
+cmp -s "$t206_env" "$T/t206.want" && pass "t206: an unterminated last line keeps its own line" || fail "t206: unterminated: $(od -c "$t206_env" | head -3 | tr '\n' ' ')"
+
+# Values the sed form broke on, and quoting that must stay literal, read back unchanged.
+# shellcheck disable=SC2016 # the literal $HOME is the value under test
+t206_values=('a|b' 'x&y' 'back\slash' 'tab\tx' 'a/b' 'a b' '$HOME' '"q"' "it's" '-n' 'a=b' '*')
+t206_bad=''
+for t206_v in "${t206_values[@]}"; do
+  t206_reset
+  kp_env_set "$t206_env" KEY "$t206_v" || t206_bad="$t206_bad [$t206_v: exit]"
+  [ "$(kp_env_get "$t206_env" KEY)" = "$t206_v" ] || t206_bad="$t206_bad [$t206_v: read back '$(kp_env_get "$t206_env" KEY)']"
+  printf '%s\n' "MODE=review" "KEYX=keep" "PATH_X=a=b" > "$T/t206.want"
+  grep -vx 'KEY=.*' "$t206_env" | cmp -s - "$T/t206.want" || t206_bad="$t206_bad [$t206_v: neighbours changed]"
+  kp_env_set "$t206_env" NEWKEY "$t206_v" || t206_bad="$t206_bad [$t206_v: add exit]"
+  [ "$(kp_env_get "$t206_env" NEWKEY)" = "$t206_v" ] || t206_bad="$t206_bad [$t206_v: added value read back wrong]"
+done
+[ -z "$t206_bad" ] && pass "t206: values with | & \\ / quotes and a leading dash land verbatim" || fail "t206:$t206_bad"
+
+# A missing record is refused with the file named, and nothing is created.
+rc=0
+t206_err=$(kp_env_set "$t206_dir/absent.env" KEY v 2>&1) || rc=$?
+[ "$rc" -eq 1 ] && [ ! -e "$t206_dir/absent.env" ] && [[ $t206_err == *"$t206_dir/absent.env"* ]] \
+  && pass "t206: a missing record exits 1, names the file and creates nothing" || fail "t206: missing: rc=$rc err='$t206_err'"
+
+# A value that would split the line is refused and the record stays as it was.
+t206_reset
+cp -p "$t206_env" "$T/t206.before"
+rc=0
+t206_err=$(kp_env_set "$t206_env" KEY $'a\nb' 2>&1) || rc=$?
+[ "$rc" -eq 1 ] && [[ $t206_err == *newline* ]] && cmp -s "$t206_env" "$T/t206.before" \
+  && pass "t206: a value holding a newline exits 1 and leaves the record alone" || fail "t206: newline: rc=$rc err='$t206_err'"
+
+# A failed write leaves the record intact and no temp file. Root ignores the modes.
+if [ "$(id -u)" -eq 0 ]; then
+  pass "t206: the read-only and unreadable cases are skipped (root ignores modes)"
+else
+  t206_reset
+  cp -p "$t206_env" "$T/t206.before"
+  chmod a-w "$t206_dir"
+  rc=0
+  t206_err=$(kp_env_set "$t206_env" KEY changed 2>&1) || rc=$?
+  chmod u+w "$t206_dir"
+  [ "$rc" -eq 1 ] && [[ $t206_err == *"cannot write"* ]] && cmp -s "$t206_env" "$T/t206.before" \
+    && [ "$(t206_count "$t206_dir")" -eq 1 ] \
+    && pass "t206: a folder that cannot take the temp file exits 1 with the record intact" \
+    || fail "t206: read-only folder: rc=$rc err='$t206_err'"
+  chmod 000 "$t206_env"
+  rc=0
+  t206_err=$(kp_env_set "$t206_env" KEY changed 2>&1) || rc=$?
+  chmod 644 "$t206_env"
+  [ "$rc" -eq 1 ] && cmp -s "$t206_env" "$T/t206.before" && [ "$(t206_count "$t206_dir")" -eq 1 ] \
+    && pass "t206: an unreadable record exits 1 and is not replaced by a one-line file" \
+    || fail "t206: unreadable record: rc=$rc err='$t206_err'"
+fi
+
 kp_test_finish STATUS

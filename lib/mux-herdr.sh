@@ -31,8 +31,9 @@
 # The record keys a Herdr task carries:
 #   MUX=herdr   MUX_SESSION=<herdr session>   MUX_TARGET=<pane id>   MUX_LABEL=<pane label>
 
-# The task-record readers (kp_env_get) and the record writer live in lib/mux.sh.
-# This file is sourced from there, so those functions already exist.
+# The task-record reader and writer (kp_env_get, kp_env_set) live in lib/status.sh,
+# which lib/mux.sh sources. This file is sourced from lib/mux.sh, so those functions
+# already exist.
 
 # _kp_herdr_session_name
 # The fleet's Herdr session: KINGPIN_HERDR_SESSION, then HERDR_SESSION inside a
