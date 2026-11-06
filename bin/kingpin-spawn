@@ -221,6 +221,9 @@ git_dir=$(kp_git_dir "$worktree") || die "refusing to launch: cannot read the gi
 common_dir=$(kp_git_common_dir "$worktree") || die "refusing to launch: cannot read the common git directory of $worktree"
 [ "$git_dir" != "$common_dir" ] || die "refusing to launch: $worktree is not a linked worktree"
 [ "$(git -C "$worktree" branch --show-current)" = "$branch" ] || die "worktree is not on $branch"
+# The commit the branch was leased at, before any worker commit: `kingpin done` compares
+# it with the branch's HEAD to tell a branch with work from one without (issue #242).
+base_sha=$(git -C "$worktree" rev-parse HEAD 2>/dev/null) || die "cannot read HEAD of $worktree"
 
 # The harness files this spawn writes into the worktree must not show up in its
 # `git status`, and the file that says so must not be the main checkout's: see
@@ -350,6 +353,7 @@ HARNESS=$harness
 ISSUE=$issue
 MODE=$mode
 BRANCH=$branch
+BASE_SHA=$base_sha
 WORKTREE=$worktree
 TMUX_SOCKET=$fleet_socket
 TMUX_TARGET=$target_session:$id

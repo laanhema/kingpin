@@ -3,6 +3,7 @@
 #
 # A task record that names an issue is checked after the merge: the issue is
 # closed when it is still open, and the OK: line reports its state (issue #170).
+# A branch with no commit of its own is not a merged task and is refused (issue #242).
 # After a verified merge the checks of the task's pull request are read too, and a
 # rollup that was FAILED or PENDING is named in the OK: line and on stderr (issue #221).
 #
@@ -42,6 +43,7 @@ Verify the merge, release the worktree lease, advance the landing queue and
 archive the task record. --force bypasses a recorded lease-lost refusal.
 A task record that names an issue is checked too: after a verified merge the
 issue is closed when it is still open, and the OK: line reports its state.
+A branch with no commit of its own is refused, since nothing from it landed.
 After a verified merge the checks of the pull request on the merged: line are read
 too (KINGPIN_GH); a FAILED or PENDING rollup is named in the OK: line and on stderr,
 and the cleanup still completes.
@@ -347,6 +349,19 @@ if [ -d "$WORKTREE" ] && [ "$FORCE" -eq 0 ] && [ "$SKIP_MERGE_CHECK" != "1" ]; t
     fi
     if ! git -C "$PROJECT_PATH" merge-base --is-ancestor "$head_sha" "$default_ref" 2>/dev/null; then
       refuse_cleanup "HEAD $head_sha is not yet merged into $default_ref$fetch_note; refusing to tear down without --force"
+    fi
+    # The ancestor test says HEAD is on the default branch, not that this task's work
+    # landed: a worker that exited before its first commit sits on the commit its branch
+    # was leased at, which is on the default branch too (issue #242). A record that names
+    # that commit (BASE_SHA, written at spawn) must show a HEAD that moved off it. A
+    # record without one, written before this check or by the curator, keeps the
+    # ancestor test alone.
+    base_sha=$(kp_env_get "$env_file" BASE_SHA)
+    case "$base_sha" in
+      *[!0-9a-f]*) base_sha='' ;;
+    esac
+    if [ "${#base_sha}" -ge 40 ] && [ "$head_sha" = "$base_sha" ]; then
+      refuse_cleanup "branch $task_branch carries no commit of its own (HEAD $head_sha is where the spawn leased it), so nothing from it landed; refusing to tear down without --force"
     fi
     merge_verified=1
   fi

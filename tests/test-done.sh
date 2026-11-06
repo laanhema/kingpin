@@ -890,12 +890,13 @@ git clone -q "$t26_remote" "$t26_repo" 2>/dev/null
   git remote set-head origin main
 )
 t26_make_task() { # <id> <issue|-> <merged yes|no>
-  local id=$1 issue=$2 merged=$3 wt issue_line
+  local id=$1 issue=$2 merged=$3 wt issue_line base
   wt="$T/t26-wt-$id"
   git -C "$t26_repo" fetch -q origin
   git -C "$t26_repo" worktree add -q "$wt" -b "feature/$id" main
   git -C "$wt" config user.name Tester
   git -C "$wt" config user.email test@example.com
+  base=$(git -C "$wt" rev-parse HEAD)
   echo "work $id" > "$wt/$id.txt"
   git -C "$wt" add "$id.txt"
   git -C "$wt" commit -qm "work $id"
@@ -915,6 +916,7 @@ PROJECT=demo-t26
 PROJECT_PATH=$t26_repo
 WORKTREE=$wt
 BRANCH=feature/$id
+BASE_SHA=$base
 $issue_line
 TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
 TMUX_TARGET=kingpin:$id
@@ -1002,5 +1004,110 @@ rm -rf "$KINGPIN_HOME/archive/t26-open" "$KINGPIN_HOME/archive/t26-closed" "$KIN
 rm -rf "$KINGPIN_HOME/archive/t26-norecord" "$KINGPIN_HOME/archive/t26-nogh" "$KINGPIN_HOME/archive/t26-unreadable"
 rm -rf "$T/t26-wt-t26-open" "$T/t26-wt-t26-closed" "$T/t26-wt-t26-already" "$T/t26-wt-t26-forced" "$t26_repo" "$t26_remote"
 rm -rf "$T/t26-wt-t26-norecord" "$T/t26-wt-t26-nogh" "$T/t26-wt-t26-unreadable"
+
+# Test 27: a branch with no commit of its own is not a merged task (issue #242).
+# The ancestor test says HEAD is on the default branch; a worker that exited before
+# its first commit sits on the commit its branch was leased at, which is too.
+echo "=== Test 27: a branch with no commit of its own is not a merged task ==="
+t27_remote="$T/t27-remote.git"
+t27_repo="$T/t27-repo"
+git init --bare -q -b main "$t27_remote"
+git clone -q "$t27_remote" "$t27_repo" 2>/dev/null
+(
+  cd "$t27_repo" || exit 1
+  git checkout -q -b main
+  git config user.name Tester
+  git config user.email test@example.com
+  echo base > base.txt
+  git add base.txt
+  git commit -qm base
+  git push -q -u origin main
+  git remote set-head origin main
+)
+# <id> <worked yes|no> <main moved on yes|no> <base record|omit>: the leased branch starts at
+# origin/main (spawn records that commit as BASE_SHA); "worked" commits, pushes and merges it,
+# "moved" lands somebody else's commit on main afterwards. "omit" is a record from before
+# BASE_SHA existed. The status line is the failed: one the queue reported for issue #204.
+t27_make_task() {
+  local id=$1 worked=$2 moved=$3 base=$4 wt base_line=''
+  wt="$T/t27-wt-$id"
+  git -C "$t27_repo" fetch -q origin
+  git -C "$t27_repo" worktree add -q "$wt" -b "kingpin/$id" origin/main
+  git -C "$wt" config user.name Tester
+  git -C "$wt" config user.email test@example.com
+  [ "$base" = record ] && base_line="BASE_SHA=$(git -C "$wt" rev-parse HEAD)"
+  if [ "$worked" = yes ]; then
+    echo "work $id" > "$wt/$id.txt"
+    git -C "$wt" add "$id.txt"
+    git -C "$wt" commit -qm "work $id"
+    git -C "$wt" push -q origin "kingpin/$id"
+    git -C "$t27_repo" merge -q --ff-only "kingpin/$id"
+    git -C "$t27_repo" push -q origin main
+  fi
+  if [ "$moved" = yes ]; then
+    echo "other $id" > "$t27_repo/other-$id.txt"
+    git -C "$t27_repo" add "other-$id.txt"
+    git -C "$t27_repo" commit -qm "other $id"
+    git -C "$t27_repo" push -q origin main
+  fi
+  mkdir -p "$KINGPIN_HOME/tasks/$id"
+  cat > "$KINGPIN_HOME/tasks/$id/task.env" << EOF27
+TASK_ID=$id
+PROJECT=demo-t27
+PROJECT_PATH=$t27_repo
+WORKTREE=$wt
+BRANCH=kingpin/$id
+ISSUE=204
+$base_line
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
+TMUX_TARGET=kingpin:$id
+EOF27
+  echo "failed: issue #204 is blocked by open issue #203" > "$KINGPIN_HOME/tasks/$id/status"
+}
+
+t27_out='' t27_rc=0
+# (a) the incident: no commit, main did not move, so HEAD is exactly an origin/main commit
+t27_make_task t27-empty no no record
+: > "$GH_LOG"; printf 'OPEN\n' > "$GH_STATE"
+kp_run t27_out t27_rc env PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t27-empty
+[ "$t27_rc" -ne 0 ] && pass "t27: a branch with no commit of its own is refused" || fail "t27: an empty branch passed the merge check: $t27_out"
+printf '%s' "$t27_out" | grep -q "no commit of its own" \
+  && pass "t27: the refusal names the missing work" || fail "t27: the refusal does not name the missing work: $t27_out"
+[ -d "$KINGPIN_HOME/tasks/t27-empty" ] && [ ! -L "$KINGPIN_HOME/tasks/t27-empty" ] && [ -d "$T/t27-wt-t27-empty" ] \
+  && pass "t27: the refused record and worktree are left in place" || fail "t27: a refused cleanup tore the task down"
+[ "$(tail -n 1 "$KINGPIN_HOME/tasks/t27-empty/status" | cut -c1-16)" = "cleanup-refused:" ] \
+  && pass "t27: the refusal is recorded for a finished task" || fail "t27: no cleanup-refused: line"
+[ ! -s "$GH_LOG" ] && pass "t27: a refused cleanup asks gh nothing" || fail "t27: gh was called: $(cat "$GH_LOG")"
+
+# (b) the same branch after main moved on: the ancestor test still passes, the work test does not
+t27_make_task t27-moved no yes record
+: > "$GH_LOG"
+kp_run t27_out t27_rc env PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t27-moved
+[ "$t27_rc" -ne 0 ] && printf '%s' "$t27_out" | grep -q "no commit of its own" \
+  && pass "t27: an empty branch is refused when main moved on" || fail "t27: the moved-on empty branch passed: $t27_out"
+[ ! -s "$GH_LOG" ] && pass "t27: the moved-on refusal asks gh nothing" || fail "t27: gh was called: $(cat "$GH_LOG")"
+
+# (c) --force is the way past it, and it never closes the issue
+kp_run t27_out t27_rc env PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t27-empty --force
+[ "$t27_rc" -eq 0 ] && pass "t27: --force cleans up an empty branch" || fail "t27: --force failed: $t27_out"
+printf '%s' "$t27_out" | grep -q "issue #204 not checked (the merge was not verified)" \
+  && pass "t27: a forced empty branch leaves the issue unchecked" || fail "t27: the forced cleanup says: $t27_out"
+! grep -q "^issue close" "$GH_LOG" && pass "t27: a forced empty branch never closes the issue" || fail "t27: the issue was closed: $(cat "$GH_LOG")"
+
+# (d) a branch that did land its work still passes, and still closes the issue
+t27_make_task t27-landed yes yes record
+: > "$GH_LOG"; printf 'OPEN\n' > "$GH_STATE"
+kp_run t27_out t27_rc env PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t27-landed
+[ "$t27_rc" -eq 0 ] && printf '%s' "$t27_out" | grep -q "closed issue #204 after the merge" \
+  && pass "t27: a branch that landed its work closes the issue" || fail "t27: a landed branch was refused or left open: $t27_out"
+
+# (e) a record from before BASE_SHA keeps the ancestor check alone
+t27_make_task t27-legacy no no omit
+: > "$GH_LOG"; printf 'OPEN\n' > "$GH_STATE"
+kp_run t27_out t27_rc env PATH="$t16_stub:$PATH" "$KP_BIN/kingpin-done" t27-legacy
+[ "$t27_rc" -eq 0 ] && pass "t27: a record with no BASE_SHA keeps the ancestor check" || fail "t27: a legacy record was refused: $t27_out"
+
+printf 'OPEN\n' > "$GH_STATE"
+rm -rf "$KINGPIN_HOME"/archive/t27-* "$KINGPIN_HOME"/tasks/t27-* "$T"/t27-wt-* "$t27_repo" "$t27_remote"
 
 kp_test_finish DONE
