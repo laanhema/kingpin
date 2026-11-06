@@ -34,6 +34,16 @@ ENVEOF
   echo 0 > "$d/seen"
 }
 t22_status_lines() { grep -c '' "$KINGPIN_HOME/tasks/$1/status" 2>/dev/null || true; }
+# pane_silent_for <window-id> <seconds>: the private server stamps `window_activity` when
+# the pane last printed, and the launch check gates that silence as well as the stop age,
+# so a fixture is silent past a grace window when the stamp is older than it (issue #233).
+pane_silent_for() {
+  local activity now
+  activity=$(tmux display-message -p -t "$1" '#{window_activity}' 2>/dev/null) || return 1
+  [[ $activity =~ ^[0-9]+$ ]] || return 1
+  now=$(date +%s)
+  [ $((now - activity)) -ge "$2" ]
+}
 
 # AC1+AC2+AC3: the process is gone and the grace period is over -> failed line naming task and harness
 mk_t22 t22-dead agy 120 'exit 1'
@@ -148,10 +158,19 @@ mk_t22 t22-wagy agy 600 'printf "working\nesc to cancel\n"; exec cat'
 echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t22-wagy/stopped"
 mk_t22 t22-wopencode opencode 600 'printf "working\nInterrupt\n"; exec cat'
 echo $(( $(date +%s) - 120 )) > "$KINGPIN_HOME/tasks/t22-wopencode/stopped"
-sleep 3
+# The just-stopped fixture needs a grace window an order of magnitude wider than the
+# `wait --once` below, because that invocation's own latency counts against the window: a
+# loaded runner took more than two seconds for it, so a 2-second grace failed a worker that
+# had only just stopped (issue #233). The launch check also gates the pane's own silence,
+# so the stale fixtures above must be silent for the whole 30 seconds as well: wait on the
+# pane's clock instead of a fixed pause, and create the just-stopped fixture after that
+# wait so it stays inside the window. The boundary itself stays covered by the `t22-young`
+# block under KINGPIN_STATUS_GRACE=1 above.
+t22_last_win=$(sed -n 's/^TMUX_WINDOW_ID=//p' "$KINGPIN_HOME/tasks/t22-wopencode/task.env")
+kp_wait_until 45 pane_silent_for "$t22_last_win" 30 || fail "t22: the stale fixtures never went silent for the grace"
 mk_t22 t22-justnow claude 600 'cat'
 date +%s > "$KINGPIN_HOME/tasks/t22-justnow/stopped"
-KINGPIN_STATUS_GRACE=2 "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
+KINGPIN_STATUS_GRACE=30 "$KP_BIN/kingpin" wait --once >/dev/null 2>&1 || true
 tail -n 1 "$KINGPIN_HOME/tasks/t22-idle/status" | grep -q "^failed: no status: t22-idle (opencode) stopped and went silent.*kingpin peek t22-idle" && pass "t22: a stopped worker with a silent window is failed, with a peek hint" || fail "t22: idle worker status: $(cat "$KINGPIN_HOME/tasks/t22-idle/status")"
 [ ! -s "$KINGPIN_HOME/tasks/t22-busy/status" ] && pass "t22: a stopped worker whose window still prints is not failed" || fail "t22: busy worker failed: $(cat "$KINGPIN_HOME/tasks/t22-busy/status")"
 [ ! -s "$KINGPIN_HOME/tasks/t22-justnow/status" ] && pass "t22: a worker that stopped inside the grace period is not failed" || fail "t22: just-stopped worker failed"

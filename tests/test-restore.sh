@@ -89,6 +89,22 @@ pane_command_is() {
   [ "$(tmux list-panes -t "$1" -F '#{pane_current_command}' 2>/dev/null | head -n 1)" = "$2" ]
 }
 
+# harness_gone <pid>: the recorded harness process has exited (a kp_wait_until predicate).
+harness_gone() { ! kill -0 "$1" 2>/dev/null; }
+
+# remove_live_fixture <task-dir> <window-target>: stop the pane first and wait for the
+# harness it recorded to be gone, so a fake harness that is still writing its argv or a
+# status line cannot race the removal and abort the suite under `set -e` (issue #233).
+remove_live_fixture() {
+  local d=$1 target=$2 pid
+  pid=$(cat "$d/harness.pid" 2>/dev/null || true)
+  tmux kill-window -t "$target" 2>/dev/null || true
+  if [ -n "$pid" ]; then
+    kp_wait_until 5 harness_gone "$pid" || fail "the harness $pid of $d outlived its window"
+  fi
+  rm -rf "$d"
+}
+
 snapshot() { # <dir>: a stable listing of every path and file content
   ( cd "$1" && find . -type f | sort | xargs sha256sum; find . | sort )
 }
@@ -337,7 +353,7 @@ echo "$t_live_frc" | grep -q "^OK: restored t-live" && pass "--force restores a 
 t_live_new_pid=$(tmux list-panes -t "$t_live_win" -F '#{pane_pid}' | head -n 1)
 [ "$t_live_new_pid" != "$t_live_pid" ] && pass "--force replaced the pane process" || fail "--force left the same pane pid"
 [ "$(cat "$d/harness.pid")" = "$t_live_new_pid" ] && pass "--force recorded the new harness pid" || fail "--force did not record the pane pid"
-rm -rf "$d"
+remove_live_fixture "$d" "$t_live_win"
 # An unverifiable lease proceeds with --force.
 available_json
 d=$(mk_fixture t-forced "$T/fixture-wt"); printf 'issue: #149\n' > "$d/status"
@@ -345,7 +361,7 @@ t_forced_rc=0
 "$KP_BIN/kingpin" restore t-forced --force >/dev/null 2>"$T/t-forced.err" || t_forced_rc=$?
 [ "$t_forced_rc" -eq 0 ] && pass "--force restores a task whose lease cannot be verified" || fail "--force exited $t_forced_rc: $(cat "$T/t-forced.err")"
 window_named t-forced && pass "the forced restore created its window" || fail "no window for t-forced"
-rm -rf "$d"
+remove_live_fixture "$d" 'kingpin:=t-forced'
 # A missing worktree stays refused even with --force.
 d=$(mk_fixture t-no-wt-force "$T/no-such-worktree"); printf 'issue: #149\n' > "$d/status"
 t_no_wt_rc=0
@@ -416,10 +432,10 @@ grep -q 'DEAD' <<< "$row" && pass "a live record with no status file still shows
 grep -q '^Fleet: 3 live task(s) have no live window; run kingpin restore$' <<< "$list_out" \
   && pass "every dead record is counted in the restore hint" \
   || fail "restore hint in: $list_out"
-rm -rf "$KINGPIN_HOME/tasks/k-legacy" "$KINGPIN_HOME/tasks/k-mismatch" "$KINGPIN_HOME/tasks/k-statusless"
 tmux kill-window -t 'kingpin:=k-legacy' 2>/dev/null || true
 tmux kill-window -t 'kingpin:=k-mismatch' 2>/dev/null || true
 tmux kill-window -t 'kingpin:=k-statusless' 2>/dev/null || true
+rm -rf "$KINGPIN_HOME/tasks/k-legacy" "$KINGPIN_HOME/tasks/k-mismatch" "$KINGPIN_HOME/tasks/k-statusless"
 list_out=$("$KP_BIN/kingpin" list 2>/dev/null)
 ! grep -q '^Fleet:' <<< "$list_out" && pass "the hint clears once the dead records are gone" || fail "stale restore hint: $list_out"
 
@@ -477,8 +493,9 @@ grep -qF "window kingpin:shared is also named by the live task k-claim-a" <<< "$
   && pass "the other task's window still runs its own shell" || fail "the shared pane no longer runs bash"
 cmp -s "$d_b/task.env" "$T/k-claim-b.env.before" \
   && pass "the refusal left task.env byte-identical" || fail "the refusal rewrote task.env"
-rm -rf "$d_a" "$d_b"
+# Stop the pane before the removal, so no live shell is left holding a folder that is gone.
 tmux kill-window -t "$shared_win" 2>/dev/null || true
+rm -rf "$d_a" "$d_b"
 
 # ---------------------------------------------------------------------------
 # Test 14: a missing session is recreated by exact name, not by prefix
@@ -502,8 +519,7 @@ if tmux list-windows -t '=kingpin-workers' -F '#{window_name}' 2>/dev/null | gre
 else
   pass "the window did not land in the kingpin-workers session"
 fi
-rm -rf "$d"
-tmux kill-window -t 'kingpin:=k-session' 2>/dev/null || true
+remove_live_fixture "$d" 'kingpin:=k-session'
 tmux kill-session -t '=kingpin-workers' 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
@@ -536,8 +552,7 @@ t_resume_pid=$(tmux list-panes -t "$t_resume_win" -F '#{pane_pid}' 2>/dev/null |
   && pass "harness.pid is the resumed pane pid" \
   || fail "harness.pid '$(cat "$d/harness.pid" 2>/dev/null || true)' is not the pane pid '$t_resume_pid'"
 window_named t-resume && pass "the resumed task has its window" || fail "no window named t-resume"
-rm -rf "$d"
-tmux kill-window -t 'kingpin:=t-resume' 2>/dev/null || true
+remove_live_fixture "$d" 'kingpin:=t-resume'
 
 # ---------------------------------------------------------------------------
 # Test 16: two live sessions are refused without --force
@@ -563,8 +578,7 @@ t_two_frc_out=$("$KP_BIN/kingpin" restore t-two --force 2>"$T/t-two-force.err") 
 echo "$t_two_frc_out" | grep -q "resumed session ses_newer" && pass "--force resumes the newest live session" || fail "--force OK line: $t_two_frc_out"
 grep -q -- '--session ses_newer' "$d/launch.sh" && pass "the forced launch carries the newest session" || fail "launch.sh: $(cat "$d/launch.sh" 2>/dev/null)"
 grep -q "ses_older" "$T/t-two-force.err" && pass "--force names the session it leaves running" || fail "stderr: $(cat "$T/t-two-force.err")"
-rm -rf "$d"
-tmux kill-window -t 'kingpin:=t-two' 2>/dev/null || true
+remove_live_fixture "$d" 'kingpin:=t-two'
 
 # ---------------------------------------------------------------------------
 # Test 17: no session starts fresh
@@ -586,8 +600,7 @@ t_fresh_win=$(env_get "$d/task.env" TMUX_WINDOW_ID)
 t_fresh_pid=$(tmux list-panes -t "$t_fresh_win" -F '#{pane_pid}' 2>/dev/null | head -n 1)
 [ -n "$t_fresh_pid" ] && [ "$(cat "$d/harness.pid" 2>/dev/null || true)" = "$t_fresh_pid" ] \
   && pass "harness.pid is the fresh pane pid" || fail "harness.pid is not the pane pid"
-rm -rf "$d"
-tmux kill-window -t 'kingpin:=t-fresh' 2>/dev/null || true
+remove_live_fixture "$d" 'kingpin:=t-fresh'
 
 # ---------------------------------------------------------------------------
 # Test 18: the recorded session wins over a newer one
@@ -603,8 +616,7 @@ t_recorded_out=$("$KP_BIN/kingpin" restore t-recorded 2>"$T/t-recorded.err") || 
 grep -q -- '--session ses_recorded' "$d/launch.sh" && pass "the recorded session is the one resumed" || fail "launch.sh: $(cat "$d/launch.sh" 2>/dev/null)"
 grep -q -- 'ses_newer' "$d/launch.sh" && fail "the newer session was chosen over the recorded one" || pass "the newer session was not chosen"
 echo "$t_recorded_out" | grep -q "resumed session ses_recorded" && pass "the OK line names the recorded session" || fail "restore OK line: $t_recorded_out"
-rm -rf "$d"
-tmux kill-window -t 'kingpin:=t-recorded' 2>/dev/null || true
+remove_live_fixture "$d" 'kingpin:=t-recorded'
 
 # ---------------------------------------------------------------------------
 # Test 19: claude resumes through its transcript store
@@ -622,8 +634,7 @@ t_claude_out=$("$KP_BIN/kingpin" restore t-claude 2>"$T/t-claude.err") || t_clau
 grep -q -- '--continue' "$d/launch.sh" && pass "the claude launch continues the directory's conversation" || fail "launch.sh: $(cat "$d/launch.sh" 2>/dev/null)"
 echo "$t_claude_out" | grep -q "resumed session $claude_id" && pass "the OK line names the detected transcript" || fail "restore OK line: $t_claude_out"
 [ "$(env_get "$d/task.env" HARNESS_SESSION)" = "$claude_id" ] && pass "the transcript id is recorded for a later change" || fail "task.env: $(cat "$d/task.env")"
-rm -rf "$d"
-tmux kill-window -t 'kingpin:=t-claude' 2>/dev/null || true
+remove_live_fixture "$d" 'kingpin:=t-claude'
 # A claude task whose store holds no transcript starts fresh.
 d=$(mk_fixture t-claude-new "$T/fixture-wt" "HARNESS=claude"); printf 'issue: #168\n' > "$d/status"
 t_claude_new_rc=0
@@ -631,8 +642,7 @@ t_claude_new_out=$(CLAUDE_CONFIG_DIR=$T/cfg-empty "$KP_BIN/kingpin" restore t-cl
 [ "$t_claude_new_rc" -eq 0 ] && pass "a claude task with no transcript is restored" || fail "restore exited $t_claude_new_rc: $(cat "$T/t-claude-new.err")"
 grep -q -- '--continue' "$d/launch.sh" 2>/dev/null && fail "an empty store still passed --continue" || pass "an empty store passes no --continue"
 echo "$t_claude_new_out" | grep -q "started a new session" && pass "the empty store starts a new session" || fail "restore OK line: $t_claude_new_out"
-rm -rf "$d"
-tmux kill-window -t 'kingpin:=t-claude-new' 2>/dev/null || true
+remove_live_fixture "$d" 'kingpin:=t-claude-new'
 
 # ---------------------------------------------------------------------------
 # Test 20: a --harness override never abandons a live session
@@ -657,8 +667,7 @@ t_override_frc_err=$("$KP_BIN/kingpin" restore t-override --harness agy --force 
 grep -q "ses_live" <<< "$t_override_frc_err" && pass "--force notes the session it leaves running" || fail "stderr: $t_override_frc_err"
 grep -q -- '--prompt-interactive' "$d/launch.sh" && pass "the forced launch runs the overriding harness" || fail "launch.sh: $(cat "$d/launch.sh" 2>/dev/null)"
 grep -q -- '--session' "$d/launch.sh" 2>/dev/null && fail "the overriding harness received a resume flag it cannot use" || pass "the overriding harness gets no resume flag"
-rm -rf "$d"
-tmux kill-window -t 'kingpin:=t-override' 2>/dev/null || true
+remove_live_fixture "$d" 'kingpin:=t-override'
 
 # ---------------------------------------------------------------------------
 # Test 21: a listing that fills the cap is disclosed as truncated, not read as none
@@ -684,8 +693,7 @@ t_truncated_out=$("$KP_BIN/kingpin" restore t-truncated 2>"$T/t-truncated.err") 
 grep -q -- '--session' "$d/launch.sh" 2>/dev/null && fail "a truncated listing resumed a session: $(cat "$d/launch.sh")" || pass "a truncated listing starts no session it cannot see"
 echo "$t_truncated_out" | grep -qF "the list was truncated" && pass "the OK line says the listing was truncated" || fail "restore OK line: $t_truncated_out"
 echo "$t_truncated_out" | grep -qF "did not report its sessions" && fail "the OK line claims the harness reported nothing" || pass "the OK line does not claim the harness reported no sessions"
-rm -rf "$d"
-tmux kill-window -t 'kingpin:=t-truncated' 2>/dev/null || true
+remove_live_fixture "$d" 'kingpin:=t-truncated'
 
 # ---------------------------------------------------------------------------
 
