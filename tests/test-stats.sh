@@ -173,4 +173,21 @@ printf '%s\n' "$stats_out" | grep -qxF -- '  t-stats-asked-after-failure  needs-
   && fail "a failed: line followed by needs-input: was reported as failed" \
   || pass "a failed: line followed by needs-input: is in flight, not failed"
 
+echo "=== Test 7: a checks: note after merged: is not the last event (issue #221) ==="
+# The note kingpin watch appends when the merged pull request's checks were red: the
+# record still counts as merged and in no other state.
+stats_home="$T/checks-note"
+stats_task "$stats_home" t-stats-checks-note 5400 \
+  'ready: branch=b review=APPROVE report=r.md' \
+  'merged: pr=u' \
+  'checks: pr=u checks=FAILED'
+kp_run stats_out stats_rc env KINGPIN_HOME="$stats_home" "$KP_BIN/kingpin" stats
+[ "$stats_rc" -eq 0 ] && pass "the checks-note fixture exits 0" || fail "stats exited $stats_rc: $stats_out"
+for want in \
+  'Records: 1 (finished 1, in flight 0, without a report 0)' \
+  'Finished: 1 merged, 0 failed'
+do
+  stats_has "$stats_out" "checks-note fixture" "$want"
+done
+
 kp_test_finish STATS

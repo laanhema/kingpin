@@ -230,6 +230,15 @@ echo "lavish-axi: refusing a real call from a test suite" >&2
 exit 1
 LAVEOF
   chmod +x "$T/bin/lavish-axi"
+  # A `merged: pr=<url>` fixture makes the supervisor and `kingpin done` read that pull
+  # request's checks through gh (issue #221). The default gh fails, so no suite reaches
+  # the network with a made-up URL; the read records UNREADABLE and writes no status
+  # line. A suite that cares about gh installs its own over this one.
+  cat > "$T/bin/gh" << 'GHEOF'
+#!/usr/bin/env bash
+exit 1
+GHEOF
+  chmod +x "$T/bin/gh"
   KP_TEST_LAVISH_CALLS_PATTERNS=()
 }
 

@@ -10,6 +10,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_BIN/../lib/supervisor.sh"
 # shellcheck source=../lib/afk.sh
 . "$KP_BIN/../lib/afk.sh"
+# shellcheck source=../lib/checks.sh
+. "$KP_BIN/../lib/checks.sh"
 # shellcheck source=../lib/tmux.sh
 . "$KP_BIN/../lib/tmux.sh"
 # shellcheck source=../lib/browser.sh
@@ -408,6 +410,21 @@ case "$cmd" in
     mode=$(kp_env_get "$task_dir/task.env" MODE)
     [ -n "$mode" ] || mode="review"
 
+    # The closing line of a cleaned-up task. The recorded checks result (issue #221)
+    # is read through the task path, which resolves to the archive once the task is
+    # cleaned up; a FAILED or PENDING rollup is named on stderr instead of the clean line.
+    run_cleaned() {
+      local phrase
+      case "$(kp_checks_result "$task_dir")" in
+        FAILED|PENDING)
+          phrase=$(kp_checks_describe "$task_dir")
+          echo "kingpin run: $task_id merged and cleaned up, but $phrase" >&2
+          ;;
+        *) echo "OK: $task_id merged and cleaned up successfully." ;;
+      esac
+      exit 0
+    }
+
     echo "[kingpin run] Monitoring $task_id (mode: $mode)..."
     while true; do
       # Step supervision loop
@@ -418,8 +435,7 @@ case "$cmd" in
       # the archive (issue #115). An archive of an earlier task with the same id
       # must not count as this task's.
       if ! kp_task_is_live "$task_dir"; then
-        echo "OK: $task_id merged and cleaned up successfully."
-        exit 0
+        run_cleaned
       fi
 
       status_file="$task_dir/status"
@@ -431,11 +447,22 @@ case "$cmd" in
           # kingpin-done archives the task dir: a cleaned-up task is one whose
           # dir is gone from tasks/ (or still carries the marker).
           if [ -d "$task_dir" ] && [ ! -f "$task_dir/done_cleaned" ]; then
+            # The supervisor holds a FAILED or PENDING merge while AFK is armed; this
+            # direct cleanup must not undo that hold. The read is once-only, so it
+            # agrees with the supervisor's.
+            kp_checks_ensure "$task_dir" "${KINGPIN_GH:-gh}" "$(kp_env_get "$task_dir/task.env" PROJECT_PATH)"
+            case "$(kp_checks_result "$task_dir")" in
+              FAILED|PENDING)
+                if kp_afk_armed "$KP_HOME"; then
+                  echo "kingpin run: $task_id merged but $(kp_checks_describe "$task_dir") (afk on); the cleanup is held for the operator: kingpin done $task_id" >&2
+                  exit 1
+                fi
+                ;;
+            esac
             "$KP_BIN/kingpin-done" "$task_id" >/dev/null 2>&1 || true
           fi
           if [ ! -d "$task_dir" ] || [ -f "$task_dir/done_cleaned" ]; then
-            echo "OK: $task_id merged and cleaned up successfully."
-            exit 0
+            run_cleaned
           fi
           ;;
         cleanup-refused:*)
