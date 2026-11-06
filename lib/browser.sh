@@ -104,45 +104,63 @@ kp_browser_tree_pids() {
     }'
 }
 
-# kp_browser_tree_rss <pid> [snapshot]
-# Prints the sum of the RSS values of <pid> and its descendants, in kilobytes. <snapshot> is a
-# `ps -eo pid=,ppid=,rss=` capture; without one the function takes its own. Always prints a
-# number.
-kp_browser_tree_rss() {
-  local root=${1:-} snapshot=${2:-}
-  case "$root" in ''|*[!0-9]*) root=0 ;; esac
-  [ -n "$snapshot" ] || snapshot=$(ps -eo pid=,ppid=,rss= 2>/dev/null || true)
-  [ -n "$snapshot" ] || { printf '0\n'; return 0; }
-  printf '%s\n' "$snapshot" | awk -v root="$root" '
-    { ppid[$1] = $2; rss[$1] = $3; if ($2 != "") kids[$2] = kids[$2] " " $1 }
-    END {
-      n = 0; stack[++n] = root; total = 0
-      while (n > 0) {
-        p = stack[n--]
-        total += rss[p]
-        m = split(kids[p], child, " ")
-        for (i = 1; i <= m; i++) if (child[i] != "") stack[++n] = child[i]
-      }
-      printf "%d\n", total
-    }'
-}
-
 # kp_browser_daemons
 # Prints `pid<TAB>rss-kb<TAB>cwd` for every live bridge daemon whose cwd can be read. One `ps`
-# pass finds the candidates; a daemon with no readable cwd is skipped, never guessed at.
+# pass finds the candidates, and one `awk` pass over its snapshot tests each command line and
+# totals each daemon's tree RSS (the bridge, the MCP server and Chrome), so the call runs `ps`
+# exactly once however many daemons it finds; a daemon with no readable cwd is skipped, never
+# guessed at.
 kp_browser_daemons() {
-  local snapshot pid args cwd rss
-  snapshot=$(ps -eo pid=,args= 2>/dev/null || true)
+  local snapshot rows pid rss cwd
+  snapshot=$(ps -eo pid=,ppid=,rss=,args= 2>/dev/null || true)
   [ -n "$snapshot" ] || return 0
-  printf '%s\n' "$snapshot" | while read -r pid args; do
-    case "$pid" in ''|*[!0-9]*) continue ;; esac
-    kp_browser_args_is_bridge "$args" || continue
+  rows=$(printf '%s\n' "$snapshot" |
+    awk '
+      # The daemon test of kp_browser_args_is_bridge: one whitespace-split argv word that is
+      # either the bare `chrome-devtools-axi-bridge` (a PATH launch) or a path ending in
+      # `/chrome-devtools-axi-bridge.js`, which is the shape `chrome-devtools-axi` starts
+      # (`node .../dist/bin/chrome-devtools-axi-bridge.js`). A word that only carries the
+      # name, such as `chrome-devtools-axi-bridge.log`, does not count.
+      function is_bridge(argv,      n, word, i) {
+        n = split(argv, word, /[ \t]+/)
+        for (i = 1; i <= n; i++) {
+          if (word[i] == "chrome-devtools-axi-bridge") return 1
+          if (word[i] ~ /\/chrome-devtools-axi-bridge\.js$/) return 1
+        }
+        return 0
+      }
+      # The tree walk that totals each daemon RSS over the snapshot already in
+      # memory: the sum of the rss value of the root and of every descendant.
+      function tree_rss(root,      total, n, p, m, i, child) {
+        total = 0
+        n = 0; stack[++n] = root
+        while (n > 0) {
+          p = stack[n--]
+          total += rss_of[p]
+          m = split(kids[p], child, " ")
+          for (i = 1; i <= m; i++) if (child[i] != "") stack[++n] = child[i]
+        }
+        return total
+      }
+      {
+        pid = $1
+        if (pid !~ /^[0-9]+$/) next
+        if ($2 != "") kids[$2] = kids[$2] " " pid
+        rss_of[pid] = $3
+        argline = ""
+        for (i = 4; i <= NF; i++) argline = argline (i > 4 ? " " : "") $i
+        if (is_bridge(argline)) daemon_pid[++nd] = pid
+      }
+      END {
+        for (i = 1; i <= nd; i++) printf "%s\t%d\n", daemon_pid[i], tree_rss(daemon_pid[i])
+      }')
+  [ -n "$rows" ] || return 0
+  while IFS=$'\t' read -r pid rss; do
     cwd=$(kp_browser_cwd "$pid" 2>/dev/null || true)
     [ -n "$cwd" ] || continue
-    rss=$(kp_browser_tree_rss "$pid" 2>/dev/null || true)
     case "$rss" in ''|*[!0-9]*) rss=0 ;; esac
     printf '%s\t%s\t%s\n' "$pid" "$rss" "$cwd"
-  done
+  done <<< "$rows"
   return 0
 }
 

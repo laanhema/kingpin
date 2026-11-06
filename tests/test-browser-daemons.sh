@@ -251,6 +251,39 @@ t4_lines=$(printf '%s\n' "$t4_list" | grep -c "↳ Browser:" || true)
 t4_help=$("$KP_BIN/kingpin" list --help)
 printf '%s\n' "$t4_help" | grep -qi "browser" && pass "t4: list --help names the browser line" || fail "t4: list --help does not mention the browser line"
 
+# --- t5: the daemon scan runs ps once per call, whatever the daemon count -----------------
+echo "=== Test t5: the daemon scan costs one ps per call ==="
+t5_dir_one=$T/t5-task-one
+t5_dir_two=$T/t5-task-two
+mkdir -p "$t5_dir_one" "$t5_dir_two"
+start_fake_daemon "$t5_dir_one"; t5_pid_one=$started_pid
+start_fake_daemon "$t5_dir_two"; t5_pid_two=$started_pid
+kp_wait_until 5 daemon_seen "$t5_dir_one" "$t5_pid_one" || fail "t5: the first scan fixture daemon never started"
+kp_wait_until 5 daemon_seen "$t5_dir_two" "$t5_pid_two" || fail "t5: the second scan fixture daemon never started"
+
+# A ps shim in the tests/lib.sh shim shape: it counts every invocation and execs the real
+# ps captured before the shim went in front of PATH. The counter is read just before and
+# just after one kp_browser_daemons call, so the delta holds for whatever the scan finds.
+mkdir -p "$T/bin"
+t5_real_ps=$(command -v ps)
+cat > "$T/bin/ps" << PSHEOF
+#!/usr/bin/env bash
+printf 'call\n' >> $T/ps-count
+exec $t5_real_ps "\$@"
+PSHEOF
+chmod +x "$T/bin/ps"
+: > "$T/ps-count"
+t5_saved_path=$PATH
+PATH="$T/bin:$PATH"
+hash -r
+t5_rows=$(kp_browser_daemons)
+t5_calls=$(wc -l < "$T/ps-count")
+PATH=$t5_saved_path
+hash -r
+[ "$t5_calls" = 1 ] && pass "t5: one kp_browser_daemons call cost exactly one ps" || fail "t5: one call cost $t5_calls ps invocations, not 1"
+printf '%s\n' "$t5_rows" | cut -f1 | grep -qx "$t5_pid_one" && pass "t5: the first fixture daemon is still in the returned table" || fail "t5: the shim broke the scan: daemon $t5_pid_one missing from $t5_rows"
+printf '%s\n' "$t5_rows" | cut -f1 | grep -qx "$t5_pid_two" && pass "t5: the second fixture daemon is still in the returned table" || fail "t5: the shim broke the scan: daemon $t5_pid_two missing from $t5_rows"
+
 # --- tidy: tasks this suite created, so the archive does not leak into later checks ------
 rm -rf "$KINGPIN_HOME/tasks/t4-with-browser" "$KINGPIN_HOME/tasks/t4-clean" "$KINGPIN_HOME/tasks/t2-bystander" "$t4_wt"
 

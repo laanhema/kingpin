@@ -34,7 +34,13 @@ git -C "$KP_ROOT" check-ignore -q .claude/settings.local.json && pass ".claude/s
 # 2. Guard install / check / idempotence / merge in an isolated "Kingpin checkout"
 echo "=== Test 2: guard install ==="
 git init -q -b main "$T/kp-checkout"
-git -C "$T/kp-checkout" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+# The contract is tracked, as it is in the operator's own checkout: a fixture without it
+# skips the contract half of check, and the node-cost assertion (Test 2b) needs the shape
+# where the check reads both JSON files.
+mkdir -p "$T/kp-checkout/orchestrator"
+cp "$KP_ROOT/orchestrator/contract.md" "$T/kp-checkout/orchestrator/contract.md"
+git -C "$T/kp-checkout" add orchestrator/contract.md
+git -C "$T/kp-checkout" -c user.email=t@t -c user.name=t commit -q -m init
 if "$KP_BIN/kingpin-guard" check --dir "$T/kp-checkout" >/dev/null 2>&1; then
   fail "check passed before install"
 else
@@ -85,6 +91,34 @@ for bad in '[]' 'null' '{"permissions":"x"}' '"str"' '{"permissions":[]}' '{"hoo
   "$KP_BIN/kingpin-guard" check --dir "$T/kp-checkout" >/dev/null 2>&1 && fail "check passed on $bad" || pass "check fails cleanly on $bad"
 done
 "$KP_BIN/kingpin-guard" install --dir "$T/nope" >/dev/null 2>&1 && fail "install accepted a missing dir" || pass "install refuses a missing dir"
+
+# 2b. The check starts node once, on the fixture above (contract tracked, guard installed,
+# .opencode/opencode.json carrying the contract entry): the shape the operator's checkout is in.
+echo "=== Test 2b: guard check node cost ==="
+# End of Test 2 leaves a wrong-shape guard file, so rewrite it and install again first:
+# the installed state is what the operator's own checkout holds, and the count runs only
+# around the check call.
+printf '%s\n' '{"permissions":{"deny":["Bash(rm -rf *)"],"allow":["Read"]},"model":"x"}' > "$T/kp-checkout/.claude/settings.local.json"
+"$KP_BIN/kingpin-guard" install --dir "$T/kp-checkout" >/dev/null
+mkdir -p "$T/bin"
+real_node=$(command -v node)
+cat > "$T/bin/node" << NODEEOF
+#!/usr/bin/env bash
+printf 'call\n' >> $T/node-count
+exec $real_node "\$@"
+NODEEOF
+chmod +x "$T/bin/node"
+: > "$T/node-count"
+t2b_saved_path=$PATH
+PATH="$T/bin:$PATH"
+hash -r
+t2b_out=$("$KP_BIN/kingpin-guard" check --dir "$T/kp-checkout" 2>&1)
+t2b_calls=$(wc -l < "$T/node-count")
+PATH=$t2b_saved_path
+hash -r
+[ "$t2b_calls" = 1 ] && pass "one guard check cost exactly one node" || fail "one guard check cost $t2b_calls node invocations, not 1"
+printf '%s\n' "$t2b_out" | grep -q "^guard: active (" && pass "check still reports the guard active" || fail "check output wrong: $t2b_out"
+printf '%s\n' "$t2b_out" | grep -q "^contract: active (" && pass "check still reports the contract active" || fail "check output wrong: $t2b_out"
 
 # 3. A spawned worker's effective settings allow Edit, Write, NotebookEdit and Agent
 echo "=== Test 3: spawned worker ==="
