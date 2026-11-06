@@ -3,9 +3,10 @@
 # the header pills sit on the pixel grid, the option rows keep their shape, the diffs keep a static
 # fallback, the shared style block stays identical and the page passes the report gate.
 #
-# assets/lavish/worker-dossier/ is what every worker's report.html and every page handed to the boss
-# is copied from, so a missing section, a lost Lavish guard or a prose regression there spreads to
-# every page made from it.
+# assets/lavish/worker-dossier/ stays shipped for pages already made from it; the case-file folder,
+# assets/lavish/kingpin-dossier/, is the default for new pages and has its own suite
+# (test-kingpin-dossier-template.sh). A missing section, a lost Lavish guard or a prose regression
+# here still breaks every older page copied from this folder.
 set -euo pipefail
 
 KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -207,6 +208,9 @@ for f in "$KP_ROOT/worker/preamble.md" "$KP_ROOT/worker/curator-preamble.md"; do
     || fail "$(basename "$f") no longer says the older worker-dossier template still ships"
 done
 grep -q 'kingpin land curator' "$KP_ROOT/worker/curator-preamble.md" && pass "the curator preamble keeps the curator land command" || fail "worker/curator-preamble.md lost the 'kingpin land curator' command"
+grep -q 'references/' "$KP_ROOT/worker/curator-preamble.md" && pass "the curator preamble sends stack-specific lessons to references/" || fail "worker/curator-preamble.md lost the instruction to send stack-specific lessons to references/"
+grep -q 'lint-skills\.sh' "$KP_ROOT/worker/curator-preamble.md" && pass "the curator preamble runs lint-skills.sh before the commit" || fail "worker/curator-preamble.md lost the instruction to run lint-skills.sh --quiet before the commit"
+grep -q 'gh pr checks' "$KP_ROOT/worker/curator-preamble.md" && pass "the curator preamble reads the pull request's lint check" || fail "worker/curator-preamble.md lost the instruction to read the pull request's lint check with gh pr checks"
 grep -q 'assets/lavish/worker-dossier/template.html' "$KP_ROOT/AGENTS.md" \
   && grep -q 'still shipped for pages already' "$KP_ROOT/AGENTS.md" \
   && pass "AGENTS.md keeps the legacy worker-dossier mention" \
