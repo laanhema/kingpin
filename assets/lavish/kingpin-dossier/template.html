@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-lavish-annotate="off">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- REPLACE: the page title is "<task id>: <one-line outcome>". -->
+<title>kp-000-example-task: a worker that stops always leaves an outcome</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/daisyui.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/daisyui@5.5.19/themes.css">
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&family=Playfair+Display:wght@700;900&family=Special+Elite&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700;8..60,800&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/commit-mono@5/400.css" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/@fontsource/commit-mono@5/700.css" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: dark;
+    --color-canvas-default: #0d1117;
+    --color-fg-default: #e6edf3;
+  }
+  * { box-sizing: border-box; min-width: 0; }
+  body {
+    margin: 0;
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+  }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; overflow-x: auto; }
+  code { font-size: .85em; font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace; overflow-wrap: anywhere; }
+  table { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; }
+  th, td { overflow-wrap: anywhere; vertical-align: top; }
+  img { max-width: 100%; height: auto; }
+  :where(p, li, td, th, .badge) { overflow-wrap: anywhere; }
+
+  /* Table rows: every cell's first line sits in a 1.25rem line box, and a pill is centred on that line,
+     so Pass, ID, the severity pill and the text beside it line up. A label too long for its column wraps
+     inside the pill and grows it, while the pinned line box keeps a one-line pill at its 1rem height. */
+  td, th { line-height: 1.25rem; }
+  td code, td .font-mono { line-height: 1; }
+  td > .badge { vertical-align: top; margin-top: .15rem; white-space: normal; max-width: 100%; height: auto; min-height: var(--size); line-height: 1.4; text-align: center; }
+
+  /* Two components. Every panel and stat card is .card-custom. Each changed file's diff sits in a .diffbox. */
+  .card-custom { background-color: #161b22; border: 1px solid #30363d; border-radius: 0.5rem; padding: 1.25rem; }
+  .diffbox, .kp-diff { border-radius: .5rem; overflow: hidden; border: 1px solid #30363d; margin-top: 0.5rem; }
+
+  /* Style for the output of `kingpin-report diffs`: a file row (name left, change badge right) above its diff. */
+  .kp-diff-file { margin-bottom: 1.5rem; }
+  .kp-diff-title { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin: 0; font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size: .875rem; font-weight: 600; color: #e5e7eb; }
+  .kp-diff-title small { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: .75rem; font-weight: 400; color: #9ca3af; border: 1px solid currentColor; border-radius: 999px; padding: 0 .5rem; line-height: 1.25rem; white-space: nowrap; }
+  .kp-diff .kp-fallback { margin: 0; padding: .75rem; border: 0; border-radius: 0; background: #0d1117; font-size: .75rem; line-height: 1.5; color: #c9d1d9; }
+</style>
+<style>
+  main > header h1.text-3xl { display: none; }
+
+/* ============================================================
+   NOIR OVERRIDE: parchment on ink, laid over the dossier layout.
+   Copied from assets/lavish/noir-dossier/DESIGN.md vocabulary so the
+   panel, chip, diff and stamp shapes match the noir template.
+   ============================================================ */
+/* The four faces load from the <link> in <head>: an @import here would sit after a
+   rule and be dropped, leaving the page on Georgia and the system fallbacks. */
+
+:root {
+  --ink: #12100c;
+  --ink-2: #1b1813;
+  --paper: #efe6d2;
+  --paper-2: #e7dcc4;
+  /* The chip behind inline code is a darker sheet of the same stock, not a grey box:
+     the paper is warmed toward its own shadow so a command sits on the page instead of
+     floating over it. */
+  --code-tint: #ddcfab;
+  --ink-on-paper: #1b1712;
+  --sepia: #6f5a40;
+  --blood: #7d2020;
+  --gold: #a8863a;
+  --pass: #2d4a24;
+  --warn: #6b4a10;
+  --paper-rule: rgba(27, 23, 18, .18);
+}
+
+body {
+  background:
+    radial-gradient(1200px 700px at 50% -10%, #241f18 0%, transparent 60%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,.012) 0 1px, transparent 1px 3px),
+    var(--ink) !important;
+  color: var(--paper) !important;
+  font-family: "Source Serif 4", Georgia, serif !important;
+  font-size: 17px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+h1, h2, h3, h4 { font-family: "Playfair Display", Georgia, serif !important; }
+
+/* Main-body headings take the serif the filed-dossier style uses (Source Serif 4, tight
+   tracking). The hero title keeps Playfair, which is the page title face. The sizes and
+   weights follow the filed-dossier scale: its h2 runs 22px to 30px at 700. */
+main section h2, main section h3, main section h4,
+main > .kp-brief > h2, main .kp-brief h3 {
+  font-family: "Source Serif 4", Georgia, serif !important;
+  letter-spacing: -.012em;
+}
+main section h2, main > .kp-brief > h2 {
+  font-size: clamp(22px, 2.6vw, 28px) !important;
+  font-weight: 700 !important;
+  line-height: 1.15 !important;
+  margin-bottom: 1.25rem !important;
+}
+main section h3, main .kp-brief h3 {
+  font-size: 17.5px !important;
+  font-weight: 700 !important;
+  line-height: 1.35;
+  margin-bottom: .7rem !important;
+}
+/* The Problem: and Solution: lead-ins open each change, so they run a step larger and
+   heavier than the sentence they introduce, in the same serif. */
+main section p > strong:first-child {
+  font-size: 15.5px;
+  font-weight: 800;
+  letter-spacing: -.005em;
+}
+code, pre, .font-mono { font-family: "Commit Mono", "Courier Prime", "Courier New", monospace !important; }
+main { padding-bottom: 48px; }
+
+/* ---------- hero + stamp (same shapes as the noir template) ---------- */
+.noir-hero { position: relative; margin: 0 0 34px; }
+.noir-figure {
+  position: relative; overflow: hidden; border: 1px solid rgba(239,230,210,.16);
+  border-radius: 4px; background: #0b0a08; box-shadow: 0 30px 80px rgba(0,0,0,.55);
+}
+.noir-figure img { display: block; width: 100%; max-width: 100%; height: auto; filter: sepia(.14) contrast(1.03); }
+.noir-copy {
+  position: relative; padding: 26px 4px 0; display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 420px); gap: 28px; align-items: end;
+}
+.noir-copy h1 {
+  font-size: clamp(34px, 5.6vw, 62px); font-weight: 900; line-height: .96;
+  text-transform: uppercase; color: var(--paper); margin: 6px 0 0;
+  text-shadow: 0 2px 0 rgba(0,0,0,.35);
+}
+.noir-copy p { margin: 0; color: #d9cdb6; font-size: 16.5px; }
+.noir-kicker {
+  font-family: "Special Elite", "Courier New", monospace; font-size: 12px;
+  letter-spacing: .18em; text-transform: uppercase; color: var(--gold); margin: 0;
+}
+.noir-stamp {
+  position: absolute; top: 18px; right: 18px; transform: rotate(-7deg);
+  border: 2px solid var(--blood); color: #f0c9c9; background: rgba(20,14,12,.65);
+  padding: 7px 12px; font-size: 11px; letter-spacing: .2em; text-transform: uppercase;
+  border-radius: 2px; backdrop-filter: blur(2px);
+  font-family: "Special Elite", "Courier New", monospace;
+}
+
+/* ---------- every dossier panel becomes parchment ---------- */
+.card-custom {
+  background: linear-gradient(180deg, rgba(255,255,255,.5), transparent 22%), var(--paper) !important;
+  background-image: linear-gradient(180deg, rgba(255,255,255,.5), transparent 22%) !important;
+  color: var(--ink-on-paper) !important;
+  border: 1px solid #cbbfa4 !important;
+  border-radius: 3px !important;
+  box-shadow: 0 18px 40px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.35);
+  position: relative;
+}
+.card-custom::before {
+  content: ""; position: absolute; inset: 10px; border: 1px solid var(--paper-rule);
+  pointer-events: none; border-radius: 1px;
+}
+.card-custom > * { position: relative; }
+
+/* text colours the layout set for a dark page, remapped for parchment */
+.card-custom h1, .card-custom h2, .card-custom h3, .card-custom h4,
+.card-custom .text-white { color: var(--ink-on-paper) !important; }
+.card-custom .text-gray-200, .card-custom .text-gray-300 { color: #3b3227 !important; }
+.card-custom .text-gray-400, .card-custom .text-gray-500 { color: var(--sepia) !important; }
+.card-custom .text-emerald-400, .card-custom .text-emerald-300 { color: var(--pass) !important; }
+.card-custom .text-amber-400 { color: var(--warn) !important; }
+.card-custom .text-red-400 { color: var(--blood) !important; }
+.card-custom .text-blue-400, .card-custom .text-primary { color: #2f4a63 !important; }
+.card-custom code { background: var(--code-tint); color: var(--ink-on-paper); padding: 1px 4px; border-radius: 2px; }
+.card-custom .border-gray-700, .card-custom .border-gray-800, .card-custom .border-gray-600 { border-color: var(--paper-rule) !important; }
+.card-custom .bg-gray-800, .card-custom .bg-gray-900 { background-color: var(--paper-2) !important; }
+.card-custom a { color: var(--blood); }
+
+/* Card labels and the table heads are the same stamp lettering: a small tracked
+   typewriter label, so a stat's name reads like a column's name. */
+.kp-brief .card-custom .text-xs.uppercase {
+  font-family: "Special Elite", "Courier New", monospace !important;
+  font-size: 10.5px !important; letter-spacing: .16em; font-weight: 700;
+  color: var(--sepia) !important;
+}
+
+/* A figure caption is a label too, so it takes the same stamp lettering as the card
+   and table labels rather than a small serif line. */
+main figure figcaption {
+  font-family: "Special Elite", "Courier New", monospace !important;
+  font-size: 10.5px !important; letter-spacing: .16em;
+  color: var(--sepia) !important;
+}
+
+/* tables: parchment rows, typewriter heads */
+.card-custom table { border-color: var(--paper-rule) !important; }
+/* The rule that closes a table takes the sepia of the note under it, so the note and
+   its closing line read as one aside rather than the line going neutral. */
+.card-custom table.border-gray-700 { border-bottom: 1px solid rgba(111,90,64,.7) !important; }
+.card-custom thead tr { background: var(--paper-2) !important; }
+.card-custom th {
+  font-family: "Special Elite", "Courier New", monospace;
+  font-size: 10.5px; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--sepia) !important; border-bottom: 2px solid rgba(27,23,18,.35) !important;
+  padding-bottom: 8px;
+}
+.card-custom td { border-color: var(--paper-rule) !important; color: var(--ink-on-paper); }
+.card-custom tbody tr { background: transparent !important; }
+.card-custom tbody tr:hover { background: rgba(27,23,18,.035) !important; }
+
+/* ---------- status is a chip, not a row ---------- */
+.card-custom .badge {
+  font-family: "Special Elite", "Courier New", monospace !important;
+  font-size: 10px !important; letter-spacing: .12em; text-transform: uppercase;
+  line-height: 1.4; padding: 1px 7px 2px !important; border-radius: 2px !important;
+  border-width: 1px !important; height: auto !important;
+}
+.card-custom .badge-success { color: var(--pass) !important; background: #dce4d1 !important; border-color: #b6c5a5 !important; }
+.card-custom .badge-warning { color: var(--warn) !important; background: #ece0c2 !important; border-color: #d3bf92 !important; }
+.card-custom .badge-error { color: var(--blood) !important; background: #edd8d2 !important; border-color: #d6b2aa !important; }
+.card-custom .badge-primary, .card-custom .badge-info {
+  color: #2f4a63 !important; background: #dde3e6 !important; border-color: #b3c0c7 !important;
+}
+.card-custom .badge-outline, .card-custom .badge-ghost {
+  color: var(--sepia) !important; background: transparent !important; border-color: var(--sepia) !important;
+}
+/* the round tick in the top bar */
+.card-custom .rounded-full { background: #dce4d1 !important; border-color: #b6c5a5 !important; color: var(--pass) !important; }
+
+/* ---------- buttons read as stamps ---------- */
+.card-custom .btn, .card-custom a.btn {
+  font-family: "Special Elite", "Courier New", monospace !important;
+  letter-spacing: .08em; text-transform: uppercase; border-radius: 2px !important;
+  background: var(--blood) !important; color: #f6e9e4 !important;
+  border: 2px solid var(--blood) !important; box-shadow: none !important;
+}
+.card-custom .btn:hover { background: #922626 !important; }
+.card-custom .btn-outline, .card-custom .btn-ghost {
+  background: transparent !important; color: var(--blood) !important;
+}
+
+/* ---------- diffs: light surfaces on the parchment ---------- */
+.diffbox, .kp-diff {
+  border: 1px solid var(--paper-rule) !important;
+  border-radius: 2px !important;
+  overflow: hidden;
+  background: #fbf7ec !important;
+}
+/* the file row, in the case-file type: Special Elite at 15px in real case, and the
+   change badge as a thin outlined 11px typewriter label */
+.kp-diff-title {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  font-family: "Special Elite", "Courier New", monospace !important;
+  color: #e8dcc4 !important; letter-spacing: 0; text-transform: none;
+  font-size: 15px !important; margin: 0;
+}
+.kp-diff-title code {
+  background: transparent !important; padding: 0 !important;
+  color: inherit !important; font-family: inherit !important; font-size: inherit !important;
+}
+.kp-diff-title small {
+  font-family: "Special Elite", "Courier New", monospace !important;
+  font-size: 11px !important; text-transform: uppercase; letter-spacing: .1em;
+  color: #b9ab92 !important; border: 1.5px solid currentColor !important;
+  border-radius: 2px !important; padding: 0 8px !important;
+  line-height: 1.5 !important; white-space: nowrap;
+}
+.kp-diff .kp-fallback {
+  background: #fbf7ec !important; color: var(--ink-on-paper) !important;
+  font-family: "Commit Mono", "Courier Prime", "Courier New", monospace !important;
+  font-size: 12.5px !important; line-height: 1.55 !important;
+}
+
+/* ---------- Code Changes sits straight on the ink ----------
+   No sheet behind it: the section reads like the hero and the first panel, with
+   the ink showing between the file rows. Each diff keeps its own #0d1117 surface
+   and github-dark type, so a patch is still the one bounded dark block on the page. */
+.kp-codepanel {
+  background: transparent !important;
+  border: 0; padding: 0;
+  box-shadow: none;
+}
+.kp-codepanel > h2 { color: #e6edf3 !important; margin-bottom: 1.25rem; }
+.kp-codepanel .kp-diff-title,
+.kp-codepanel .kp-diff-title code { color: #e5e7eb !important; }
+.kp-codepanel .kp-diff {
+  border-color: #30363d !important; background: #0d1117 !important;
+}
+.kp-codepanel .kp-diff .kp-fallback {
+  background: #0d1117 !important; color: #c9d1d9 !important;
+}
+
+/* the small dark callouts inside panels */
+.card-custom .callout, .card-custom .alert {
+  background: rgba(27,23,18,.05) !important; color: #3b3227 !important;
+  border-color: var(--paper-rule) !important;
+}
+
+
+/* ---------- chips typography everywhere, colour per surface ---------- */
+.badge {
+  font-family: "Special Elite", "Courier New", monospace !important;
+  font-size: 10px !important; letter-spacing: .12em; text-transform: uppercase;
+  line-height: 1.4; padding: 1px 7px 2px !important; border-radius: 2px !important;
+  border-width: 1px !important; height: auto !important;
+}
+/* the chip row above the first panel sits straight on the ink */
+main > header .badge { background: transparent !important; color: #d9cdb6 !important; border-color: rgba(239,230,210,.38) !important; }
+main > header .badge-success { color: #cfe0c3 !important; border-color: #7f9a70 !important; }
+main > header .badge-primary { color: #d6e2ea !important; border-color: #8fa3b5 !important; }
+main > header .badge-warning { color: #e6d3a8 !important; border-color: #b39a63 !important; }
+
+@media (max-width: 720px) {
+  .noir-copy { grid-template-columns: minmax(0, 1fr); gap: 14px; }
+  .noir-copy h1 { font-size: clamp(28px, 9vw, 40px); }
+  .noir-stamp { top: 10px; right: 10px; font-size: 9px; padding: 5px 8px; }
+}
+
+</style>
+
+<style>
+  /* ============================================================
+     Rubber stamps: status is inked on, not a modern pill.
+     ============================================================ */
+  main {
+    --wear-light: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='w'><feTurbulence type='fractalNoise' baseFrequency='1.2' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  -1.6 0 0 0 1.75'/></filter><rect width='100%' height='100%' filter='url(%23w)'/></svg>");
+  }
+
+  .kp-stamp {
+    display: inline-block;
+    font-family: "Special Elite", "Courier New", monospace;
+    text-transform: uppercase; letter-spacing: .08em;
+    border: 2px solid currentColor; border-radius: 3px;
+    padding: 0 .45em; line-height: 1.45; font-size: 12px;
+    transform: rotate(-2deg);
+    -webkit-mask-image: var(--wear-light); mask-image: var(--wear-light);
+    white-space: normal; text-align: center; overflow-wrap: anywhere;
+  }
+  .kp-stamp.pass { color: var(--pass); }
+  .kp-stamp.warn { color: var(--warn); }
+  .kp-stamp.fail { color: var(--blood); }
+  .kp-stamp.none { color: var(--sepia); border-style: dashed; }
+  .kp-stamp.lg { font-size: 19px; border-width: 3px; transform: rotate(-4deg); padding: 0 .35em; line-height: 1.3; }
+
+  /* table cells: the stamp sits on the first line box, text beside it keeps the baseline */
+  .card-custom td > .kp-stamp { vertical-align: top; margin-top: .1rem; max-width: 100%; }
+
+  /* the one stamp straight on the ink page needs light ink */
+  .kp-stamp.on-ink { color: #d7e6c9; }
+
+  /* identifiers are tape labels, not verdicts */
+  .kp-label {
+    display: inline-block;
+    font-family: "Special Elite", "Courier New", monospace;
+    font-size: 12px; letter-spacing: .06em;
+    padding: 2px 9px; border-radius: 2px;
+    background: #f6efd9; color: var(--ink-on-paper);
+    box-shadow: 0 1px 2px rgba(0,0,0,.25);
+    white-space: normal; text-align: center;
+  }
+  .kp-label.outline {
+    background: transparent; color: #d9cdb6;
+    border: 1px dashed rgba(239,230,210,.5); box-shadow: none;
+  }
+
+  /* ============================================================
+     The brief: the telegram, the tape labels, the summary and the four
+     index cards on one sheet of paper, instead of floating on the ink.
+     ============================================================ */
+  .kp-brief {
+    background: linear-gradient(180deg, rgba(255,255,255,.45), transparent 20%), var(--paper) !important;
+    border: 1px solid #cbbfa4; border-radius: 3px; padding: 1.25rem;
+    box-shadow: 0 18px 40px rgba(0,0,0,.35), inset 0 0 0 1px rgba(255,255,255,.35);
+    color: var(--ink-on-paper);
+  }
+  .kp-brief h1.text-3xl { display: none; }
+  .kp-brief .text-white { color: var(--ink-on-paper) !important; }
+  .kp-brief .text-gray-200, .kp-brief .text-gray-300 { color: #3b3227 !important; }
+  .kp-brief .text-gray-400, .kp-brief .text-gray-500 { color: var(--sepia) !important; }
+  .kp-brief .text-amber-400 { color: var(--warn) !important; }
+  /* A link reads as a filed reference: the red of the stamp, a hairline rule under it
+     the way the filed-dossier page draws one, and gold on hover. Weight stays at the
+     body's own, so the rule is what marks it. */
+  .kp-brief a, .card-custom a {
+    color: var(--blood); text-decoration: none;
+    border-bottom: 1px solid currentColor; padding-bottom: 1px;
+  }
+  .kp-brief a:hover, .card-custom a:hover { color: var(--gold); }
+  .kp-brief code { background: var(--code-tint); color: var(--ink-on-paper); padding: 1px 4px; border-radius: 2px; }
+
+  /* the index cards sit on the sheet, so they keep the paper and lose the panel shadow */
+  .kp-brief .card-custom {
+    background: #f7f1e2 !important; background-image: none !important;
+    box-shadow: none; border-color: var(--paper-rule) !important;
+  }
+  .kp-brief .card-custom::before { display: none; }
+
+  /* the index cards are narrower than a panel, so their big stamp steps down a size */
+  .kp-brief .kp-stamp.lg { font-size: 15px; padding: 0 .3em; border-width: 2px; max-width: 100%; }
+  /* the rotated stamp reaches past its own line box, so the value row keeps the height */
+  .kp-brief .card-custom > div:nth-of-type(2) { display: flex; align-items: center; min-height: 2.5rem; padding: .1rem 0 .2rem; }
+  .kp-brief .card-custom > div:nth-of-type(2) .kp-stamp { margin: 0; }
+  .kp-brief .card-custom { padding-bottom: 1.4rem; }
+
+  /* tape labels and the dashed outline pair read on paper */
+  /* the write-up heading sits inside the same sheet, under a rule like a sheet head */
+  .kp-brief > h2 {
+    border-bottom: 2px solid rgba(27,23,18,.45);
+    padding-bottom: .5rem; margin-top: .4rem;
+  }
+
+  .kp-brief .kp-label { border: 1px solid rgba(27,23,18,.16); }
+  .kp-brief .kp-label.outline {
+    background: transparent; border: 1px dashed rgba(27,23,18,.45);
+    color: var(--sepia); box-shadow: none;
+  }
+
+  /* the action bar, copied from the case-file .telegram: a parchment strip with a
+     double rule at the left edge, a round ink seal, a typewriter title and a
+     typewriter command line under it */
+  .kp-telegram {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+    gap: 16px; background: #f3ecd6; color: var(--ink-on-paper);
+    padding: 14px 20px; border-left: 6px double var(--pass);
+    border-top: 1px solid #d9cdb0; border-right: 1px solid #d9cdb0; border-bottom: 1px solid #d9cdb0;
+    box-shadow: 0 6px 14px rgba(58,44,21,.28); transform: rotate(-.4deg);
+  }
+  .kp-tg-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+  .kp-seal {
+    width: 40px; height: 40px; flex: none; border-radius: 50%;
+    display: grid; place-items: center; border: 2px solid var(--pass); color: var(--pass);
+    font-family: "Special Elite", "Courier New", monospace; font-size: 20px; line-height: 1;
+    -webkit-mask-image: var(--wear-light); mask-image: var(--wear-light);
+  }
+  .kp-tg-title {
+    font-family: "Special Elite", "Courier New", monospace;
+    text-transform: uppercase; letter-spacing: .08em; font-size: 15px; line-height: 1.4;
+    color: var(--ink-on-paper);
+  }
+  .kp-tg-cmd {
+    font-family: "Courier Prime", "Courier New", monospace;
+    font-size: 13px; line-height: 1.5; margin-top: 2px; color: var(--sepia);
+    overflow-wrap: anywhere;
+  }
+
+  /* action buttons as double-rule stamps */
+  .card-custom .kp-btn,
+  .kp-telegram .kp-btn {
+    font-family: "Special Elite", "Courier New", monospace !important;
+    text-transform: uppercase; letter-spacing: .1em; font-size: 12px !important;
+    padding: 7px 15px !important; background: transparent !important;
+    border: 3px double currentColor !important; border-radius: 3px !important;
+    box-shadow: none !important; height: auto !important;
+  }
+  .card-custom .kp-btn.approve,
+  .kp-telegram .kp-btn.approve { color: var(--pass) !important; transform: rotate(-2deg); }
+  .card-custom .kp-btn.changes,
+  .kp-telegram .kp-btn.changes { color: var(--blood) !important; transform: rotate(1.5deg); }
+  /* Hover deepens the button's own ink: a green wash under APPROVE & LAND and a red one
+     under REQUEST CHANGES, never a neutral grey, so the button keeps its colour. */
+  .card-custom .kp-btn:hover,
+  .kp-telegram .kp-btn:hover { background: rgba(27,23,18,.06) !important; }
+  .card-custom .kp-btn.approve:hover,
+  .kp-telegram .kp-btn.approve:hover { background: rgba(45,74,36,.17) !important; }
+  .card-custom .kp-btn.changes:hover,
+  .kp-telegram .kp-btn.changes:hover { background: rgba(125,32,32,.15) !important; }
+</style>
+</head>
+<body class="p-6">
+<main class="max-w-5xl mx-auto space-y-8">
+
+<!--
+  HOW TO USE THIS TEMPLATE
+  1. Copy this file to {{TASK_DIR}}/report.html and copy hero.jpg from this folder beside it, because
+     the page loads its hero by relative path. Then replace every REPLACE comment and sample value.
+  2. Keep the three <style> blocks in <head>, the hero, the section order and the component class names.
+  3. Delete a section only when the task has nothing for it.
+  4. Replace the sample diff section with the output of `kingpin-report diffs`, and keep
+     `kp-diff-data` in step with it: one entry per diff block, with name, oldContents and newContents.
+  5. Run the unslop skill, then `kingpin-report check report.html`.
+-->
+
+<header class="noir-hero">
+  <!-- REPLACE: the hero picture is `hero.jpg`, shipped beside this page. Keep the crop and the stamp. -->
+  <div class="noir-figure">
+    <img src="hero.jpg" alt="A rat in a pinstripe suit behind a desk, cigar in mouth, papers and a pistol in front of him" />
+    <span class="noir-stamp">Noir edition &middot; not filed</span>
+  </div>
+  <div class="noir-copy">
+    <div>
+      <p class="noir-kicker">Case file &middot; worker dossier</p>
+      <!-- REPLACE: the title is the outcome in a few words, with one word in blood red as the point. -->
+      <h1>A worker that stops always leaves an <em style="color:#7d2020;font-style:normal">outcome</em></h1>
+    </div>
+    <!-- REPLACE: two sentences. What the task settled, and the id it ran under. -->
+    <p>The page records what changed, what the review found and what validation ran. Task kp-000-example-task.</p>
+  </div>
+</header>
+
+<section class="kp-brief space-y-4">
+  <!-- Action bar. Where the work stands on the left, the two actions on the right.
+       The data-kp-finished-hide hook lets a finished page hide the whole strip. -->
+  <div data-kp-finished-hide class="kp-telegram">
+    <div class="kp-tg-left">
+      <span class="kp-seal" aria-hidden="true">&#10003;</span>
+      <div>
+        <!-- REPLACE: one short line on where the work stands, e.g. "Implementation Complete". -->
+        <div class="kp-tg-title">Implementation Complete</div>
+        <div class="kp-tg-cmd">kingpin land kp-000-example-task</div>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <button type="button" class="btn btn-sm kp-btn approve" onclick="kpAction('kingpin land kp-000-example-task', 'Land kp-000-example-task')">Approve &amp; Land</button>
+      <button type="button" class="btn btn-sm kp-btn changes" onclick="kpRequestChanges('kp-000-example-task')">Request Changes</button>
+    </div>
+  </div>
+
+  <!-- Tape labels: the task id, the status stamp and the facts that do not change.
+       The status stamp carries the same retire hook as the telegram. -->
+  <div class="flex gap-2 items-center flex-wrap">
+    <span class="kp-label">kp-000-example-task</span>
+    <span data-kp-finished-hide class="kp-stamp pass">Implementation Complete</span>
+    <span class="kp-label outline">Branch: kingpin/kp-000-example-task</span>
+    <span class="kp-label outline">Issue #0</span>
+  </div>
+
+  <h1 class="text-3xl font-bold text-white">A worker that stops always leaves an outcome</h1>
+  <p class="text-base text-gray-300">
+    <!-- REPLACE: the issue link and the one-line point of the task. -->
+    <a href="https://github.com/OWNER/REPO/issues/0" target="_blank" rel="noopener" class="text-blue-400 hover:underline">Issue #0</a>:
+    Give every harness one stop hook, so a worker that ends without a status line still leaves one.
+  </p>
+
+  <!-- Four stat cards, always these four. Colour the value: pass green, warn amber, ink neutral. -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div class="card-custom">
+      <div class="text-xs text-gray-400 uppercase">Review Verdict</div>
+      <div><span class="kp-stamp lg pass">Approve</span></div>
+      <div class="text-xs text-gray-400">No findings</div>
+    </div>
+    <div class="card-custom">
+      <div class="text-xs text-gray-400 uppercase">Validation</div>
+      <div><span class="kp-stamp lg pass">Pass</span></div>
+      <div class="text-xs text-gray-400">Lint and every affected suite</div>
+    </div>
+    <div class="card-custom">
+      <div class="text-xs text-gray-400 uppercase">Files Modified</div>
+      <div class="text-xl font-bold text-white">15 files</div>
+      <div class="text-xs text-gray-400">+552 / -66 lines</div>
+    </div>
+    <div class="card-custom">
+      <div class="text-xs text-gray-400 uppercase">Git State</div>
+      <div><span class="kp-stamp lg warn">Uncommitted</span></div>
+      <div class="text-xs text-gray-400">Ready for review</div>
+    </div>
+  </div>
+
+  <h2 class="text-xl font-semibold text-white">What Changed and Why</h2>
+  <div class="text-sm space-y-3 text-gray-300">
+    <!-- REPLACE: one block per area of change. Plain sentences, no chatter. -->
+    <div>
+      <h3 class="text-base font-semibold text-white">1. A stop hook in <code>bin/example-stop</code></h3>
+      <p>
+        <strong>Problem:</strong> A worker that finished or died without writing a status line left a window that looked busy. The supervisor only noticed later, as a quiet pane.
+      </p>
+      <p class="mt-1">
+        <strong>Solution:</strong> One helper now runs on every stop. It decides whether the turn ended with a report and, if not, appends exactly one status line. A status written during the current turn is never touched.
+      </p>
+    </div>
+    <div>
+      <h3 class="text-base font-semibold text-white">2. Tests for the three stop cases</h3>
+      <p>
+        <strong>Problem:</strong> Nothing exercised a silent stop, a waiting stop or an already-reported stop.
+      </p>
+      <p class="mt-1">
+        <strong>Solution:</strong> A new suite drives each case with a fake worker and asserts the one status line that results.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- Section: the acceptance criteria, one row each, with the check that proved it. -->
+<section class="card-custom space-y-3">
+  <h2 class="text-xl font-semibold text-white">Acceptance Criteria Verification</h2>
+  <div class="overflow-x-auto">
+    <table class="table table-sm text-sm border border-gray-700">
+      <colgroup><col style="width:44%"><col style="width:10%"><col style="width:46%"></colgroup>
+      <thead>
+        <tr class="bg-gray-800 text-gray-200">
+          <th>Criterion</th>
+          <th>Status</th>
+          <th>Verification Method</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="border-t border-gray-700">
+          <td>A worker that exits without a status line has one on disk within a second</td>
+          <td><span class="kp-stamp pass">Pass</span></td>
+          <td>Verified by <code>tests/test-example.sh</code> with a fake worker and a silent stop</td>
+        </tr>
+        <tr class="border-t border-gray-700">
+          <td>A failing hook prints a warning and never blocks the stop</td>
+          <td><span class="kp-stamp none">Partial</span></td>
+          <td><code>bin/example-stop</code>; the unwritable-folder case is read, not tested</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Section: every review finding in one table, with the pass that found it. -->
+<section class="card-custom space-y-3">
+  <h2 class="text-xl font-semibold text-white">Review Verdict and Every Finding</h2>
+  <!-- REPLACE: how many passes ran and where the last one landed. -->
+  <p class="text-sm text-gray-300">
+    Two review passes ran in fresh contexts. The final one reports <strong>APPROVE</strong> with no findings. Every earlier finding is fixed; the ID stays with a finding across re-reviews.
+  </p>
+  <div class="overflow-x-auto">
+    <table class="table table-sm text-sm border border-gray-700">
+      <colgroup><col style="width:6%"><col style="width:7%"><col style="width:11%"><col style="width:46%"><col style="width:30%"></colgroup>
+      <thead>
+        <tr class="bg-gray-800 text-gray-200">
+          <th>Pass</th>
+          <th>ID</th>
+          <th>Severity</th>
+          <th>Finding</th>
+          <th>Outcome</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- Severity stamp: .kp-stamp.fail for Critical and High, .warn for Medium, .pass for Low, .none for none. -->
+        <tr class="border-t border-gray-700">
+          <td>r1</td><td><span class="font-mono">H1</span></td><td><span class="kp-stamp fail">High</span></td>
+          <td>A note appended after the last stop made the status file look newer than the stop marker, so a silent stop got no outcome line.</td>
+          <td>fixed: the boundary moves only when the worker has not answered that stop</td>
+        </tr>
+        <tr class="border-t border-gray-700">
+          <td>r1</td><td><span class="font-mono">M1</span></td><td><span class="kp-stamp warn">Medium</span></td>
+          <td>A turn that ended while background agents still ran was marked failed.</td>
+          <td>fixed: the helper checks the pane for a working marker first</td>
+        </tr>
+        <tr class="border-t border-gray-700">
+          <td>r1</td><td><span class="font-mono">L1</span></td><td><span class="kp-stamp pass">Low</span></td>
+          <td>The README promises more than the hook does.</td>
+          <td>deferred: its own issue, needs a wording decision</td>
+        </tr>
+        <tr class="border-t border-gray-700">
+          <td>r2</td><td><span class="font-mono">none</span></td><td><span class="kp-stamp none">None</span></td>
+          <td>No findings.</td>
+          <td>APPROVE</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Section: validation, one row per check. -->
+<section class="card-custom space-y-3">
+  <h2 class="text-xl font-semibold text-white">Validation</h2>
+  <div class="overflow-x-auto">
+    <table class="table table-sm text-sm border border-gray-700">
+      <colgroup><col style="width:20%"><col style="width:10%"><col style="width:70%"></colgroup>
+      <thead>
+        <tr class="bg-gray-800 text-gray-200"><th>Check</th><th>Result</th><th>Detail</th></tr>
+      </thead>
+      <tbody>
+        <tr class="border-t border-gray-700">
+          <td>Lint</td><td><span class="kp-stamp pass">Pass</span></td>
+          <td><code>./tests/lint.sh</code>: shellcheck and node --check clean</td>
+        </tr>
+        <tr class="border-t border-gray-700">
+          <td>Tests</td><td><span class="kp-stamp pass">Pass</span></td>
+          <td><code>./tests/test-example.sh</code>: the stop cases pass</td>
+        </tr>
+        <tr class="border-t border-gray-700">
+          <td>Type check</td><td><span class="kp-stamp none">N/A</span></td>
+          <td>No separate type check in this repository</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <!-- REPLACE or delete: one line on anything the table does not say, such as a known gap. -->
+  <p class="text-xs text-gray-400">
+    The unwritable-folder case for the failing hook is covered by reading the code, not by a test.
+  </p>
+</section>
+
+<!--
+  OPTIONAL: Before and After, for a visual change. Put the screenshots beside this file, use a relative src,
+  and uncomment. Show the same view at 1280 and 1024 wide.
+
+<section class="card-custom space-y-3">
+  <h2 class="text-xl font-semibold text-white">Before and After</h2>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <figure><figcaption class="text-xs text-gray-400 uppercase mb-1">Before, 1280 wide</figcaption><img src="before-1280.png" alt="The view before the change"></figure>
+    <figure><figcaption class="text-xs text-gray-400 uppercase mb-1">After, 1280 wide</figcaption><img src="after-1280.png" alt="The view after the change"></figure>
+  </div>
+</section>
+-->
+
+<!-- Section: diffs. REPLACE the <section id="kp-diffs"> body with the output of `kingpin-report diffs`. -->
+<section class="kp-codepanel space-y-6">
+  <h2 class="text-2xl font-bold text-white">Code Changes</h2>
+  <section id="kp-diffs">
+    <div class="kp-diff-file">
+      <h3 class="kp-diff-title"><code>bin/example-stop</code> <small>modified</small></h3>
+      <div class="kp-diff" data-index="0"><pre class="kp-fallback">diff --git a/bin/example-stop b/bin/example-stop
+--- a/bin/example-stop
++++ b/bin/example-stop
+@@ -1,3 +1,4 @@
+ #!/usr/bin/env bash
++set -u
+ touch "$TASK_DIR/stopped"
+ exit 0</pre></div>
+    </div>
+    <script type="application/json" id="kp-diff-data">[{"name":"bin/example-stop","oldName":"bin/example-stop","oldContents":"#!/usr/bin/env bash\ntouch \"$TASK_DIR/stopped\"\nexit 0\n","newContents":"#!/usr/bin/env bash\nset -u\ntouch \"$TASK_DIR/stopped\"\nexit 0\n","binary":false}]</script>
+    <script type="module">
+      import { FileDiff } from "https://esm.sh/@pierre/diffs@1.2.10?bundle";
+      const files = JSON.parse(document.getElementById("kp-diff-data").textContent);
+      /* A split diff needs room for two columns. Below 1000px the same patch reads far
+         better in one column, so the renderer follows the viewport. */
+      const wide = window.matchMedia("(min-width: 1000px)");
+      const options = () => ({
+        theme: { light: "github-light", dark: "github-dark" },
+        themeType: "dark", overflow: "wrap",
+        diffStyle: wide.matches ? "split" : "unified",
+      });
+      const paint = () => {
+        files.forEach((f, i) => {
+          const box = document.querySelector('.kp-diff[data-index="' + i + '"]');
+          if (!box || f.binary) return;
+          const fallback = box.querySelector(".kp-fallback");
+          box.querySelectorAll(":scope > div").forEach((old) => old.remove());
+          const host = document.createElement("div");
+          box.appendChild(host);
+          const settle = () => { if (host.childElementCount > 0) fallback.hidden = true; return host.childElementCount > 0; };
+          try {
+            // FileDiff needs oldFile/newFile objects. A raw patch string is not an option and renders nothing.
+            new FileDiff(options()).render({
+              containerWrapper: host,
+              oldFile: { name: f.oldName, contents: f.oldContents },
+              newFile: { name: f.name, contents: f.newContents },
+            });
+            if (!settle()) setTimeout(settle, 1500);
+          } catch (err) {
+            console.error("kp-diff: render failed for " + f.name, err);
+          }
+        });
+      };
+      paint();
+      wide.addEventListener("change", paint);
+    </script>
+  </section>
+</section>
+
+</main>
+
+<script>
+  // Without the Lavish bridge (a copy opened as a plain file) the buttons copy the text instead.
+  function kpAction(text, label) {
+    if (window.lavish && window.lavish.queuePrompt) {
+      window.lavish.queuePrompt(text, { tag: 'action', text: label });
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      alert('Copied to clipboard: ' + text);
+    }
+  }
+  function kpRequestChanges(taskId) {
+    var note = prompt('Notes for changes:');
+    if (!note) return;
+    var text = 'Request Changes: ' + note;
+    if (window.lavish && window.lavish.queuePrompt) {
+      window.lavish.queuePrompt(text, { tag: 'action', text: 'Request changes: ' + taskId });
+    } else if (navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      alert('Copied: ' + text);
+    }
+  }
+</script>
+</body>
+</html>
