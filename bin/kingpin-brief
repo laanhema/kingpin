@@ -15,8 +15,9 @@
 #     and the landing lanes come from lib/landing.sh;
 #   * the queue line comes from lib/queue.sh, the one reader of the operator's
 #     $KINGPIN_HOME/queue directory;
-#   * a worker window is resolved through lib/tmux.sh, so a record naming its own socket
-#     is probed on that server, and a server that is down reads as DEAD without starting.
+#   * a worker's terminal is resolved through lib/mux.sh, so a record naming its own
+#     socket is probed on that server, a record naming Herdr is probed through the
+#     Herdr backend, and a server that is down reads as DEAD without starting.
 #
 # It creates no file and no directory, so it is safe on a read-only fleet home, and an
 # empty or missing fleet is a digest of nothing and exit 0, not an error.
@@ -28,8 +29,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 KP_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../lib/status.sh
 . "$KP_BIN/../lib/status.sh"
-# shellcheck source=../lib/tmux.sh
-. "$KP_BIN/../lib/tmux.sh"
+# shellcheck source=../lib/mux.sh
+. "$KP_BIN/../lib/mux.sh"
 # shellcheck source=../lib/supervisor.sh
 . "$KP_BIN/../lib/supervisor.sh"
 # shellcheck source=../lib/afk.sh
@@ -120,15 +121,18 @@ for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
   # `pane` is the window that is still there after its harness exited: DEAD while the
   # job runs on, SILENT for a finished silent stop, as `kingpin list` reads it.
   liveness=dead
-  if kp_window_find "$d" >/dev/null 2>&1; then
-    if kp_window_harness_live "$d" >/dev/null 2>&1; then
+  # Read-only, both backends: a digest must not rewrite a stale target (issue #203).
+  if kp_mux_find "$d" --no-record >/dev/null 2>&1; then
+    if kp_mux_harness_live "$d" >/dev/null 2>&1; then
       liveness=live
     else
       liveness=pane
     fi
   fi
   state=$(kp_task_state "$d/status" "$liveness")
-  if [ "$state" = DEAD ]; then
+  # The restore hint is a tmux remedy: `kingpin restore` refuses a Herdr record by name
+  # until #204, so a dead Herdr row reads DEAD but is not counted into it.
+  if [ "$state" = DEAD ] && [ "$(kp_mux_record "$d" 2>/dev/null || true)" != herdr ]; then
     dead=$((dead + 1))
   fi
   newest=''

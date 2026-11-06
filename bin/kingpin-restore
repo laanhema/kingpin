@@ -13,7 +13,9 @@
 # a second live session, and says in its `OK:` line when it starts a fresh one because
 # the harness cannot report an existing session (issue #168). It never deletes anything:
 # a task it cannot bring back is refused by name with the reason and the remedy, and its
-# record, worktree and branch stay in place.
+# record, worktree and branch stay in place. It is a tmux command: a record that names the
+# Herdr mux is refused by name until #204 adds Herdr worker creation, and every terminal
+# verb it calls goes through lib/mux.sh.
 #
 # Usage: kingpin-restore [<task-id> ...] [--harness <name>] [--dry-run] [--force]
 #   (no ids)    restore every live task under $KINGPIN_HOME/tasks
@@ -33,8 +35,13 @@ KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 # shellcheck source=../lib/status.sh
 . "$KP_ROOT/lib/status.sh"
-# shellcheck source=../lib/tmux.sh
-. "$KP_ROOT/lib/tmux.sh"
+# shellcheck source=../lib/mux.sh
+. "$KP_ROOT/lib/mux.sh"
+# Every record restore acts on is a tmux task: a Herdr record is refused by name below
+# until #204 adds Herdr worker creation. Pinning the backend once keeps a caller that
+# runs inside a Herdr pane from selecting the Herdr adapter for a tmux record.
+# shellcheck disable=SC2034 # read by lib/mux.sh's verbs
+KP_MUX=tmux
 # shellcheck source=../lib/launch.sh
 . "$KP_ROOT/lib/launch.sh"
 # shellcheck source=../lib/exclude.sh
@@ -217,6 +224,17 @@ for id in ${ids[@]+"${ids[@]}"}; do
   env_file="$task_dir/task.env"
   [ -f "$env_file" ] || { refuse "$id" "task.env missing in $task_dir"; continue; }
 
+  # The record's backend decides, not the caller's environment. A Herdr record is
+  # refused before the tmux fields below are required: it carries none of them, and
+  # "TMUX_TARGET missing" would name the wrong reason.
+  record_mux=''
+  record_mux=$(kp_mux_record "$task_dir") \
+    || { refuse "$id" "unreadable MUX in $env_file"; continue; }
+  if [ "$record_mux" = herdr ]; then
+    refuse "$id" "the record names the herdr mux; kingpin restore cannot create a Herdr worker yet (issue #204)"
+    continue
+  fi
+
   tid=$(kp_env_get "$env_file" TASK_ID)
   project=$(kp_env_get "$env_file" PROJECT)
   worktree=$(kp_env_get "$env_file" WORKTREE)
@@ -243,7 +261,7 @@ for id in ${ids[@]+"${ids[@]}"}; do
 
   # A harness that is really in its window means nothing needs restoring; --force is
   # for a driver that knows better (a wedged pane, for example).
-  if kp_window_harness_live "$task_dir"; then
+  if kp_mux_harness_live "$task_dir"; then
     if [ "$force" -eq 0 ]; then
       printf 'OK: %s is already live (%s)\n' "$id" "$KP_WINDOW_LABEL"
       live=$((live + 1))
@@ -486,14 +504,14 @@ for id in ${ids[@]+"${ids[@]}"}; do
     session_dry_note=$session_ok_note
   fi
 
-  IFS=$'\t' read -r session name < <(kp_window_parts "$env_file")
+  IFS=$'\t' read -r session name < <(kp_mux_parts "$task_dir")
   [ -n "$session" ] || session=kingpin
   [ -n "$name" ] || name=$id
   # A window name is not a unique claim: two --text tasks can rename to the same issue
   # title, and an operator window can carry a task's name. Reclaiming such a window
   # would kill the other task's pane, so the conflict is refused before this command
   # writes anything.
-  if claimed_by=$(kp_window_name_claimed "$task_dir" "$session" "$name"); then
+  if claimed_by=$(kp_mux_name_claimed "$task_dir" "$session" "$name"); then
     refuse "$id" "window $session:$name is also named by the live task $claimed_by; name one of the two tasks' windows differently, then restore again"
     continue
   fi
@@ -565,26 +583,24 @@ for id in ${ids[@]+"${ids[@]}"}; do
 
   # The recorded session died with the server; recreate it under the same name on the
   # socket the record names (issue #142), as a spawn's resolve_tmux_session does for
-  # `kingpin`, so the record needs no other change. kp_tmux_has_session matches
-  # exactly: a session called `kingpin-workers` is not `kingpin`, and a prefix match
+  # `kingpin`, so the record needs no other change. kp_mux_ensure_session is the exact
+  # match: a session called `kingpin-workers` is not `kingpin`, and a prefix match
   # here would put the window in a session the record never names (issue #181).
   fleet_socket=$(kp_tmux_socket_from_env "$env_file")
-  if ! kp_tmux_has_session "$fleet_socket" "$session"; then
-    if ! kp_tmux "$fleet_socket" new-session -d -s "$session" -n home 2>/dev/null; then
-      refuse "$id" "cannot create the tmux session $session on $(kp_tmux_label "$fleet_socket")"
-      continue
-    fi
+  if ! KP_MUX_SOCKET=$fleet_socket kp_mux_ensure_session "$session"; then
+    refuse "$id" "cannot create the tmux session $session on $(kp_mux_label "$task_dir")"
+    continue
   fi
 
   # The marker kingpin-wait reads: a task with a fresh `launching` file is not reported
   # exited between the window creation and the id record.
   : > "$task_dir/launching"
-  if ! new_id=$(kp_window_start "$task_dir" "$session" "$name" "$worktree" "$task_dir/launch.sh"); then
+  if ! new_id=$(kp_mux_create "$task_dir" "$session" "$name" "$worktree" "$task_dir/launch.sh"); then
     rm -f "$task_dir/launching"
     refuse "$id" "cannot start the window in $session"
     continue
   fi
-  if ! kp_window_record_id "$task_dir" "$new_id"; then
+  if ! kp_mux_record_id "$task_dir" "$new_id"; then
     rm -f "$task_dir/launching"
     refuse "$id" "the window exists ($new_id) but its id could not be recorded"
     continue

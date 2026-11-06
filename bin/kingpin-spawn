@@ -49,8 +49,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_ROOT/lib/exclude.sh"
 # shellcheck source=../lib/gitdir.sh
 . "$KP_ROOT/lib/gitdir.sh"
-# shellcheck source=../lib/tmux.sh
-. "$KP_ROOT/lib/tmux.sh"
+# shellcheck source=../lib/mux.sh
+. "$KP_ROOT/lib/mux.sh"
 # shellcheck source=../lib/browser.sh
 . "$KP_ROOT/lib/browser.sh"
 # shellcheck source=../lib/launch.sh
@@ -162,6 +162,16 @@ if [ -z "$id" ]; then
   fi
 fi
 [[ $id =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "task id must be lowercase letters, digits, and dashes: $id"
+
+# A worker's terminal is reached through lib/mux.sh, which reads the fleet's backend
+# from KINGPIN_MUX. Only tmux creation is wired up so far: a Herdr fleet is refused
+# here, before the target is resolved or anything leased, because a spawn that cannot
+# create a terminal must cost no worktree and start no server. #204 replaces this
+# refusal with the Herdr placement itself (a `MUX=` record plus its `MUX_*` keys) and
+# with the target resolution this file still asks lib/tmux.sh for.
+fleet_mux=$(kp_mux_name) || die "cannot resolve the fleet's mux (reason above)"
+[ "$fleet_mux" = tmux ] \
+  || die "refusing to spawn: the fleet's mux is $fleet_mux, and kingpin spawn cannot create a Herdr worker yet (issue #204); run with KINGPIN_MUX=tmux"
 
 # Resolve the tmux target before anything is leased or written, so a refusal (an
 # unknown target, or an ambiguous server) costs no worktree and leaves no record.
@@ -466,15 +476,15 @@ warn_shared_excludes
 "$KP_ROOT/bin/kingpin-scope" check --harness "$harness" --worktree "$worktree" --preamble "$task_dir/preamble.md" \
   || die "refusing to launch a $harness worker: its instruction context is unsafe (files named above)"
 
-# Create the window through lib/tmux.sh, which also pins the name and records the pane
-# pid as the task's harness identity. It reads the socket from `TMUX_SOCKET` in the
-# record this spawn just wrote, so the window lands on the fleet's server (issue
-# #142). `--fresh`: a spawn must never take over a window that already carries this
-# name. Only a window that already exists is refused, and the id it would have used is
-# the one kp_window_record_id then writes.
-window_id=$(kp_window_start "$task_dir" "$target_session" "$id" "$worktree" "$task_dir/launch.sh" --fresh) \
+# Create the window through lib/mux.sh, which reaches lib/tmux.sh for a tmux fleet. It
+# also pins the name and records the pane pid as the task's harness identity. It reads
+# the socket from `TMUX_SOCKET` in the record this spawn just wrote, so the window lands
+# on the fleet's server (issue #142). `--fresh`: a spawn must never take over a window
+# that already carries this name. Only a window that already exists is refused, and the
+# id it would have used is the one kp_mux_record_id then writes.
+window_id=$(kp_mux_create "$task_dir" "$target_session" "$id" "$worktree" "$task_dir/launch.sh" --fresh) \
   || die "cannot start the worker window in $target_session"
-kp_window_record_id "$task_dir" "$window_id" \
+kp_mux_record_id "$task_dir" "$window_id" \
   || die "cannot record the window id $window_id in $task_dir/task.env"
 rm -f "$task_dir/launching"
 launched=1

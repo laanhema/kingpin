@@ -486,6 +486,25 @@ grep -qF 'session the only session on the server' <<< "$t21_plain" \
   || fail "t21: out-of-tmux stderr: $(cat "$T/t21-plain.err")"
 "$KP_BIN/kingpin" "done" t21-outside --force >/dev/null 2>&1 || true
 
+# ---------------------------------------------------------------------------
+# Test 22: a Herdr fleet is refused before anything is leased
+echo "=== Test 22: a Herdr spawn is refused before the lease ==="
+t22_out='' t22_rc=0
+t22_out=$(KINGPIN_MUX=herdr "$KP_BIN/kingpin" spawn demo-auto --text "herdr refusal" --id t22-herdr 2>&1) || t22_rc=$?
+[ "$t22_rc" -eq 1 ] && pass "t22: KINGPIN_MUX=herdr refuses the spawn" || fail "t22: spawn exited $t22_rc: $t22_out"
+grep -qF "cannot create a Herdr worker yet (issue #204)" <<< "$t22_out" \
+  && pass "t22: the refusal names Herdr and the issue that adds it" \
+  || fail "t22: refusal: $t22_out"
+grep -qF "run with KINGPIN_MUX=tmux" <<< "$t22_out" \
+  && pass "t22: the refusal names the way back to tmux" \
+  || fail "t22: refusal: $t22_out"
+[ ! -e "$KINGPIN_HOME/tasks/t22-herdr" ] && [ ! -L "$KINGPIN_HOME/tasks/t22-herdr" ] \
+  && pass "t22: the refused spawn left no task folder" \
+  || fail "t22: the refused spawn left a task folder"
+git -C "$T/proj" rev-parse --verify --quiet refs/heads/kingpin/t22-herdr >/dev/null \
+  && fail "t22: the refused spawn created its branch" \
+  || pass "t22: the refused spawn created no branch"
+
 # The caller server is not kp_test_cleanup's, so this suite kills it itself.
 "$REAL_TMUX" -L caller kill-server 2>/dev/null || true
 
