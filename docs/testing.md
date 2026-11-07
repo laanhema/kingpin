@@ -20,8 +20,13 @@ Run the lint and the full test suite from the repository root:
 # another checkout instead of this one
 ./tests/lint.sh
 
-# Every suite, one after the other
-for s in tests/test-*.sh; do "./$s" || break; done
+# The lint and every suite, each job in its own copy of this tree, a bounded number at a time.
+# It prints one line per job, then the full log of each failing job, and exits 1 naming the
+# failures. -j N changes the bound (default: half the cores, from 1 to 8); job labels (lint,
+# test-<name>) run a subset, as in ./tests/run-all.sh lint test-afk. RUN_ALL_TIMEOUT (default
+# 900 seconds) bounds each job, and is honoured only when `timeout` is installed. Pass
+# --root <dir> to run another checkout instead of this one
+./tests/run-all.sh
 ```
 
 The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmux server, scratch repo, the `kp_wait_until` and `kp_holds_for` waits, `kp_test_private_bin` for a suite that fakes a `bin/` command, other helpers):
@@ -73,6 +78,7 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-excludes.sh` | spawn and done never write the main checkout's `.git/info/exclude`, and injected harness files stay out of a worktree's `git status` |
 | `test-browser-daemons.sh` | browser daemons: ownership by working directory, the process-tree stop, and the memory total the `↳ Browser:` line shows |
 | `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
+| `test-run-all.sh` | `tests/run-all.sh`, driven against fixture roots of fake jobs: a green run, the job order, a named subset, a failing job that is named with its log while the green jobs still pass, two jobs overwriting the same tracked file at once without seeing each other, the invoking checkout left byte-identical and clean, the snapshot (untracked kept, ignored and deleted files dropped), two runs at once, cleanup of the run directory and the running job on TERM, `-j 1` and `-j 2`, the usage errors (exit 2), the scrubbed `TMUX` and `KINGPIN_*` environment with a private `TMPDIR`, and the timeout |
 | `test-agents-paths.sh` | `.agents` policy: the whole directory is ignored, nothing under it is tracked, a PRD needs a force-add, and the lint fails on a forced artifact |
 | `test-lint.sh` | the lint itself: a syntax error in a shell script or a `lib/*.mjs` module fails it by name, a suite with no CI leg fails the matrix check, a suite with no row in the table above fails by name, a fixed `sleep` before an assertion fails by name with its line and both waits (a trailing comment on the sleep still counts, while a here-document body is skipped), a `NAME=$?` line after an unguarded capture fails by name with its line and `kp_run` (the guarded `\|\| rc=$?` form, a `set +e` block and a here-document body pass), and a source file cited by line fails by name, and a `ci-ok` gate without `if: always()`, a job the gate does not need (an inline comment on the job key changes nothing), a gate with a display `name:` and a missing gate each fail by name, while a block-sequence `needs` and a commented `needs` list pass, and a write onto `$KP_BIN` in a suite that does not call `kp_test_private_bin` fails by name with its line and the helper (a write onto `$KP_ROOT/bin` or `$KP_ROOT/lib` fails even with it, while a read, a comment and a here-document body pass) |
 

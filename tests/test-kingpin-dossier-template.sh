@@ -15,6 +15,10 @@ TPL="$KP_ROOT/assets/lavish/kingpin-dossier"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 
+# qgrep: a quiet grep that reads all of its input. `stripped "$f" | grep -q` under pipefail
+# fails at random: grep -q exits at the first match, the writer (perl) takes SIGPIPE on its next
+# write, and the pipeline reports 141. The odds rise with CPU load (issue #250).
+qgrep() { grep "$@" > /dev/null; }
 pass() { echo "PASS: $*"; }
 fail() { echo "FAIL: $*"; FAILED=1; }
 FAILED=0
@@ -47,16 +51,16 @@ check_refs() {
 # check_fonts <file>: 0 when every face loads from a link and nothing loads from an @import.
 check_fonts() {
   local f=$1
-  stripped "$f" | grep -q 'fonts.googleapis.com/css2?family=Courier+Prime' \
+  stripped "$f" | qgrep 'fonts.googleapis.com/css2?family=Courier+Prime' \
     || { echo "the Google Fonts link no longer names Courier Prime" >&2; return 1; }
   for face in 'Playfair+Display' 'Special+Elite' 'Source+Serif+4'; do
-    stripped "$f" | grep -q "$face" || { echo "the Google Fonts link no longer names $face" >&2; return 1; }
+    stripped "$f" | qgrep "$face" || { echo "the Google Fonts link no longer names $face" >&2; return 1; }
   done
-  stripped "$f" | grep -q '@fontsource/commit-mono@5/400.css' \
+  stripped "$f" | qgrep '@fontsource/commit-mono@5/400.css' \
     || { echo "the Commit Mono 400 link is missing" >&2; return 1; }
-  stripped "$f" | grep -q '@fontsource/commit-mono@5/700.css' \
+  stripped "$f" | qgrep '@fontsource/commit-mono@5/700.css' \
     || { echo "the Commit Mono 700 link is missing" >&2; return 1; }
-  if stripped "$f" | grep -q '@import'; then
+  if stripped "$f" | qgrep '@import'; then
     echo "a face loads through @import, which the browser drops after a rule" >&2
     return 1
   fi
@@ -127,12 +131,12 @@ check_decisions() {
 check_hero() {
   local f=$1
   grep -q '\.noir-hero {' "$f" || { echo "decision 2 lost the hero block" >&2; return 1; }
-  stripped "$f" | grep -q '<header class="noir-hero">' || { echo "decision 2 lost the hero markup" >&2; return 1; }
-  stripped "$f" | grep -q 'class="noir-figure"' || { echo "decision 2 lost the framed figure markup" >&2; return 1; }
-  stripped "$f" | grep -q 'src="hero.jpg"' || { echo "decision 2: the hero is not the relative hero.jpg" >&2; return 1; }
-  stripped "$f" | grep -q 'class="noir-stamp"' || { echo "decision 2 lost the sideways stamp markup" >&2; return 1; }
-  stripped "$f" | grep -q 'class="noir-kicker"' || { echo "decision 2 lost the kicker markup" >&2; return 1; }
-  stripped "$f" | grep -q '<em style="color:#7d2020;font-style:normal">' \
+  stripped "$f" | qgrep '<header class="noir-hero">' || { echo "decision 2 lost the hero markup" >&2; return 1; }
+  stripped "$f" | qgrep 'class="noir-figure"' || { echo "decision 2 lost the framed figure markup" >&2; return 1; }
+  stripped "$f" | qgrep 'src="hero.jpg"' || { echo "decision 2: the hero is not the relative hero.jpg" >&2; return 1; }
+  stripped "$f" | qgrep 'class="noir-stamp"' || { echo "decision 2 lost the sideways stamp markup" >&2; return 1; }
+  stripped "$f" | qgrep 'class="noir-kicker"' || { echo "decision 2 lost the kicker markup" >&2; return 1; }
+  stripped "$f" | qgrep '<em style="color:#7d2020;font-style:normal">' \
     || { echo "decision 2: the hero title lost its blood-red word" >&2; return 1; }
 }
 
