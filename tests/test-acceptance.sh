@@ -5,6 +5,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 kp_test_setup "acceptance"
+kp_test_private_bin
 
 # The project is the scratch repo kp_test_setup made; no setup command for these spawns.
 printf 'PROJECT_PATH=%q\nSETUP_CMD=%q\n' "$T/proj" "" > "$KINGPIN_HOME/projects/demo.env"
@@ -66,7 +67,7 @@ list_out=$("$KP_BIN/kingpin" list)
 echo "$list_out" | grep -q "demo-alpha" && echo "$list_out" | grep -q "demo-beta" && echo "$list_out" | grep -q "demo-gamma" && pass "all 3 tasks present in kingpin list" || fail "tasks missing from kingpin list"
 
 # 4. Land demo-alpha, demo-beta, demo-gamma
-# Override kingpin-send to write landed_signal for fake-claude (backup keeps uncommitted edits of the real script)
+# Override kingpin-send to write landed_signal for fake-claude (the stub replaces the command in the private copy of bin/ under $T)
 cp -p "$KP_BIN/kingpin-send" "$T/kingpin-send.orig"
 cat > "$KP_BIN/kingpin-send" <<'S'
 #!/usr/bin/env bash
