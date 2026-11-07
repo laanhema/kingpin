@@ -11,6 +11,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 kp_test_setup "watch-supervisor"
+kp_test_private_bin
 # Test 13 arms and re-arms listeners for the t-arm task against the default Lavish stub
 # on purpose; every recorded call must name it, so the rest of the suite stays armed.
 kp_test_expect_lavish_calls '*t-arm*'

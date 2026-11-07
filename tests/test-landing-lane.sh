@@ -7,6 +7,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 kp_test_setup "landing-lane"
+kp_test_private_bin
 kp_test_stub_lavish
 
 # shellcheck source=../lib/landing.sh

@@ -8,7 +8,8 @@
 # line in bin/ or lib may cite a source file by line number (tests/doc-citations.sh).
 # The README/docs CLI-reference check runs in both directions: every parsed flag and
 # KINGPIN_* variable has to be documented, and every flag a docs page shows has to reach
-# docs/cli.md.
+# docs/cli.md. A suite must not write the checkout's bin/ or lib/; one that fakes a command
+# does it in the private copy kp_test_private_bin makes.
 #
 # Usage: tests/lint.sh [--root <dir>]
 #   --root <dir>  lint that checkout instead of the one this script lives in, which is what
@@ -407,6 +408,68 @@ if [ "${#rc_hits[@]}" -gt 0 ]; then
     echo "  $hit" >&2
   done
   echo "lint: capture with kp_run <out-var> <rc-var> <cmd...> from tests/lib.sh, which records the status without tripping set -e" >&2
+  exit 1
+fi
+
+# A suite that swaps in a fake command by writing it over a tracked file of the checkout
+# leaves a stub behind when it dies mid-run, and a second suite running at the same time
+# executes the stub (issue #249). A suite that needs a fake `kingpin-*` command calls
+# `kp_test_private_bin` from tests/lib.sh, which points KP_BIN at a copy of bin/ under its
+# scratch directory, and only then may it write under "$KP_BIN". A write to "$KP_ROOT/bin" or
+# "$KP_ROOT/lib" is refused in every case, because KP_ROOT names the checkout. The scan reads
+# every tests/*.sh, skips comment lines and here-document bodies, and recognises a redirect
+# onto the path, `tee`, `chmod`, `rm`, `touch`, `ln`, `install`, `truncate` and `sed -i`
+# with the path in their arguments, and `cp`/`mv` with the path as the last operand. It
+# cannot follow a path held in another variable.
+bin_hits=()
+for f in tests/*.sh; do
+  [ -f "$f" ] || continue
+  private=0
+  if grep -qE '^[[:space:]]*kp_test_private_bin([[:space:]]|$)' "$f"; then
+    private=1
+  fi
+  found=$(awk -v file="$f" -v private="$private" '
+    BEGIN {
+      bin_p = "\\$(\\{)?KP_BIN(\\})?"
+      root_p = "\\$(\\{)?KP_ROOT(\\})?\"?/(bin|lib)([^A-Za-z0-9_.-]|$)"
+      sep = "[^;|&]*"
+      opener = "<<-?[[:space:]]*[\"\047]?[A-Za-z_][A-Za-z_0-9]*"
+    }
+    function writes(line, tgt,    cmds) {
+      cmds = "(^|[^A-Za-z0-9_-])(tee|chmod|rm|touch|ln|install|truncate|sed[[:space:]]+-i[^[:space:]]*)[[:space:]]"
+      if (line ~ (">[|]?>?[[:space:]]*[\"\047]?" tgt)) return 1
+      if (line ~ (cmds sep tgt)) return 1
+      if (line ~ ("(^|[^A-Za-z0-9_-])(cp|mv)[[:space:]]" sep "[[:space:]][\"\047]?" tgt "[^[:space:];|&]*[[:space:]]*($|[;|&)#])")) return 1
+      return 0
+    }
+    {
+      if (delim != "") {
+        t = $0
+        if (strip) sub(/^\t+/, "", t)
+        if (t == delim) delim = ""
+        next
+      }
+      if ($0 ~ /^[[:space:]]*#/) next
+      if (writes($0, root_p) || (!private && writes($0, bin_p))) printf "%s:%d: %s\n", file, NR, $0
+      if ($0 !~ /<<</ && match($0, opener)) {
+        d = substr($0, RSTART, RLENGTH)
+        strip = (d ~ /^<<-/)
+        sub(/^<<-?[[:space:]]*["\047]?/, "", d)
+        delim = d
+      }
+    }
+  ' "$f" || true)
+  [ -n "$found" ] || continue
+  while IFS= read -r hit; do
+    bin_hits+=("$hit")
+  done <<< "$found"
+done
+if [ "${#bin_hits[@]}" -gt 0 ]; then
+  echo "lint: these test scripts write a tracked file under bin/ or lib/ of the checkout they run from:" >&2
+  for hit in "${bin_hits[@]}"; do
+    echo "  $hit" >&2
+  done
+  echo "lint: call kp_test_private_bin (tests/lib.sh) right after kp_test_setup and write under \"\$KP_BIN\" in the copy; never write \"\$KP_ROOT/bin\" or \"\$KP_ROOT/lib\"" >&2
   exit 1
 fi
 

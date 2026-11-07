@@ -17,6 +17,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 kp_test_setup "watch-once"
+kp_test_private_bin
 
 CALLS="$T/done-calls"
 LOG="$T/supervisor.log"
@@ -45,8 +46,9 @@ exit 0
 DONE
 chmod +x "$KP_BIN/kingpin-done"
 export KP_TEST_DONE_CALLS="$CALLS"
-# kp_test_cleanup restores every $T/kingpin-*.orig file, so a failure cannot leave
-# the stub in place; this puts it back early for the assertions after Test 3.
+# The stub lives in the private copy of bin/ under $T, which goes away with $T, so a
+# failure cannot leave it in the checkout; this puts the original back early for the
+# assertions after Test 3.
 restore_done() { cp -p "$T/kingpin-done.orig" "$KP_BIN/kingpin-done"; }
 
 mk_task() {

@@ -28,7 +28,8 @@ each task back as a visual review dossier. This file describes the repository.
 # bash -n, shellcheck, node --check over lib/*.mjs, the CI-matrix and suite-table checks,
 # the ci-ok merge-gate check, the fixed-sleep-before-an-assertion check, the unguarded-`$?`
 # check, the README/docs CLI-reference check in both directions, the path:line citation
-# check, and the tracked .agents artifact check
+# check, the check that no suite writes the checkout's bin/ or lib/, and the tracked .agents
+# artifact check
 ./tests/lint.sh
 
 # One suite (the fake kingpin-send, -wait, -listen and -done live in a private copy of bin/, so suites may overlap)
@@ -83,6 +84,7 @@ A rule that only a person keeps is one that goes stale; each rule below names wh
 | command behaviour (refusals, exit codes, flags) is written in full only in `docs/cli.md`; `README.md`, `AGENTS.md` and `orchestrator/contract.md` keep what their reader acts on and point at the section | review |
 | no page the citation check reads (`README.md`, `AGENTS.md`, `docs/*.md`, `orchestrator/contract.md`, `worker/*.md`) and no whole-comment line in `bin/*`, `lib/*.sh` or `lib/*.mjs` cites a source file by line number | `tests/doc-citations.sh` |
 | nothing under `.agents/` is tracked | `tests/lint.sh` |
+| a suite never writes a tracked file under `bin/` or `lib/` of the checkout it runs from; a suite that fakes a command calls `kp_test_private_bin` and writes the copy (see [`docs/testing.md`](docs/testing.md)) | `tests/lint.sh` |
 | `tmux` is reached only through `lib/tmux.sh` and `herdr` only through `lib/mux-herdr.sh` | the static checks in `tests/test-tmux-isolation.sh` and `tests/test-mux.sh` |
 | no command in `bin/` calls `kp_tmux` or a `kp_window_*` function: a terminal is reached through `lib/mux.sh` | the direct-call scan and its probe directory in `tests/test-mux.sh` |
 | the shipped `systemd/kingpin-watch.service` mirrors `kingpin-queue.service` (`Type=simple`, `Restart=always`, `RestartSec=30`), starts the daemon rather than `--once`, and the no-supervisor warning names the unit | `tests/test-watch-supervisor.sh` |

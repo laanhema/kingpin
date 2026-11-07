@@ -22,6 +22,7 @@
 #   kp_test_setup <suite-name>
 #   kp_test_project           # unless the suite tests `kingpin init` itself
 #   kp_test_expect_lavish_calls [pattern...]   # only when the suite drives the stub
+#   kp_test_private_bin       # only for a suite that swaps a bin/ command for a fake
 #   ... pass "..." / fail "..." ...
 #   kp_test_finish <LABEL>    # prints ALL <LABEL> TESTS PASSED, or exits 1
 
@@ -121,6 +122,7 @@ kp_run() {
 }
 
 # kp_test_setup <suite-name>: sets T, KP_ROOT, KP_BIN, REAL_TMUX, TEST_SOCKET and the KINGPIN_* environment.
+# KP_BIN names the checkout's bin/ until a suite calls kp_test_private_bin.
 kp_test_setup() {
   local suite=$1 w
   unset TMUX CLAUDECODE OPENCODE KINGPIN_HARNESS
@@ -242,15 +244,23 @@ GHEOF
   KP_TEST_LAVISH_CALLS_PATTERNS=()
 }
 
-kp_test_cleanup() {
-  # A suite that swaps in a fake command leaves its original beside it as
-  # <name>.orig; put every one back (test-lifecycle.sh: kingpin-send,
-  # test-watch-supervisor.sh: kingpin-wait).
-  local f
-  for f in "$T"/kingpin-*.orig; do
-    [ -f "$f" ] || continue
-    cp -p "$f" "$KP_BIN/$(basename "${f%.orig}")" 2>/dev/null || true
+# kp_test_private_bin: point KP_BIN at a private copy of bin/ under $T, so a suite that
+# swaps in a fake command (kingpin-send, kingpin-wait, kingpin-listen, kingpin-done) writes
+# the copy and never a tracked file of the checkout (issue #249). Each command takes its
+# KP_ROOT from its own location, so the copy runs against $T/kproot, where lib/, worker/ and
+# the other trees the commands read are links to the checkout's. Call it right after
+# kp_test_setup; KP_ROOT keeps naming the checkout for a suite that reads from it.
+kp_test_private_bin() {
+  local root=$T/kproot d
+  mkdir -p "$root"
+  cp -a "$KP_ROOT/bin" "$root/bin"
+  for d in lib worker assets orchestrator systemd docs; do
+    ln -s "$KP_ROOT/$d" "$root/$d"
   done
+  KP_BIN=$root/bin
+}
+
+kp_test_cleanup() {
   "$REAL_TMUX" -L "$KINGPIN_TMUX_SOCKET" kill-server 2>/dev/null || true
   "$REAL_TMUX" -L "$TEST_SOCKET" kill-server 2>/dev/null || true
   rm -rf "$T"

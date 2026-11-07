@@ -5,6 +5,7 @@ set -euo pipefail
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
 kp_test_setup "lifecycle"
+kp_test_private_bin
 
 # Test 1: kingpin init
 echo "=== Test 1: kingpin init ==="
@@ -35,7 +36,7 @@ pass "task-auto-1 spawned in auto mode"
 # Mock ready status
 echo "ready: branch=kingpin/task-auto-1 review=APPROVE report=none" >> "$KINGPIN_HOME/tasks/task-auto-1/status"
 
-# Override kingpin-send to simulate worker response (backup keeps uncommitted edits of the real script)
+# Override kingpin-send to simulate worker response (the stub replaces the command in the private copy of bin/ under $T)
 cp -p "$KP_BIN/kingpin-send" "$T/kingpin-send.orig"
 cat > "$KP_BIN/kingpin-send" << 'S'
 #!/usr/bin/env bash

@@ -768,4 +768,71 @@ else
 fi
 rm -f "$T/mjs-defect.saved"
 
+echo "=== Test 44: a write onto \$KP_BIN in a suite without kp_test_private_bin fails the lint with each line ==="
+cp "$FIX/tests/test-demo.sh" "$T/test-demo.bin-saved"
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+cat > "$KP_BIN/kingpin-send" << 'S'
+#!/usr/bin/env bash
+S
+chmod +x "$KP_BIN/kingpin-send"
+cp -p "$T/kingpin-send.orig" "$KP_BIN/kingpin-send"
+F
+cat_line=$(grep -n '^cat > "[$]KP_BIN' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+chmod_line=$(grep -n '^chmod +x "[$]KP_BIN' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+cp_line=$(grep -n '^cp -p "[$]T/kingpin-send.orig"' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] \
+  && grep -qF "tests/test-demo.sh:$cat_line" <<< "$LINT_OUT" \
+  && grep -qF "tests/test-demo.sh:$chmod_line" <<< "$LINT_OUT" \
+  && grep -qF "tests/test-demo.sh:$cp_line" <<< "$LINT_OUT" \
+  && grep -qF 'kp_test_private_bin' <<< "$LINT_OUT"; then
+  pass "a redirect, a chmod and a cp onto \$KP_BIN each fail the lint at their line, with kp_test_private_bin named"
+else
+  fail "the lint accepted a write onto \$KP_BIN (rc=$LINT_RC): $LINT_OUT"
+fi
+
+echo "=== Test 45: the same writes pass once the suite calls kp_test_private_bin ==="
+printf 'kp_test_private_bin\n' >> "$FIX/tests/test-demo.sh"
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "a suite on a private copy of bin/ may write under \$KP_BIN"
+else
+  fail "the lint rejected a write under a private \$KP_BIN (rc=$LINT_RC): $LINT_OUT"
+fi
+
+echo "=== Test 46: a write onto \$KP_ROOT/bin or \$KP_ROOT/lib fails even with kp_test_private_bin ==="
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+echo stub > "$KP_ROOT/bin/kingpin-done"
+sed -i 's/a/b/' "$KP_ROOT"/lib/status.sh
+F
+root_bin_line=$(grep -n '^echo stub > "[$]KP_ROOT/bin' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+root_lib_line=$(grep -n '^sed -i' "$FIX/tests/test-demo.sh" | cut -d: -f1)
+lint
+if [ "$LINT_RC" -ne 0 ] \
+  && grep -qF "tests/test-demo.sh:$root_bin_line" <<< "$LINT_OUT" \
+  && grep -qF "tests/test-demo.sh:$root_lib_line" <<< "$LINT_OUT"; then
+  pass "a write onto the checkout's bin/ or lib/ fails the lint whatever KP_BIN is"
+else
+  fail "the lint accepted a write onto \$KP_ROOT/bin or lib (rc=$LINT_RC): $LINT_OUT"
+fi
+
+echo "=== Test 47: reads of \$KP_BIN, a comment, and a here-document body holding the shape pass ==="
+cp "$T/test-demo.bin-saved" "$FIX/tests/test-demo.sh"
+cat >> "$FIX/tests/test-demo.sh" << 'F'
+# cat > "$KP_BIN/kingpin-send" is only named here
+cp -p "$KP_BIN/kingpin-send" "$T/kingpin-send.orig"
+out=$("$KP_BIN/kingpin" list >"$T/list.out" 2>&1)
+cat > "$T/fixture.sh" << 'INNER'
+chmod +x "$KP_BIN/kingpin-send"
+INNER
+F
+lint
+if [ "$LINT_RC" -eq 0 ] && grep -q 'files clean' <<< "$LINT_OUT"; then
+  pass "a read, a comment and a here-document body do not trip the check"
+else
+  fail "the lint flagged a read-only use of \$KP_BIN (rc=$LINT_RC): $LINT_OUT"
+fi
+cp "$T/test-demo.bin-saved" "$FIX/tests/test-demo.sh"
+rm -f "$T/test-demo.bin-saved"
+
 kp_test_finish LINT
