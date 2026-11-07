@@ -42,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [acceptance, afk, agents-paths, archive-link, brief, browser-daemons, cli-help, curate, curate-auto, curate-prompt, done, dossier-retire, excludes, fleet-server, git-compat, harnesses, kingpin-dossier-template, land, landing-lane, launch-check, lifecycle, lint, listen, lock, markdown, merged-checks, mux, mux-herdr-real, noir-template, pi-harness, ranks, report, restore, review-findings, send-peek, spawn, stats, status, sync, tmux-isolation, wait, watch-once, watch-supervisor, worker-dossier-template, worker-scope, worker-settings, worker-stop]
+        suite: [acceptance, afk, agents-paths, archive-link, brief, browser-daemons, cli-help, curate, curate-auto, curate-prompt, done, dossier-retire, excludes, fleet-server, git-compat, harnesses, kingpin-dossier-template, land, landing-lane, launch-check, lifecycle, lint, listen, lock, markdown, merged-checks, mux, mux-herdr-real, noir-template, pi-harness, ranks, report, restore, review-findings, run-all, send-peek, spawn, stats, status, sync, tmux-isolation, wait, watch-once, watch-supervisor, worker-dossier-template, worker-scope, worker-settings, worker-stop]
     steps:
       - uses: actions/checkout@v4
       - name: Install tmux

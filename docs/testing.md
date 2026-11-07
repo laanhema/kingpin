@@ -20,8 +20,13 @@ Run the lint and the full test suite from the repository root:
 # another checkout instead of this one
 ./tests/lint.sh
 
-# Every suite, one after the other
-for s in tests/test-*.sh; do "./$s" || break; done
+# The lint and every suite, each job in its own copy of this tree, a bounded number at a time.
+# It prints one line per job, then the full log of each failing job, and exits 1 naming the
+# failures. -j N changes the bound (default: half the cores, from 1 to 8); job labels (lint,
+# test-<name>) run a subset, as in ./tests/run-all.sh lint test-afk. RUN_ALL_TIMEOUT (default
+# 900 seconds) bounds each job, and is honoured only when `timeout` is installed. Pass
+# --root <dir> to run another checkout instead of this one
+./tests/run-all.sh
 ```
 
 The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmux server, scratch repo, the `kp_wait_until` and `kp_holds_for` waits, other helpers):
@@ -73,9 +78,10 @@ The suites, one file per feature (shared setup is in `tests/lib.sh`: private tmu
 | `test-excludes.sh` | spawn and done never write the main checkout's `.git/info/exclude`, and injected harness files stay out of a worktree's `git status` |
 | `test-browser-daemons.sh` | browser daemons: ownership by working directory, the process-tree stop, and the memory total the `↳ Browser:` line shows |
 | `test-acceptance.sh` | 3-worker parallel concurrency and serial landing |
+| `test-run-all.sh` | `tests/run-all.sh`, driven against fixture roots of fake jobs: a green run, the job order, a named subset, a failing job that is named with its log while the green jobs still pass, two jobs overwriting the same tracked file at once without seeing each other, the invoking checkout left byte-identical and clean, the snapshot (untracked kept, ignored and deleted files dropped), two runs at once, cleanup of the run directory and the running job on TERM, `-j 1` and `-j 2`, the usage errors (exit 2), the scrubbed `TMUX` and `KINGPIN_*` environment with a private `TMPDIR`, and the timeout |
 | `test-agents-paths.sh` | `.agents` policy: the whole directory is ignored, nothing under it is tracked, a PRD needs a force-add, and the lint fails on a forced artifact |
 | `test-lint.sh` | the lint itself: a syntax error in a shell script or a `lib/*.mjs` module fails it by name, a suite with no CI leg fails the matrix check, a suite with no row in the table above fails by name, a fixed `sleep` before an assertion fails by name with its line and both waits (a trailing comment on the sleep still counts, while a here-document body is skipped), a `NAME=$?` line after an unguarded capture fails by name with its line and `kp_run` (the guarded `\|\| rc=$?` form, a `set +e` block and a here-document body pass), and a source file cited by line fails by name, and a `ci-ok` gate without `if: always()`, a job the gate does not need (an inline comment on the job key changes nothing), a gate with a display `name:` and a missing gate each fail by name, while a block-sequence `needs` and a commented `needs` list pass |
 
-Run one suite with `./tests/test-<name>.sh`. Run suites one at a time in a checkout: `test-lifecycle.sh`, `test-acceptance.sh` and `test-landing-lane.sh` briefly replace `bin/kingpin-send` with a stub (restored on exit), so a second suite that sends keys to a worker during that window hits the stub and fails. CI legs do not clash, since each runs in its own checkout.
+Run one suite with `./tests/test-<name>.sh`. A suite that fakes a `bin/` command calls `kp_test_private_bin` right after `kp_test_setup` and runs against a copy of `bin/` in its scratch directory, so it never writes a tracked file of the checkout. `test-lifecycle.sh`, `test-acceptance.sh` and `test-landing-lane.sh` fake `kingpin-send`, `test-watch-once.sh` fakes `kingpin-done`, and `test-watch-supervisor.sh` fakes `kingpin-wait` and `kingpin-listen`. A killed run leaves `git status` clean, and suites may overlap in one checkout. `tests/lint.sh` fails on a suite that writes `$KP_BIN`, `$KP_ROOT/bin` or `$KP_ROOT/lib` without the helper.
 
 CI (`.github/workflows/ci.yml`) runs the lint plus one matrix leg per suite on every PR and push to `main`, then the `ci-ok` aggregate, which passes only when every leg passed; `ci-ok` is the one check `main` requires once the protection command in `AGENTS.md` has run. The suites need `git`, `tmux`, `node`, `treehouse` and a git identity (the suites set one themselves). They use fake agents, so no harness binary is required, and no `lavish-axi` either: `tests/lib.sh` installs a recording stub in `kp_test_setup`, plus a `lavish-axi` shim first on `PATH` that records a real call and exits 1, so a suite never reaches the real Lavish server by omission or by unsetting `KINGPIN_LAVISH`. A suite that drives that stub on purpose declares `kp_test_expect_lavish_calls`, optionally with shell-glob patterns its recorded calls must match; a declaration that records nothing fails, and any other call, or a real call, fails the suite at `kp_test_finish` and names the arguments. A new suite needs a matrix leg and a row in the suite table above; `./tests/lint.sh` fails until both are there.

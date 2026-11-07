@@ -31,8 +31,12 @@ each task back as a visual review dossier. This file describes the repository.
 # check, and the tracked .agents artifact check
 ./tests/lint.sh
 
-# One suite at a time (two suites briefly swap bin/kingpin-send)
+# One suite (the fake kingpin-send, -wait, -listen and -done live in a private copy of bin/, so suites may overlap)
 ./tests/test-<suite>.sh
+
+# The lint and every suite, each in its own copy of the tree, a bounded number at a time
+# (-j N bounds it, job labels pick some); it never writes this checkout
+./tests/run-all.sh
 ```
 
 One check on GitHub is the merge gate: the `ci-ok` job in `.github/workflows/ci.yml` passes
