@@ -402,6 +402,28 @@ if (group === "workspace" && verb === "list") {
   out({ id: "cli:workspace:list", result: { type: "workspace_list", workspaces: workspaces() } });
   process.exit(0);
 }
+if (group === "workspace" && verb === "create") {
+  // One workspace per task with its single root pane, the layout creation uses: the
+  // answer names both, and the pane starts unlabelled until a rename gives it the
+  // task id. The label and cwd flags are accepted and not modelled; the suites assert
+  // them from the recorded argv instead.
+  if (down()) serverDown();
+  let next = 1;
+  for (const pane of allPanes()) {
+    const n = Number(String(pane.workspace_id).replace(/^w/, ""));
+    if (Number.isFinite(n) && n >= next) next = n + 1;
+  }
+  const workspaceId = "w" + next;
+  const paneId = workspaceId + ":p1";
+  const file = statePath("panes.tsv");
+  const rows = fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+  rows.push([paneId, "", 1].join("\t"));
+  fs.writeFileSync(file, rows.join("\n") + "\n");
+  out({ id: "cli:workspace:create", result: { type: "workspace_create",
+    workspace: { workspace_id: workspaceId },
+    root_pane: { pane_id: paneId } } });
+  process.exit(0);
+}
 
 if (group === "pane") {
   // Every pane verb names the server first: a stopped session answers

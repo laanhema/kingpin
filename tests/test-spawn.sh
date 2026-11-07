@@ -487,23 +487,118 @@ grep -qF 'session the only session on the server' <<< "$t21_plain" \
 "$KP_BIN/kingpin" "done" t21-outside --force >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
-# Test 22: a Herdr fleet is refused before anything is leased
-echo "=== Test 22: a Herdr spawn is refused before the lease ==="
+# Test 22: Herdr spawns, the down-session refusal, --tmux-session and the tmux override
+echo "=== Test 22: Herdr spawn and its refusals ==="
+kp_test_fake_herdr_state
+t22_session="kp-spawn-test-$$"
+t22_record() { sed -n "s/^$2=//p" "$KINGPIN_HOME/tasks/$1/task.env" 2>/dev/null || true; }
+
+# Case 1: a Herdr spawn creates a labelled pane and records the Herdr keys.
 t22_out='' t22_rc=0
-t22_out=$(KINGPIN_MUX=herdr "$KP_BIN/kingpin" spawn demo-auto --text "herdr refusal" --id t22-herdr 2>&1) || t22_rc=$?
-[ "$t22_rc" -eq 1 ] && pass "t22: KINGPIN_MUX=herdr refuses the spawn" || fail "t22: spawn exited $t22_rc: $t22_out"
-grep -qF "cannot create a Herdr worker yet (issue #204)" <<< "$t22_out" \
-  && pass "t22: the refusal names Herdr and the issue that adds it" \
-  || fail "t22: refusal: $t22_out"
-grep -qF "run with KINGPIN_MUX=tmux" <<< "$t22_out" \
-  && pass "t22: the refusal names the way back to tmux" \
-  || fail "t22: refusal: $t22_out"
-[ ! -e "$KINGPIN_HOME/tasks/t22-herdr" ] && [ ! -L "$KINGPIN_HOME/tasks/t22-herdr" ] \
+kp_run t22_out t22_rc env KINGPIN_MUX=herdr KINGPIN_HERDR_SESSION="$t22_session" \
+  "$KP_BIN/kingpin" spawn demo-auto --text "herdr spawn" --id t22-herdr
+[ "$t22_rc" -eq 0 ] \
+  && pass "t22: a Herdr spawn succeeds" \
+  || fail "t22: Herdr spawn exited $t22_rc: $t22_out $(cat "$KP_TEST_HERDR_CALLS" 2>/dev/null || true)"
+[ "$(t22_record t22-herdr MUX)" = herdr ] \
+  && pass "t22: the record names MUX=herdr" \
+  || fail "t22: record: $(cat "$KINGPIN_HOME/tasks/t22-herdr/task.env" 2>/dev/null || true)"
+[ "$(t22_record t22-herdr MUX_SESSION)" = "$t22_session" ] \
+  && pass "t22: the record names the Herdr session" \
+  || fail "t22: MUX_SESSION is '$(t22_record t22-herdr MUX_SESSION)'"
+grep -qx 'MUX_LABEL=t22-herdr' "$KINGPIN_HOME/tasks/t22-herdr/task.env" \
+  && pass "t22: the record names the pane label" \
+  || fail "t22: MUX_LABEL is missing: $(cat "$KINGPIN_HOME/tasks/t22-herdr/task.env" 2>/dev/null || true)"
+t22_target=$(t22_record t22-herdr MUX_TARGET)
+[ -n "$t22_target" ] \
+  && pass "t22: the record names the created pane" \
+  || fail "t22: MUX_TARGET is empty"
+grep -q '^TMUX_TARGET=' "$KINGPIN_HOME/tasks/t22-herdr/task.env" \
+  && fail "t22: a Herdr record carries a TMUX_TARGET" \
+  || pass "t22: a Herdr record carries no TMUX_TARGET"
+awk -F '\t' -v id="$t22_target" '$1 == id && $2 == "t22-herdr" { found = 1 } END { exit !found }' \
+  "$KP_TEST_HERDR_STATE/panes.tsv" \
+  && pass "t22: the created pane carries the task label" \
+  || fail "t22: panes: $(cat "$KP_TEST_HERDR_STATE/panes.tsv")"
+t22_off=$(awk -v s="--session $t22_session " 'index($0, s) != 1 { print }' "$KP_TEST_HERDR_CALLS" || true)
+[ -z "$t22_off" ] \
+  && pass "t22: every herdr call names the private session" \
+  || fail "t22: calls outside $t22_session: $t22_off"
+grep -qF "herdr --session $t22_session $t22_target" <<< "$t22_out" \
+  && pass "t22: the OK line names the herdr session and the pane" \
+  || fail "t22: OK line: $t22_out"
+
+t22_done_out='' t22_done_rc=0
+kp_run t22_done_out t22_done_rc env KINGPIN_MUX=herdr KINGPIN_HERDR_SESSION="$t22_session" \
+  "$KP_BIN/kingpin" "done" t22-herdr --force
+[ "$t22_done_rc" -eq 0 ] \
+  && pass "t22: kingpin done cleans a Herdr task" \
+  || fail "t22: done exited $t22_done_rc: $t22_done_out"
+[ -d "$KINGPIN_HOME/archive/t22-herdr" ] \
+  && { [ -L "$KINGPIN_HOME/tasks/t22-herdr" ] || [ ! -e "$KINGPIN_HOME/tasks/t22-herdr" ]; } \
+  && pass "t22: done archived the Herdr record" \
+  || fail "t22: archive: $(ls -ld "$KINGPIN_HOME/tasks/t22-herdr" "$KINGPIN_HOME/archive/t22-herdr" 2>&1 || true)"
+awk -F '\t' -v id="$t22_target" '$1 == id { found = 1 } END { exit !found }' \
+  "$KP_TEST_HERDR_STATE/panes.tsv" \
+  && fail "t22: done left the Herdr pane open" \
+  || pass "t22: done closed the Herdr pane"
+t22_off=$(awk -v s="--session $t22_session " 'index($0, s) != 1 { print }' "$KP_TEST_HERDR_CALLS" || true)
+[ -z "$t22_off" ] \
+  && pass "t22: every call through done names the private session" \
+  || fail "t22: calls outside $t22_session: $t22_off"
+
+# Case 2: a session that is not running refuses the spawn before the lease, and names
+# the command that starts it.
+kp_test_herdr_down
+t22_down='' t22_down_rc=0
+kp_run t22_down t22_down_rc env KINGPIN_MUX=herdr KINGPIN_HERDR_SESSION="$t22_session" \
+  "$KP_BIN/kingpin" spawn demo-auto --text "herdr down" --id t22-down
+[ "$t22_down_rc" -eq 1 ] \
+  && pass "t22: a down Herdr session refuses the spawn" \
+  || fail "t22: spawn exited $t22_down_rc: $t22_down"
+grep -qF "herdr --session $t22_session server" <<< "$t22_down" \
+  && pass "t22: the refusal names how to start the session" \
+  || fail "t22: refusal: $t22_down"
+[ ! -e "$KINGPIN_HOME/tasks/t22-down" ] && [ ! -L "$KINGPIN_HOME/tasks/t22-down" ] \
   && pass "t22: the refused spawn left no task folder" \
   || fail "t22: the refused spawn left a task folder"
-git -C "$T/proj" rev-parse --verify --quiet refs/heads/kingpin/t22-herdr >/dev/null \
+git -C "$T/proj" rev-parse --verify --quiet refs/heads/kingpin/t22-down >/dev/null \
   && fail "t22: the refused spawn created its branch" \
   || pass "t22: the refused spawn created no branch"
+kp_test_herdr_up
+
+# Case 3: --tmux-session is tmux-only and is refused by name on a Herdr fleet.
+t22_flag='' t22_flag_rc=0
+kp_run t22_flag t22_flag_rc env KINGPIN_MUX=herdr KINGPIN_HERDR_SESSION="$t22_session" \
+  "$KP_BIN/kingpin" spawn demo-auto --text "herdr flag" --id t22-flag --tmux-session tmuxy
+[ "$t22_flag_rc" -eq 1 ] \
+  && pass "t22: --tmux-session is refused on a Herdr fleet" \
+  || fail "t22: spawn exited $t22_flag_rc: $t22_flag"
+grep -qF -- "--tmux-session names a tmux session; the fleet's mux is herdr" <<< "$t22_flag" \
+  && pass "t22: the refusal names the flag and the backend" \
+  || fail "t22: refusal: $t22_flag"
+[ ! -e "$KINGPIN_HOME/tasks/t22-flag" ] \
+  && pass "t22: the flag refusal left no task folder" \
+  || fail "t22: the flag refusal left a task folder"
+
+# Case 4: KINGPIN_MUX=tmux inside a Herdr pane still spawns a tmux worker.
+t22_tmux='' t22_tmux_rc=0
+kp_run t22_tmux t22_tmux_rc env HERDR_ENV=1 HERDR_SESSION=inside KINGPIN_MUX=tmux \
+  "$KP_BIN/kingpin" spawn demo-auto --text "tmux inside herdr" --id t22-tmux
+[ "$t22_tmux_rc" -eq 0 ] \
+  && pass "t22: KINGPIN_MUX=tmux inside Herdr still spawns" \
+  || fail "t22: spawn exited $t22_tmux_rc: $t22_tmux"
+[ -n "$(t21_target t22-tmux)" ] && [ "$(t21_socket t22-tmux)" = kingpin ] \
+  && t21_window_in kingpin "$(t21_target t22-tmux)" t22-tmux \
+  && pass "t22: the override lands a tmux window on the fleet server" \
+  || fail "t22: target is socket $(t21_socket t22-tmux) session $(t21_target t22-tmux): $t22_tmux"
+grep -q '^MUX=herdr' "$KINGPIN_HOME/tasks/t22-tmux/task.env" \
+  && fail "t22: the tmux override recorded MUX=herdr" \
+  || pass "t22: the tmux override records no Herdr mux"
+grep -qx "TMUX_TARGET=kingpin:t22-tmux" "$KINGPIN_HOME/tasks/t22-tmux/task.env" \
+  && pass "t22: the tmux override records TMUX_TARGET" \
+  || fail "t22: record: $(cat "$KINGPIN_HOME/tasks/t22-tmux/task.env" 2>/dev/null || true)"
+"$KP_BIN/kingpin" "done" t22-tmux --force >/dev/null 2>&1 || true
 
 # The caller server is not kp_test_cleanup's, so this suite kills it itself.
 "$REAL_TMUX" -L caller kill-server 2>/dev/null || true

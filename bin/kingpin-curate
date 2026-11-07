@@ -27,23 +27,18 @@ GH_CMD="${KINGPIN_GH:-gh}"
 # shellcheck source=../lib/mux.sh
 . "$KP_ROOT/lib/mux.sh"
 
-# The curator is a worker: it runs on the fleet's mux, the tmux server (issue
-# #142) or a Herdr session (issue #144), and the task record names which.
+# The curator runs one window of the fleet's tmux server above the shared skills
+# checkout (issue #142). It is not mux-neutral: a Herdr fleet is refused once the
+# flags are read (issue #204), so the mux resolved here is always tmux.
 if ! mux=$(kp_mux_name); then
   exit 1
 fi
 KP_MUX=$mux
-herdr_session=''
 fleet_socket=''
 curator_session=''
 tmux_target=''
 fleet_server_started=0
 mux_label=''
-if [ "$mux" = herdr ]; then
-  herdr_session=$(kp_mux_session_name)
-  # Before a pane exists the only handle is the label the launch will use.
-  mux_label="herdr --session $herdr_session curator"
-fi
 
 die() { echo "kingpin-curate: $*" >&2; exit 1; }
 info() { echo "kingpin-curate: $*" >&2; }
@@ -336,6 +331,20 @@ else
   [ -d "$SKILLS_DIR" ] || die "skills directory $SKILLS_DIR not found"
 fi
 
+# The launch writes one window into the fleet's tmux server and resolves the
+# target through kp_tmux_resolve_target, so a Herdr selection is refused before
+# anything is collected; `--dry-run` only reads, so it still runs. The automatic
+# trigger stamps the day, so a fleet kept on Herdr gains one skip line per
+# calendar day rather than one per tick (issue #204).
+if [ "$mux" = herdr ] && [ "$DRY_RUN" -eq 0 ]; then
+  if [ "$AUTO" -eq 1 ]; then
+    kp_curate_stamp "$KP_HOME" || true
+    info "kingpin curate runs its curator on the tmux fleet; a Herdr fleet is not supported (issue #204); run with KINGPIN_MUX=tmux; the automatic run skipped"
+    exit 0
+  fi
+  die "kingpin curate runs its curator on the tmux fleet; a Herdr fleet is not supported (issue #204); run with KINGPIN_MUX=tmux"
+fi
+
 # Collect into a temporary directory: --dry-run must not touch the curator state.
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/kingpin-curate.XXXXXX")
 input_tmp="$tmp_dir/curator-input.txt"
@@ -494,18 +503,16 @@ fi
 # with nothing to do and every refusal above must never reach it.
 resolve_curator_target() {
   local target_line
-  if [ "$mux" != herdr ]; then
-    target_line=$(kp_tmux_resolve_target "$KP_HOME") || {
-      if [ "$AUTO" -eq 1 ]; then
-        info "$target_line; the automatic run skipped"
-        exit 0
-      fi
-      die "$target_line"
-    }
-    IFS=$'\t' read -r fleet_socket curator_session _ fleet_server_started <<<"$target_line"
-    tmux_target="$curator_session:curator"
-    mux_label="$(kp_tmux_label "$fleet_socket") $tmux_target"
-  fi
+  target_line=$(kp_tmux_resolve_target "$KP_HOME") || {
+    if [ "$AUTO" -eq 1 ]; then
+      info "$target_line; the automatic run skipped"
+      exit 0
+    fi
+    die "$target_line"
+  }
+  IFS=$'\t' read -r fleet_socket curator_session _ fleet_server_started <<<"$target_line"
+  tmux_target="$curator_session:curator"
+  mux_label="$(kp_tmux_label "$fleet_socket") $tmux_target"
 }
 
 # settle_curator_window
@@ -827,28 +834,23 @@ CREATED=$(kp_now_iso)
 NO_LEASE=1
 CURATOR=1
 EOF_ENV
-    if [ "$mux" = herdr ]; then
-      printf 'MUX_SESSION=%s\nMUX_LABEL=curator\n' "$herdr_session"
-    else
-      printf 'TMUX_SOCKET=%s\nTMUX_TARGET=%s\nMUX_TARGET=%s\n' "$fleet_socket" "$tmux_target" "$tmux_target"
-    fi
+    printf 'TMUX_SOCKET=%s\nTMUX_TARGET=%s\nMUX_TARGET=%s\n' "$fleet_socket" "$tmux_target" "$tmux_target"
   } > "$curator_task_dir/task.env"
   : > "$curator_task_dir/status"
   : > "$curator_task_dir/launching"
 
-  # A tmux fleet gets its session created if it is missing. A Herdr fleet does
-  # not: `herdr server` is a foreground process the operator owns (issue #165),
-  # and kp_mux_create refuses the Herdr backend in this change anyway, with the
-  # one line that names the mux and the way back (issue #144 phase E).
-  if [ "$mux" != herdr ]; then
-    KP_MUX_SOCKET=$fleet_socket kp_mux_ensure_session "$curator_session" || {
-      rm -rf "$curator_task_dir"
-      if [ "$AUTO" -eq 1 ]; then
-        info "could not reach the fleet mux for $mux_label; the automatic run skipped"
-        exit 0
-      fi
-      die "could not reach the fleet mux for $mux_label"
-    }
+  # Ensure the fleet's session: a tmux fleet gets it created when missing. The
+  # launch then goes through the same kp_mux_create a spawn uses, so a curate
+  # run creates its window like a worker's.
+  ensure_rc=0
+  KP_MUX_SOCKET=$fleet_socket kp_mux_ensure_session "$curator_session" || ensure_rc=$?
+  if [ "$ensure_rc" -ne 0 ]; then
+    rm -rf "$curator_task_dir"
+    if [ "$AUTO" -eq 1 ]; then
+      info "could not reach the fleet mux for $mux_label; the automatic run skipped"
+      exit 0
+    fi
+    die "could not reach the fleet mux for $mux_label"
   fi
   window_id=$(kp_mux_create "$curator_task_dir" "$curator_session" curator "$SKILLS_DIR" "$launch_file") || {
     # The record was written before the window existed, so without a window it is

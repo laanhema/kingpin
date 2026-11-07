@@ -131,6 +131,36 @@ kp_mux_session_name() {
   esac
 }
 
+# kp_mux_resolve_target <kp-home> [<explicit-session> <explicit-source>]
+# Resolve where a new task's terminal should go and print
+# `<mux><TAB><socket><TAB><session><TAB><source><TAB><started>`. The socket is empty
+# for Herdr and <started> is always 0 there. tmux passes kp_tmux_resolve_target's four
+# fields through unchanged, so a tmux spawn issues exactly the calls it issued before
+# this verb existed. Herdr resolves the session its own way (_kp_herdr_resolve_target)
+# and refuses a session that is not running. The explicit arguments exist for the tmux
+# `--tmux-session` flag; a Herdr fleet refuses that flag in `kingpin spawn` before it
+# calls here, so the Herdr arm ignores them rather than inventing a session. A refusal
+# prints its sentence on stdout and returns 1, so the caller can read the reason from
+# the same substitution and add its own prefix.
+kp_mux_resolve_target() {
+  local home=${1:?kp_mux_resolve_target needs a kp-home} explicit=${2:-} explicit_source=${3:-}
+  local mux line session source
+  mux=$(_kp_mux_current) || return 1
+  case $mux in
+    herdr)
+      _kp_mux_load_herdr
+      line=$(_kp_herdr_resolve_target) || { printf '%s\n' "$line"; return 1; }
+      IFS=$'\t' read -r session source <<<"$line"
+      printf 'herdr\t\t%s\t%s\t0\n' "$session" "$source"
+      ;;
+    *)
+      line=$(kp_tmux_resolve_target "$home" "$explicit" "$explicit_source") \
+        || { printf '%s\n' "$line"; return 1; }
+      printf 'tmux\t%s\n' "$line"
+      ;;
+  esac
+}
+
 # kp_mux_find <task-dir> [--no-record]
 # Resolve the task's terminal through the backend its record names. tmux calls
 # kp_window_find unchanged. Herdr matches the recorded MUX_LABEL in `pane list`
@@ -384,7 +414,8 @@ kp_mux_reachable() {
 
 # kp_mux_ensure_session <session>
 # Make sure the fleet's mux session exists. tmux creates a detached session; Herdr
-# refuses, because the server is not this project's to start.
+# refuses when the session is not running, naming how to start it, because the server
+# is not this project's to start.
 kp_mux_ensure_session() {
   local session=${1:-} mux
   [ -n "$session" ] || return 2
@@ -399,10 +430,9 @@ kp_mux_ensure_session() {
 }
 
 # kp_mux_create <task-dir> <session> <name> <cwd> <launch> [--fresh]
-# Create the task's terminal and print its target id. tmux keeps kp_window_start;
-# Herdr refuses until Herdr worker creation lands with issue #204. The readers
-# (`kingpin list`, `kingpin wait`, `kingpin brief`) already read a Herdr record, so
-# creation is the only part of the Herdr path still missing.
+# Create the task's terminal and print its target id. tmux keeps kp_window_start; Herdr
+# creates one workspace with its labelled root pane and runs the launch (see
+# lib/mux-herdr.sh).
 kp_mux_create() {
   local mux
   mux=$(_kp_mux_current) || return 1
@@ -505,16 +535,35 @@ kp_mux_parts() {
 # kp_mux_name_claimed <task-dir> <session> <name>
 # Print the id of another *live* task record that claims the same terminal and exit
 # 0; print nothing and exit 1 when the name is this task's alone. tmux keeps
-# kp_window_name_claimed. No caller reaches a Herdr record: `kingpin restore` refuses
-# one by name before it asks, and the record-only Herdr identity rule lands with
-# Herdr worker creation (#204).
+# kp_window_name_claimed. Herdr reads only records (another live `MUX=herdr` record
+# with the same session and label), so the check costs no herdr call and cannot rewrite
+# a stale target.
 kp_mux_name_claimed() {
   local task_dir=${1:?kp_mux_name_claimed needs a task dir} session=${2:?} name=${3:?} mux
+  local home env other other_mux other_session other_label
   task_dir=${task_dir%/}
   mux=$(kp_mux_record "$task_dir") || return 1
   case $mux in
-    tmux) kp_window_name_claimed "$task_dir" "$session" "$name" ;;
-    *) return 1 ;;
+    herdr)
+      _kp_mux_load_herdr
+      home=$(dirname "$(dirname "$task_dir")")
+      for env in "$home"/tasks/*/task.env; do
+        [ -f "$env" ] || continue
+        other=$(dirname "$env")
+        [ "$other" = "$task_dir" ] && continue
+        kp_task_is_live "$other" || continue
+        other_mux=$(kp_mux_record "$other" 2>/dev/null) || continue
+        [ "$other_mux" = herdr ] || continue
+        other_session=$(_kp_herdr_record_session "$other")
+        other_label=$(_kp_herdr_record_label "$other")
+        if [ "$other_session" = "$session" ] && [ "$other_label" = "$name" ]; then
+          basename "$other"
+          return 0
+        fi
+      done
+      return 1
+      ;;
+    *) kp_window_name_claimed "$task_dir" "$session" "$name" ;;
   esac
 }
 

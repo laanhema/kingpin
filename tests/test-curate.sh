@@ -515,4 +515,60 @@ tmux kill-session -t '=kingpin-workers' 2>/dev/null || true
 rm -f "$KINGPIN_HOME/config.env"
 rm -rf "$KINGPIN_HOME/tasks/curator" "$KINGPIN_HOME/tasks/test-curate-session"
 
+# Test 12: a Herdr fleet refuses (issue #204). The curator is launched into one
+# window of the fleet's tmux server and the target is resolved through
+# kp_tmux_resolve_target, so a Herdr selection has no target to name: a manual
+# run refuses with the named cause and leaves nothing behind, and the automatic
+# trigger stamps the day with one skip line instead of a line on every tick.
+echo "=== Test 12: a Herdr fleet refuses ==="
+finish_curator_record
+mkdir -p "$KINGPIN_HOME/tasks/test-curate-herdr"
+echo "Herdr refusal critique" > "$KINGPIN_HOME/tasks/test-curate-herdr/critique"
+rm -f "$KINGPIN_HOME/curator/last-run"
+export KINGPIN_CURATOR_CMD="$T/fake-curator-sleep"
+
+herdr_refusal='' herdr_refusal_rc=0
+kp_run herdr_refusal herdr_refusal_rc env KINGPIN_MUX=herdr KINGPIN_CURATOR_AUTO=1 \
+  "$KP_BIN/kingpin" curate
+[ "$herdr_refusal_rc" -eq 1 ] \
+  && pass "t12: a manual run on a Herdr fleet exits 1" \
+  || fail "t12: manual curate exit=$herdr_refusal_rc: $herdr_refusal"
+echo "$herdr_refusal" | grep -qF "a Herdr fleet is not supported (issue #204)" \
+  && pass "t12: the refusal names the fleet and issue #204" \
+  || fail "t12: refusal wording: $herdr_refusal"
+echo "$herdr_refusal" | grep -qF "KINGPIN_MUX=tmux" \
+  && pass "t12: the refusal names the way back" \
+  || fail "t12: refusal missing the remedy: $herdr_refusal"
+[ ! -d "$KINGPIN_HOME/tasks/curator" ] \
+  && pass "t12: the manual run left no curator record" \
+  || fail "t12: a curator record was written: $(ls "$KINGPIN_HOME/tasks/curator" 2>/dev/null)"
+[ ! -f "$KINGPIN_HOME/curator/last-run" ] \
+  && pass "t12: the manual run stamped nothing" \
+  || fail "t12: the manual run claimed the day: $(cat "$KINGPIN_HOME/curator/last-run" 2>/dev/null)"
+[ -f "$KINGPIN_HOME/tasks/test-curate-herdr/critique" ] \
+  && pass "t12: the pending critique is untouched" \
+  || fail "t12: the critique was consumed"
+
+herdr_auto='' herdr_auto_rc=0
+kp_run herdr_auto herdr_auto_rc env KINGPIN_MUX=herdr KINGPIN_CURATOR_AUTO=1 \
+  "$KP_BIN/kingpin" curate --auto
+[ "$herdr_auto_rc" -eq 0 ] \
+  && pass "t12: the automatic trigger exits 0 on a Herdr fleet" \
+  || fail "t12: --auto exit=$herdr_auto_rc: $herdr_auto"
+echo "$herdr_auto" | grep -qF "a Herdr fleet is not supported (issue #204)" \
+  && pass "t12: the skip line names the refusal" \
+  || fail "t12: skip line wording: $herdr_auto"
+[ -f "$KINGPIN_HOME/curator/last-run" ] \
+  && [ "$(sed -n 2p "$KINGPIN_HOME/curator/last-run")" = "$(date +%F)" ] \
+  && pass "t12: the automatic trigger stamped the day" \
+  || fail "t12: --auto did not stamp the day: $(cat "$KINGPIN_HOME/curator/last-run" 2>/dev/null)"
+[ ! -d "$KINGPIN_HOME/tasks/curator" ] \
+  && pass "t12: the automatic run left no curator record" \
+  || fail "t12: --auto wrote a curator record"
+tmux has-session -t '=kingpin' 2>/dev/null \
+  && fail "t12: the refusal started the fleet's tmux server" \
+  || pass "t12: no fleet session was started"
+
+rm -rf "$KINGPIN_HOME/tasks/test-curate-herdr" "$KINGPIN_HOME/curator/last-run"
+
 kp_test_finish CURATE

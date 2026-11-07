@@ -146,6 +146,16 @@ _kp_herdr_record_label() {
   printf '%s\n' "$label"
 }
 
+# _kp_herdr_labeled_panes <label>
+# Print the ids of the panes in the resolved session whose label is exactly <label>.
+# One rule for the finder and for creation, so a window can never be judged by a
+# looser match than the one that created it.
+_kp_herdr_labeled_panes() {
+  local label=${1:?} panes
+  panes=$(_kp_herdr pane list 2>/dev/null) || return 1
+  printf '%s\n' "$panes" | _kp_herdr_pane_pairs | awk -F '\t' -v want="$label" '$2 == want { print $1 }'
+}
+
 # _kp_herdr_find <task-dir> [no-record]
 # Resolve a task's pane. The order is: the recorded MUX_LABEL matched against
 # `pane list` (session-wide, so a cross-workspace move still resolves), then the
@@ -154,7 +164,7 @@ _kp_herdr_record_label() {
 # passes. Exit 1 with a stderr reason when neither resolves; an ambiguous label is
 # a refusal, not a guess.
 _kp_herdr_find() {
-  local task_dir=${1:-} no_record=${2:-0} env_file session label recorded panes matches count id
+  local task_dir=${1:-} no_record=${2:-0} env_file session label recorded matches count id
   [ -n "$task_dir" ] || return 1
   task_dir=${task_dir%/}
   env_file="$task_dir/task.env"
@@ -171,8 +181,7 @@ _kp_herdr_find() {
   # shellcheck disable=SC2034 # read by the caller after this returns
   KP_WINDOW_LABEL="$session:$label"
 
-  panes=$(_kp_herdr pane list 2>/dev/null) || return 1
-  matches=$(printf '%s\n' "$panes" | _kp_herdr_pane_pairs | awk -F '\t' -v want="$label" '$2 == want { print $1 }')
+  matches=$(_kp_herdr_labeled_panes "$label") || return 1
   count=$(printf '%s\n' "$matches" | grep -c . || true)
   if [ "${count:-0}" -eq 1 ]; then
     id=$matches
@@ -342,11 +351,94 @@ _kp_herdr_ensure_session() {
   return 1
 }
 
+# _kp_herdr_resolve_target
+# Print `<session><TAB><source>` for the terminal a new task should get, in the same
+# `from ...` shape kp_tmux_resolve_target prints so a spawn's OK line needs no special
+# case. The name is _kp_herdr_session_name (KINGPIN_HERDR_SESSION, then the inherited
+# HERDR_SESSION, then `kingpin`). A session that is not running is a refusal: this
+# prints the start command on stdout, so the caller reads the remedy from the same
+# substitution, and it never starts a server itself (its lifecycle belongs to the
+# operator).
+_kp_herdr_resolve_target() {
+  local session source
+  if [ -n "${KINGPIN_HERDR_SESSION:-}" ]; then
+    source='from KINGPIN_HERDR_SESSION'
+  elif [ "${HERDR_ENV:-}" = 1 ] && [ -n "${HERDR_SESSION:-}" ]; then
+    # shellcheck disable=SC2016 # the variable name is the literal source text a message prints
+    source='from the inherited Herdr session ($HERDR_SESSION)'
+  else
+    source="from the default Herdr session ('kingpin')"
+  fi
+  session=$(_kp_herdr_session_name)
+  if ! _kp_herdr_at "$session" api snapshot >/dev/null 2>&1; then
+    printf "herdr session '%s' is not running; start it with: herdr --session %s server\n" \
+      "$session" "$session"
+    return 1
+  fi
+  printf '%s\t%s\n' "$session" "$source"
+}
+
 # _kp_herdr_create <task-dir> <session> <name> <cwd> <launch> [--fresh]
-# Refused in this change: a Herdr worker cannot be created until Herdr worker
-# creation lands with issue #204. `kingpin list`, `kingpin wait` and `kingpin brief`
-# already read a Herdr record, so the readers are no longer the blocker.
+# Create the task's terminal: one workspace whose single root pane is the worker, the
+# pane labelled <name> (the key every reader resolves by) and the launch script typed
+# into its shell. `--fresh` refuses a pane that already carries the name, the way
+# kp_window_start refuses a same-named window; without it the old pane is closed first
+# (the respawn analogue), and a workspace that pane alone filled goes with it. On a
+# failure after the workspace exists the pane is closed again, so a failed spawn leaves
+# no unrecorded worker running. Prints the pane id and nothing else.
 _kp_herdr_create() {
-  printf 'herdr: creating a terminal for a task is not wired up yet (issue #144 phase E); run with KINGPIN_MUX=tmux\n' >&2
-  return 1
+  local task_dir=${1:?} session=${2:?} name=${3:?} cwd=${4:?} launch=${5:?}
+  local fresh=0 matches count existing created id
+  shift 5
+  case "${1:-}" in
+    --fresh) fresh=1 ;;
+    '') ;;
+    *) echo "kingpin: unknown option for _kp_herdr_create: $1" >&2; return 2 ;;
+  esac
+  task_dir=${task_dir%/}
+  [ -d "$cwd" ] || { echo "worktree is not a directory: $cwd" >&2; return 1; }
+  [ -f "$launch" ] || { echo "launch script is missing: $launch" >&2; return 1; }
+  # A create against a session that is not running must name how to start it, not fail
+  # later on a control call.
+  _kp_herdr_ensure_session "$session" || return 1
+
+  matches=$(KP_MUX_SESSION=$session _kp_herdr_labeled_panes "$name") \
+    || { echo "cannot list the panes in herdr session $session" >&2; return 1; }
+  count=$(printf '%s\n' "$matches" | grep -c . || true)
+  if [ "${count:-0}" -gt 1 ]; then
+    printf "pane label '%s' is ambiguous in herdr session %s: %s panes carry it\n" \
+      "$name" "$session" "$count" >&2
+    return 1
+  fi
+  if [ "${count:-0}" -eq 1 ]; then
+    existing=$matches
+    if [ "$fresh" = 1 ]; then
+      echo "a pane named $name already exists in $session ($existing)" >&2
+      return 1
+    fi
+    # Closing the only pane of a workspace removes the workspace, so a reclaimed
+    # worker's old workspace does not accumulate.
+    _kp_herdr_at "$session" pane close "$existing" >/dev/null 2>&1 \
+      || { echo "cannot close the existing pane $existing in $session" >&2; return 1; }
+  fi
+
+  created=$(_kp_herdr_at "$session" workspace create --cwd "$cwd" --label "$name" --no-focus 2>/dev/null) \
+    || { echo "cannot create a workspace in $session" >&2; return 1; }
+  id=$(printf '%s\n' "$created" | _kp_herdr_json 'v.result.root_pane.pane_id') || id=''
+  [ -n "$id" ] || { echo "cannot create a workspace in $session" >&2; return 1; }
+
+  if ! _kp_herdr_at "$session" pane rename "$id" "$name" >/dev/null 2>&1; then
+    _kp_herdr_at "$session" pane close "$id" >/dev/null 2>&1 || true
+    echo "cannot label the new pane in $session" >&2
+    return 1
+  fi
+  # `pane run` types the command into the pane's interactive shell and returns, so the
+  # shell sits above the harness; the launch script's own pid marker names the harness
+  # (see lib/launch.sh).
+  if ! _kp_herdr_at "$session" pane run "$id" "$(printf '%q' "$launch")" >/dev/null 2>&1; then
+    _kp_herdr_at "$session" pane close "$id" >/dev/null 2>&1 || true
+    echo "cannot run the launch in the new pane of $session" >&2
+    return 1
+  fi
+  printf '%s\n' "$id"
 }

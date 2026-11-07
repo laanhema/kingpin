@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Start one worker for one task: lease a worktree, open a tmux window there,
-# and launch the chosen harness (claude, agy, opencode, pi, codex) with the
-# worker preamble and the turn-end Stop hook.
+# Start one worker for one task: lease a worktree, open a worker terminal (a tmux
+# window or a Herdr pane), and launch the chosen harness (claude, agy, opencode, pi,
+# codex) with the worker preamble and the turn-end Stop hook.
 #
 # Usage: kingpin-spawn <project> (--issue <n> | --text <request>) [--mode review|auto] [--id <task-id>] [--harness claude|agy|opencode|pi|codex] [--tmux-session <name>]
 #   --issue    an existing GitHub issue: the worker runs /issue-flow (review) or /do (auto)
@@ -24,6 +24,10 @@
 # one attached session, are refused with their names; only a server with no session at
 # all gets a `kingpin` session, and the spawn says so. The success line names the
 # chosen session and where it came from.
+# A Herdr fleet resolves its own target instead (lib/mux.sh): the session is
+# KINGPIN_HERDR_SESSION, then the inherited HERDR_SESSION, then `kingpin`, and it must
+# already be running. `--tmux-session` is refused by name there, and a
+# KINGPIN_TMUX_SESSION from a shared shell config is ignored with one note.
 #
 # Default harness, first match wins: --harness > project HARNESS (only if set in
 # the project env) > the harness recorded by `kingpin lock acquire` for the live
@@ -138,7 +142,11 @@ esac
 harness_cmd=$(kp_harness_command "$harness") || die "unsupported harness: $harness (must be claude, agy, opencode, pi, or codex)"
 harness_bin=${harness_cmd%% *}
 
-for tool in git tmux treehouse node "$harness_bin"; do
+# A worker's terminal is reached through lib/mux.sh, which reads the fleet's backend
+# from KINGPIN_MUX. The backend's own binary must be present, or the spawn would fail
+# after it leased a worktree; `git`, `treehouse` and `node` are needed whatever the mux.
+fleet_mux=$(kp_mux_name) || die "cannot resolve the fleet's mux (reason above)"
+for tool in git "$fleet_mux" treehouse node "$harness_bin"; do
   command -v "$tool" >/dev/null || die "missing command: $tool"
 done
 
@@ -163,18 +171,21 @@ if [ -z "$id" ]; then
 fi
 [[ $id =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "task id must be lowercase letters, digits, and dashes: $id"
 
-# A worker's terminal is reached through lib/mux.sh, which reads the fleet's backend
-# from KINGPIN_MUX. Only tmux creation is wired up so far: a Herdr fleet is refused
-# here, before the target is resolved or anything leased, because a spawn that cannot
-# create a terminal must cost no worktree and start no server. #204 replaces this
-# refusal with the Herdr placement itself (a `MUX=` record plus its `MUX_*` keys) and
-# with the target resolution this file still asks lib/tmux.sh for.
-fleet_mux=$(kp_mux_name) || die "cannot resolve the fleet's mux (reason above)"
-[ "$fleet_mux" = tmux ] \
-  || die "refusing to spawn: the fleet's mux is $fleet_mux, and kingpin spawn cannot create a Herdr worker yet (issue #204); run with KINGPIN_MUX=tmux"
+# A Herdr fleet refuses the tmux-only session flag by name rather than silently
+# ignoring it, and ignores a KINGPIN_TMUX_SESSION from a shared shell config with one
+# note: KINGPIN_HERDR_SESSION is the Herdr spelling.
+if [ "$fleet_mux" = herdr ]; then
+  [ -z "$session_cli" ] \
+    || die "--tmux-session names a tmux session; the fleet's mux is herdr (name the Herdr session with KINGPIN_HERDR_SESSION)"
+  [ -z "${KINGPIN_TMUX_SESSION:-}" ] \
+    || printf 'kingpin-spawn: KINGPIN_TMUX_SESSION is set but ignored: the fleet mux is herdr, whose session is named by KINGPIN_HERDR_SESSION\n' >&2
+fi
 
-# Resolve the tmux target before anything is leased or written, so a refusal (an
-# unknown target, or an ambiguous server) costs no worktree and leaves no record.
+# Resolve the terminal target before anything is leased or written, so a refusal (an
+# unknown target, an ambiguous tmux server or a Herdr session that is not running)
+# costs no worktree and leaves no record. The mux resolves its own half: tmux keeps
+# kp_tmux_resolve_target's four fields, Herdr names the session and leaves the socket
+# empty.
 session_target=${session_cli:-${KINGPIN_TMUX_SESSION:-}}
 session_source=''
 if [ -n "$session_cli" ]; then
@@ -182,9 +193,18 @@ if [ -n "$session_cli" ]; then
 elif [ -n "${KINGPIN_TMUX_SESSION:-}" ]; then
   session_source='KINGPIN_TMUX_SESSION'
 fi
-target_line=$(kp_tmux_resolve_target "$KP_HOME" "$session_target" "$session_source") \
+target_line=$(kp_mux_resolve_target "$KP_HOME" "$session_target" "$session_source") \
   || die "$target_line"
-IFS=$'\t' read -r fleet_socket target_session target_session_source fleet_server_started <<<"$target_line"
+# `read` with a tab IFS collapses the empty socket field a Herdr target prints, so the
+# five fields are taken by position instead.
+target_mux=$(printf '%s\n' "$target_line" | cut -f1)
+fleet_socket=$(printf '%s\n' "$target_line" | cut -f2)
+target_session=$(printf '%s\n' "$target_line" | cut -f3)
+target_session_source=$(printf '%s\n' "$target_line" | cut -f4)
+fleet_server_started=$(printf '%s\n' "$target_line" | cut -f5)
+[ -n "$fleet_server_started" ] || fleet_server_started=0
+[ "$target_mux" = "$fleet_mux" ] \
+  || die "the target resolver chose $target_mux while the fleet's mux is $fleet_mux"
 
 task_dir=$KP_HOME/tasks/$id
 mkdir -p "$KP_HOME/tasks"
@@ -343,8 +363,10 @@ printf '%s\n' "$prompt" > "$task_dir/prompt.txt"
 # the worktree.
 : > "$task_dir/status"
 
-kp_tmux_has_session "$fleet_socket" "$target_session" \
-  || die "the session $target_session is gone from the tmux server '$fleet_socket' ($(kp_tmux_label "$fleet_socket"))"
+if [ "$fleet_mux" = tmux ]; then
+  kp_tmux_has_session "$fleet_socket" "$target_session" \
+    || die "the session $target_session is gone from the tmux server '$fleet_socket' ($(kp_tmux_label "$fleet_socket"))"
+fi
 
 # kingpin-wait does not report "exited" for a task with a fresh marker: task.env
 # exists before the window does. Removed once the window ID is recorded.
@@ -355,7 +377,26 @@ kp_tmux_has_session "$fleet_socket" "$target_session" \
 # that died at launch stuck at (pending). Stop instead.
 created=$(kp_now_iso) || die "cannot read the current time (date +%Y-%m-%dT%H:%M:%S%z failed)"
 
-cat > "$task_dir/task.env" <<EOF
+if [ "$fleet_mux" = herdr ]; then
+  # A Herdr record names its backend before creation, because kp_mux_record_id reads
+  # `MUX=` to decide where the new pane id goes; MUX_TARGET arrives after the create.
+  cat > "$task_dir/task.env" <<EOF
+TASK_ID=$id
+PROJECT=$project
+PROJECT_PATH=$PROJECT_PATH
+HARNESS=$harness
+ISSUE=$issue
+MODE=$mode
+BRANCH=$branch
+BASE_SHA=$base_sha
+WORKTREE=$worktree
+MUX=herdr
+MUX_SESSION=$target_session
+MUX_LABEL=$id
+CREATED=$created
+EOF
+else
+  cat > "$task_dir/task.env" <<EOF
 TASK_ID=$id
 PROJECT=$project
 PROJECT_PATH=$PROJECT_PATH
@@ -369,6 +410,7 @@ TMUX_SOCKET=$fleet_socket
 TMUX_TARGET=$target_session:$id
 CREATED=$created
 EOF
+fi
 
 # A pi launch takes its provider and model from the project env, so a restore after
 # the tmux server dies could not relaunch the same model unless the record carries the
@@ -476,20 +518,27 @@ warn_shared_excludes
 "$KP_ROOT/bin/kingpin-scope" check --harness "$harness" --worktree "$worktree" --preamble "$task_dir/preamble.md" \
   || die "refusing to launch a $harness worker: its instruction context is unsafe (files named above)"
 
-# Create the window through lib/mux.sh, which reaches lib/tmux.sh for a tmux fleet. It
-# also pins the name and records the pane pid as the task's harness identity. It reads
-# the socket from `TMUX_SOCKET` in the record this spawn just wrote, so the window lands
-# on the fleet's server (issue #142). `--fresh`: a spawn must never take over a window
-# that already carries this name. Only a window that already exists is refused, and the
-# id it would have used is the one kp_mux_record_id then writes.
+# Create the terminal through lib/mux.sh: a tmux window on the socket the record names
+# (issue #142), or a Herdr workspace whose root pane carries the task id. It also pins
+# the name, and on tmux records the pane pid as the task's harness identity (the Herdr
+# launch script writes its own pid, see lib/launch.sh). `--fresh`: a spawn must never
+# take over a terminal that already carries this name. Only one that already exists is
+# refused, and the id it would have used is the one kp_mux_record_id then writes.
 window_id=$(kp_mux_create "$task_dir" "$target_session" "$id" "$worktree" "$task_dir/launch.sh" --fresh) \
-  || die "cannot start the worker window in $target_session"
+  || die "cannot start the worker terminal in $target_session"
 kp_mux_record_id "$task_dir" "$window_id" \
-  || die "cannot record the window id $window_id in $task_dir/task.env"
+  || die "cannot record the terminal id $window_id in $task_dir/task.env"
 rm -f "$task_dir/launching"
 launched=1
 
 server_note=''
-[ "$fleet_server_started" = 0 ] \
-  || server_note=", started the tmux server on socket '$fleet_socket' (it was not running)"
-echo "OK: spawned $id ($harness) in $worktree on $branch ($(kp_tmux_label "$fleet_socket") $target_session:$id, session $target_session_source, window $window_id, mode $mode$server_note)"
+place='window'
+target_form="$target_session:$id"
+if [ "$fleet_mux" = herdr ]; then
+  place='pane'
+  target_form=$window_id
+else
+  [ "$fleet_server_started" = 0 ] \
+    || server_note=", started the tmux server on socket '$fleet_socket' (it was not running)"
+fi
+echo "OK: spawned $id ($harness) in $worktree on $branch ($(kp_mux_label "$task_dir") $target_form, session $target_session_source, $place $window_id, mode $mode$server_note)"

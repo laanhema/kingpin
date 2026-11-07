@@ -397,7 +397,7 @@ d=$(mk_fixture t-dead "$T/fixture-wt"); printf 'needs-input: which option?\n' > 
 list_out=$("$KP_BIN/kingpin" list 2>/dev/null)
 row=$(grep '^t-dead ' <<< "$list_out" || true)
 grep -q 'DEAD' <<< "$row" && pass "a task whose window is gone shows DEAD" || fail "t-dead row: $row"
-grep -q '^Fleet: 1 live task(s) have no live window; run kingpin restore$' <<< "$list_out" \
+grep -q '^Fleet: 1 live task(s) have no live terminal; run kingpin restore$' <<< "$list_out" \
   && pass "list prints the restore hint" \
   || fail "no restore hint in: $list_out"
 rm -rf "$d"
@@ -429,7 +429,7 @@ row=$(grep '^k-mismatch ' <<< "$list_out" || true)
 grep -q 'DEAD' <<< "$row" && pass "a harness.pid outside the pane shows DEAD" || fail "k-mismatch row: $row"
 row=$(grep '^k-statusless ' <<< "$list_out" || true)
 grep -q 'DEAD' <<< "$row" && pass "a live record with no status file still shows DEAD" || fail "k-statusless row: $row"
-grep -q '^Fleet: 3 live task(s) have no live window; run kingpin restore$' <<< "$list_out" \
+grep -q '^Fleet: 3 live task(s) have no live terminal; run kingpin restore$' <<< "$list_out" \
   && pass "every dead record is counted in the restore hint" \
   || fail "restore hint in: $list_out"
 tmux kill-window -t 'kingpin:=k-legacy' 2>/dev/null || true
@@ -696,26 +696,89 @@ echo "$t_truncated_out" | grep -qF "did not report its sessions" && fail "the OK
 remove_live_fixture "$d" 'kingpin:=t-truncated'
 
 # ---------------------------------------------------------------------------
-# Test 22: a Herdr record is refused by name, before the tmux fields it lacks
-echo "=== Test 22: restore refuses a Herdr record by name ==="
-d="$KINGPIN_HOME/tasks/t-herdr"
+# Test 22: a Herdr record is restored on the fake, and a missing MUX_SESSION refuses
+echo "=== Test 22: restore recreates a Herdr worker ==="
+# The spawn needs the real treehouse to lease a worktree; test 21 left the stub on PATH.
+rm -f "$T/bin/treehouse"
+kp_test_fake_herdr_state
+t_herdr_session="kp-restore-test-$$"
+t_herdr_out='' t_herdr_rc=0
+kp_run t_herdr_out t_herdr_rc env KINGPIN_MUX=herdr KINGPIN_HERDR_SESSION="$t_herdr_session" \
+  "$KP_BIN/kingpin-spawn" demo-auto --issue 149 --id t-herdr --harness agy
+[ "$t_herdr_rc" -eq 0 ] \
+  && pass "a Herdr task spawns for the restore case" \
+  || fail "Herdr spawn exited $t_herdr_rc: $t_herdr_out"
+t_herdr="$KINGPIN_HOME/tasks/t-herdr"
+t_herdr_target=$(env_get "$t_herdr/task.env" MUX_TARGET)
+[ -n "$t_herdr_target" ] \
+  && pass "the Herdr record names its pane" \
+  || fail "MUX_TARGET missing: $(cat "$t_herdr/task.env" 2>/dev/null || true)"
+grep -qx 'MUX=herdr' "$t_herdr/task.env" \
+  && pass "the spawn recorded MUX=herdr" \
+  || fail "record: $(cat "$t_herdr/task.env")"
+# A decoy pane keeps the restored workspace from reusing the removed id, so the new
+# MUX_TARGET really is new.
+kp_test_herdr_pane w5:p1 decoy 1
+kp_test_herdr_pane_remove "$t_herdr_target"
+
+t_herdr_dry='' t_herdr_dry_rc=0
+kp_run t_herdr_dry t_herdr_dry_rc env KINGPIN_MUX=herdr KINGPIN_HERDR_SESSION="$t_herdr_session" \
+  "$KP_BIN/kingpin" restore t-herdr --dry-run
+[ "$t_herdr_dry_rc" -eq 0 ] \
+  && grep -qF "would restore t-herdr (agy) in $t_herdr_session:t-herdr" <<< "$t_herdr_dry" \
+  && pass "--dry-run prints the planned Herdr restore" \
+  || fail "dry run exited $t_herdr_dry_rc: $t_herdr_dry"
+[ "$(env_get "$t_herdr/task.env" MUX_TARGET)" = "$t_herdr_target" ] \
+  && pass "--dry-run leaves the Herdr record untouched" \
+  || fail "--dry-run rewrote MUX_TARGET"
+
+t_herdr_restore='' t_herdr_restore_rc=0
+kp_run t_herdr_restore t_herdr_restore_rc env KINGPIN_MUX=herdr KINGPIN_HERDR_SESSION="$t_herdr_session" \
+  "$KP_BIN/kingpin" restore t-herdr
+[ "$t_herdr_restore_rc" -eq 0 ] \
+  && pass "restore exits 0 for a Herdr record" \
+  || fail "restore exited $t_herdr_restore_rc: $t_herdr_restore"
+t_herdr_new=$(env_get "$t_herdr/task.env" MUX_TARGET)
+[ -n "$t_herdr_new" ] && [ "$t_herdr_new" != "$t_herdr_target" ] \
+  && pass "restore records the new pane ($t_herdr_target -> $t_herdr_new)" \
+  || fail "MUX_TARGET is '$t_herdr_new' (was '$t_herdr_target'): $t_herdr_restore"
+awk -F '\t' -v id="$t_herdr_new" '$1 == id && $2 == "t-herdr" { found = 1 } END { exit !found }' \
+  "$KP_TEST_HERDR_STATE/panes.tsv" \
+  && pass "the recreated pane carries the task label" \
+  || fail "panes: $(cat "$KP_TEST_HERDR_STATE/panes.tsv")"
+grep -qF 'Your worker terminal is gone. Kingpin recreated it' "$t_herdr/resume-prompt.txt" \
+  && pass "the resume brief is backend-neutral" \
+  || fail "resume brief: $(cat "$t_herdr/resume-prompt.txt" 2>/dev/null || true)"
+grep -qF "in $t_herdr_session:t-herdr ($t_herdr_new)" <<< "$t_herdr_restore" \
+  && pass "the OK line names the Herdr session, label and pane" \
+  || fail "OK line: $t_herdr_restore"
+
+# A Herdr record that cannot name its session is refused by field, before anything is
+# written, and the refusal does not name a tmux field the record never carries.
+d="$KINGPIN_HOME/tasks/t-herdr-nosession"
 mkdir -p "$d"
-# The record names Herdr and carries no TMUX_TARGET at all, so the refusal must name the
-# mux rather than the tmux field it does not have.
-printf 'TASK_ID=t-herdr\nPROJECT=demo-auto\nPROJECT_PATH=%s\nHARNESS=agy\nMODE=review\nWORKTREE=%s\nMUX=herdr\nMUX_SESSION=kp144\nMUX_TARGET=w1:p7\nMUX_LABEL=t-herdr\n' \
-  "$T/proj" "$T/no-herdr-worktree" > "$d/task.env"
-printf 'issue: #203\n' > "$d/status"
-t_herdr_before=$(snapshot "$d")
-t_herdr_rc=0
-t_herdr_err=$("$KP_BIN/kingpin" restore t-herdr --dry-run 2>&1 >/dev/null) || t_herdr_rc=$?
-[ "$t_herdr_rc" -eq 1 ] && pass "a Herdr record is refused even by --dry-run" || fail "restore exited $t_herdr_rc: $t_herdr_err"
-grep -q "refused t-herdr:" <<< "$t_herdr_err" && pass "the refusal names the task" || fail "stderr: $t_herdr_err"
-grep -qF "the record names the herdr mux" <<< "$t_herdr_err" && pass "the refusal names the mux" || fail "stderr: $t_herdr_err"
-grep -qF "issue #204" <<< "$t_herdr_err" && pass "the refusal names the change that adds Herdr creation" || fail "stderr: $t_herdr_err"
-grep -qF "TMUX_TARGET missing" <<< "$t_herdr_err" && fail "the refusal named the missing tmux field instead: $t_herdr_err" || pass "the refusal comes before the tmux field requirement"
-window_named t-herdr && fail "the refused Herdr record created a window" || pass "no window was created"
-[ "$(snapshot "$d")" = "$t_herdr_before" ] && pass "the Herdr record is untouched" || fail "the refusal changed the task folder"
+sed '/^MUX_SESSION=/d' "$t_herdr/task.env" > "$d/task.env"
+printf 'issue: #149\n' > "$d/status"
+t_nosess='' t_nosess_rc=0
+kp_run t_nosess t_nosess_rc env KINGPIN_MUX=herdr KINGPIN_HERDR_SESSION="$t_herdr_session" \
+  "$KP_BIN/kingpin" restore t-herdr-nosession --dry-run
+[ "$t_nosess_rc" -eq 1 ] \
+  && pass "a Herdr record with no MUX_SESSION is refused" \
+  || fail "restore exited $t_nosess_rc: $t_nosess"
+grep -qF "MUX_SESSION missing in" <<< "$t_nosess" \
+  && pass "the refusal names the missing field" \
+  || fail "stderr: $t_nosess"
+grep -qF "TMUX_TARGET missing" <<< "$t_nosess" \
+  && fail "the refusal named a tmux field instead: $t_nosess" \
+  || pass "the refusal comes before the tmux fields"
 rm -rf "$d"
+
+t_herdr_done='' t_herdr_done_rc=0
+kp_run t_herdr_done t_herdr_done_rc env KINGPIN_MUX=herdr KINGPIN_HERDR_SESSION="$t_herdr_session" \
+  "$KP_BIN/kingpin" "done" t-herdr --force
+[ "$t_herdr_done_rc" -eq 0 ] \
+  && pass "kingpin done cleans the restored Herdr task" \
+  || fail "done exited $t_herdr_done_rc: $t_herdr_done"
 
 # ---------------------------------------------------------------------------
 

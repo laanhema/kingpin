@@ -198,6 +198,15 @@ kp_curate_window_state() {
     herdr)
       KP_MUX=$mux
       [ -n "$session" ] || session=$(kp_mux_session_name)
+      # The tmux-shaped fallback from kp_curate_window_label (`kingpin:curator`)
+      # is never a Herdr pane id, so a Herdr record without MUX_TARGET has no
+      # recorded terminal to read: report `none` instead of asking Herdr about
+      # another backend's target (issue #204). A record's own MUX_TARGET is a
+      # pane id and passes through.
+      case $target in
+        [wW][0-9]*:p[0-9]*) : ;;
+        *) printf 'none\n'; return 0 ;;
+      esac
       ;;
     tmux)
       KP_MUX=$mux

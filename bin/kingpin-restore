@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-# Bring a live task's window back after the tmux server dies.
+# Bring a live task's terminal back after it goes away: a tmux server that dies takes
+# every window with it, and a Herdr pane can be closed on its own.
 #
-# A tmux server that dies takes every worker window with it. The task records still
-# say what the worker last reported, but nothing is running, and tmux window ids
-# restart at @0, so a reader that trusts a recorded id can reach a stranger's pane.
-# This command recreates or reclaims one window per live task, in the task's own
-# worktree and on its own branch, launches the recorded harness through the same
-# lib/launch.sh a spawn uses, and hands it a resume brief that says where the work
-# stands. A dead window is not a dead worker: the harness may still hold the task's
+# The task records still say what the worker last reported, but nothing is running, and
+# tmux window ids restart at @0, so a reader that trusts a recorded id can reach a
+# stranger's pane. This command recreates or reclaims one terminal per live task, in the
+# task's own worktree and on its own branch, launches the recorded harness through the
+# same lib/launch.sh a spawn uses, and hands it a resume brief that says where the work
+# stands. A dead terminal is not a dead worker: the harness may still hold the task's
 # conversation in its own server, so the command resumes the session the task already
 # had rather than starting a second one beside it. It refuses when resuming would leave
 # a second live session, and says in its `OK:` line when it starts a fresh one because
 # the harness cannot report an existing session (issue #168). It never deletes anything:
 # a task it cannot bring back is refused by name with the reason and the remedy, and its
-# record, worktree and branch stay in place. It is a tmux command: a record that names the
-# Herdr mux is refused by name until #204 adds Herdr worker creation, and every terminal
-# verb it calls goes through lib/mux.sh.
+# record, worktree and branch stay in place. The record names the backend, and every
+# terminal verb it calls goes through lib/mux.sh.
 #
 # Usage: kingpin-restore [<task-id> ...] [--harness <name>] [--dry-run] [--force]
 #   (no ids)    restore every live task under $KINGPIN_HOME/tasks
@@ -37,11 +36,6 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 . "$KP_ROOT/lib/status.sh"
 # shellcheck source=../lib/mux.sh
 . "$KP_ROOT/lib/mux.sh"
-# Every record restore acts on is a tmux task: a Herdr record is refused by name below
-# until #204 adds Herdr worker creation. Pinning the backend once keeps a caller that
-# runs inside a Herdr pane from selecting the Herdr adapter for a tmux record.
-# shellcheck disable=SC2034 # read by lib/mux.sh's verbs
-KP_MUX=tmux
 # shellcheck source=../lib/launch.sh
 . "$KP_ROOT/lib/launch.sh"
 # shellcheck source=../lib/exclude.sh
@@ -138,7 +132,7 @@ next_step() {
     holder=$(kp_landing_holder "$KP_HOME" "$project")
   fi
   if [ -n "$holder" ] && [ "$holder" = "$id" ]; then
-    printf '%s\n' "the landing was already sent when the tmux server died: check whether the merge happened, report merged: pr=<url> if it did, otherwise say what is left, and never re-run kingpin land"
+    printf '%s\n' "the landing was already sent when the worker terminal was lost: check whether the merge happened, report merged: pr=<url> if it did, otherwise say what is left, and never re-run kingpin land"
     return 0
   fi
   case $last in
@@ -180,14 +174,14 @@ write_resume_prompt() {
   {
     printf '# Kingpin resume brief\n\n'
     if [ -n "$resumed" ]; then
-      printf 'The tmux server died and your window went with it. Kingpin restored the window\n'
-      printf 'in the same worktree, on the same branch, with the same job, and resumed the\n'
-      printf 'session this task already had: that conversation is in front of you. This brief\n'
-      printf 'repeats the facts below from the task record.\n\n'
+      printf 'Your worker terminal is gone. Kingpin recreated it in the same worktree, on\n'
+      printf 'the same branch, with the same job, and resumed the session this task already had:\n'
+      printf 'that conversation is in front of you. This brief repeats the facts below from\n'
+      printf 'the task record.\n\n'
     else
-      printf 'The tmux server died and your window went with it. Kingpin restored the window\n'
-      printf 'in the same worktree, on the same branch, with the same job. You have no memory\n'
-      printf 'of the earlier session: this brief and the worker preamble are the context you get.\n\n'
+      printf 'Your worker terminal is gone. Kingpin recreated it in the same worktree,\n'
+      printf 'on the same branch, with the same job. You have no memory of the earlier\n'
+      printf 'session: this brief and the worker preamble are the context you get.\n\n'
     fi
     printf -- '- Task id: %s\n' "$id"
     printf -- '- Project: %s\n' "$project"
@@ -224,25 +218,34 @@ for id in ${ids[@]+"${ids[@]}"}; do
   env_file="$task_dir/task.env"
   [ -f "$env_file" ] || { refuse "$id" "task.env missing in $task_dir"; continue; }
 
-  # The record's backend decides, not the caller's environment. A Herdr record is
-  # refused before the tmux fields below are required: it carries none of them, and
-  # "TMUX_TARGET missing" would name the wrong reason.
+  # The record's backend decides, not the caller's environment, and every verb below
+  # reads it through lib/mux.sh. KP_MUX is set for this iteration, so no verb can leak
+  # the previous record's backend into this one.
   record_mux=''
   record_mux=$(kp_mux_record "$task_dir") \
     || { refuse "$id" "unreadable MUX in $env_file"; continue; }
-  if [ "$record_mux" = herdr ]; then
-    refuse "$id" "the record names the herdr mux; kingpin restore cannot create a Herdr worker yet (issue #204)"
-    continue
-  fi
+  # shellcheck disable=SC2034 # read by lib/mux.sh's verbs for this record
+  KP_MUX=$record_mux
 
   tid=$(kp_env_get "$env_file" TASK_ID)
   project=$(kp_env_get "$env_file" PROJECT)
   worktree=$(kp_env_get "$env_file" WORKTREE)
-  tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
   [ -n "$tid" ] || { refuse "$id" "TASK_ID missing in $env_file"; continue; }
   [ -n "$project" ] || { refuse "$id" "PROJECT missing in $env_file"; continue; }
   [ -n "$worktree" ] || { refuse "$id" "WORKTREE missing in $env_file"; continue; }
-  [ -n "$tmux_target" ] || { refuse "$id" "TMUX_TARGET missing in $env_file"; continue; }
+
+  # Required fields by backend. A Herdr pane in the wrong session or under the wrong
+  # label is worse than a refusal, and MUX_TARGET may be stale; a tmux record keeps
+  # requiring the target it names.
+  if [ "$record_mux" = herdr ]; then
+    mux_session=$(kp_env_get "$env_file" MUX_SESSION)
+    mux_label=$(kp_env_get "$env_file" MUX_LABEL)
+    [ -n "$mux_session" ] || { refuse "$id" "MUX_SESSION missing in $env_file"; continue; }
+    [ -n "$mux_label" ] || { refuse "$id" "MUX_LABEL missing in $env_file"; continue; }
+  else
+    tmux_target=$(kp_env_get "$env_file" TMUX_TARGET)
+    [ -n "$tmux_target" ] || { refuse "$id" "TMUX_TARGET missing in $env_file"; continue; }
+  fi
 
   if [ "$(kp_env_get "$env_file" NO_LEASE)" = "1" ]; then
     refuse "$id" "curator task; run kingpin curate"
@@ -581,28 +584,37 @@ for id in ${ids[@]+"${ids[@]}"}; do
     continue
   fi
 
-  # The recorded session died with the server; recreate it under the same name on the
-  # socket the record names (issue #142), as a spawn's resolve_tmux_session does for
-  # `kingpin`, so the record needs no other change. kp_mux_ensure_session is the exact
-  # match: a session called `kingpin-workers` is not `kingpin`, and a prefix match
-  # here would put the window in a session the record never names (issue #181).
-  fleet_socket=$(kp_tmux_socket_from_env "$env_file")
-  if ! KP_MUX_SOCKET=$fleet_socket kp_mux_ensure_session "$session"; then
-    refuse "$id" "cannot create the tmux session $session on $(kp_mux_label "$task_dir")"
-    continue
+  # The recorded terminal is gone; recreate it. A tmux session is recreated under the
+  # same name on the socket the record names (issue #142), as a spawn's
+  # resolve_tmux_session does for `kingpin`, so the record needs no other change.
+  # kp_mux_ensure_session is the exact match: a session called `kingpin-workers` is not
+  # `kingpin`, and a prefix match here would put the window in a session the record
+  # never names (issue #181). A Herdr session belongs to the operator, so this refuses
+  # one that is not running and names the command that starts it.
+  if [ "$record_mux" = herdr ]; then
+    if ! kp_mux_ensure_session "$session"; then
+      refuse "$id" "cannot reach the mux session $session ($(kp_mux_label "$task_dir"))"
+      continue
+    fi
+  else
+    fleet_socket=$(kp_tmux_socket_from_env "$env_file")
+    if ! KP_MUX_SOCKET=$fleet_socket kp_mux_ensure_session "$session"; then
+      refuse "$id" "cannot reach the mux session $session ($(kp_mux_label "$task_dir"))"
+      continue
+    fi
   fi
 
   # The marker kingpin-wait reads: a task with a fresh `launching` file is not reported
-  # exited between the window creation and the id record.
+  # exited between the terminal creation and the id record.
   : > "$task_dir/launching"
   if ! new_id=$(kp_mux_create "$task_dir" "$session" "$name" "$worktree" "$task_dir/launch.sh"); then
     rm -f "$task_dir/launching"
-    refuse "$id" "cannot start the window in $session"
+    refuse "$id" "cannot start the terminal in $session"
     continue
   fi
   if ! kp_mux_record_id "$task_dir" "$new_id"; then
     rm -f "$task_dir/launching"
-    refuse "$id" "the window exists ($new_id) but its id could not be recorded"
+    refuse "$id" "the terminal exists ($new_id) but its id could not be recorded"
     continue
   fi
   rm -f "$task_dir/launching"

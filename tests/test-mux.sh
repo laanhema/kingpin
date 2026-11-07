@@ -236,9 +236,9 @@ kp_mux_harness_live "$t7" && pass "t7: a foreground harness is live without harn
 kill "$other_pid" 2>/dev/null || true
 wait "$other_pid" 2>/dev/null || true
 
-# Test 8: record writes, the create refusal and session reachability
+# Test 8: record writes, the create path and session reachability
 # ---------------------------------------------------------------------------
-echo "--- Test 8: record id, create refusal, reachability ---"
+echo "--- Test 8: record id, create, reachability ---"
 kp_mux_record_id "$t7" w1:p5
 grep -qx 'MUX_TARGET=w1:p5' "$t7/task.env" && pass "t8: kp_mux_record_id writes MUX_TARGET" || fail "t8: record: $(cat "$t7/task.env")"
 # Both Herdr writers go through kp_env_set: a repeat of the same value leaves the record
@@ -254,13 +254,86 @@ cmp -s "$t7/task.env" "$T/t8.before" && pass "t8: recording the same label again
 cp -p "$t2_tmux/task.env" "$T/t8.tmux.before"
 kp_mux_record_label "$t2_tmux" kp-206-label
 cmp -s "$t2_tmux/task.env" "$T/t8.tmux.before" && pass "t8: a tmux record is left untouched by kp_mux_record_label" || fail "t8: a tmux record gained a label"
-rc=0
-t8_err=$(kp_mux_create "$t7" kingpin curator "$T" "$T/bin/tmux" 2>&1 >/dev/null) || rc=$?
-[ "$rc" -eq 1 ] && pass "t8: creating a Herdr terminal is refused" || fail "t8: create exited $rc"
-case "$t8_err" in
-  *"(issue #144 phase E); run with KINGPIN_MUX=tmux"*) pass "t8: the refusal names the phase and the way back" ;;
-  *) fail "t8: refusal reads: $t8_err" ;;
+
+# The create path: one workspace, its root pane labelled with the task id, and the
+# launch typed into that pane.
+t8_launch="$T/t8-launch.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$t8_launch"
+t8_cwd="$T/t8-cwd"
+mkdir -p "$t8_cwd"
+: > "$KP_TEST_HERDR_CALLS"
+t8_id='' t8_id_rc=0
+t8_id=$(KP_MUX=herdr kp_mux_create "$t7" kp144 kp-204-t8 "$t8_cwd" "$t8_launch" --fresh) || t8_id_rc=$?
+[ "$t8_id_rc" -eq 0 ] && [ -n "$t8_id" ] \
+  && pass "t8: creating a Herdr terminal prints its pane id" \
+  || fail "t8: create exited $t8_id_rc with '$t8_id': $(cat "$KP_TEST_HERDR_CALLS")"
+log_has "--session kp144 workspace create --cwd $t8_cwd --label kp-204-t8 --no-focus" \
+  && pass "t8: create asks for one workspace, labelled with the task id" \
+  || fail "t8: create argv: $(cat "$KP_TEST_HERDR_CALLS")"
+log_has "--session kp144 pane rename $t8_id kp-204-t8" \
+  && pass "t8: create renames the root pane to the task id" \
+  || fail "t8: rename argv: $(cat "$KP_TEST_HERDR_CALLS")"
+log_has "--session kp144 pane run $t8_id $t8_launch" \
+  && pass "t8: create runs the launch script in the new pane" \
+  || fail "t8: run argv: $(cat "$KP_TEST_HERDR_CALLS")"
+[ "$(kp_mux_target_state "$t8_id")" = alive ] \
+  && pass "t8: the created pane is live" \
+  || fail "t8: the created pane '$t8_id' is not live"
+kp_mux_record_id "$t7" "$t8_id"
+grep -qx "MUX_TARGET=$t8_id" "$t7/task.env" \
+  && pass "t8: kp_mux_record_id records the created pane" \
+  || fail "t8: record after create: $(cat "$t7/task.env")"
+
+# `--fresh` refuses a pane that already carries the name, the rule kp_window_start
+# applies to a same-named window.
+t8_fresh_err='' t8_fresh_rc=0
+t8_fresh_err=$(KP_MUX=herdr kp_mux_create "$t7" kp144 kp-204-t8 "$t8_cwd" "$t8_launch" --fresh 2>&1 >/dev/null) || t8_fresh_rc=$?
+[ "$t8_fresh_rc" -eq 1 ] \
+  && pass "t8: --fresh refuses an existing labelled pane" \
+  || fail "t8: --fresh exited $t8_fresh_rc: $t8_fresh_err"
+grep -qF "a pane named kp-204-t8 already exists in kp144 ($t8_id)" <<< "$t8_fresh_err" \
+  && pass "t8: the refusal names the pane and the session" \
+  || fail "t8: refusal reads: $t8_fresh_err"
+
+# Without --fresh the old pane is closed first, the respawn analogue.
+t8_old=$t8_id
+: > "$KP_TEST_HERDR_CALLS"
+t8_new='' t8_new_rc=0
+t8_new=$(KP_MUX=herdr kp_mux_create "$t7" kp144 kp-204-t8 "$t8_cwd" "$t8_launch") || t8_new_rc=$?
+[ "$t8_new_rc" -eq 0 ] && [ -n "$t8_new" ] \
+  && pass "t8: a create without --fresh reclaims the name" \
+  || fail "t8: reclaim exited $t8_new_rc with '$t8_new': $(cat "$KP_TEST_HERDR_CALLS")"
+[ "$(grep -cFx -- "--session kp144 pane close $t8_old" "$KP_TEST_HERDR_CALLS" || true)" = "1" ] \
+  && pass "t8: the old pane is closed before the new one is created" \
+  || fail "t8: close argv: $(cat "$KP_TEST_HERDR_CALLS")"
+t8_close_line=$(grep -nxF -- "--session kp144 pane close $t8_old" "$KP_TEST_HERDR_CALLS" | cut -d: -f1 || true)
+t8_create_line=$(grep -nxF -- "--session kp144 workspace create --cwd $t8_cwd --label kp-204-t8 --no-focus" "$KP_TEST_HERDR_CALLS" | cut -d: -f1 || true)
+[ -n "$t8_close_line" ] && [ -n "$t8_create_line" ] && [ "$t8_close_line" -lt "$t8_create_line" ] \
+  && pass "t8: the close comes before the create in the call log" \
+  || fail "t8: call order: $(cat "$KP_TEST_HERDR_CALLS")"
+
+# kp_mux_resolve_target is the one target entry point a spawn uses.
+t8_rt='' t8_rt_rc=0
+t8_rt=$(KP_MUX=herdr KINGPIN_HERDR_SESSION=kp144 kp_mux_resolve_target "$T/home") || t8_rt_rc=$?
+[ "$t8_rt_rc" -eq 0 ] \
+  && [ "$(printf '%s\n' "$t8_rt" | cut -f1)" = herdr ] \
+  && [ -z "$(printf '%s\n' "$t8_rt" | cut -f2)" ] \
+  && [ "$(printf '%s\n' "$t8_rt" | cut -f3)" = kp144 ] \
+  && [ "$(printf '%s\n' "$t8_rt" | cut -f5)" = 0 ] \
+  && pass "t8: herdr resolve_target names the backend, an empty socket and the session" \
+  || fail "t8: herdr resolve_target read '$t8_rt'"
+case "$(printf '%s\n' "$t8_rt" | cut -f4)" in
+  "from KINGPIN_HERDR_SESSION") pass "t8: the herdr source names KINGPIN_HERDR_SESSION" ;;
+  *) fail "t8: herdr source: $t8_rt" ;;
 esac
+t8_rt_tmux='' t8_rt_tmux_rc=0
+t8_rt_tmux=$(KP_MUX=tmux kp_mux_resolve_target "$T/home") || t8_rt_tmux_rc=$?
+[ "$t8_rt_tmux_rc" -eq 0 ] \
+  && [ "$(printf '%s\n' "$t8_rt_tmux" | cut -f1)" = tmux ] \
+  && [ "$(printf '%s\n' "$t8_rt_tmux" | cut -f2)" = kingpin ] \
+  && [ "$(printf '%s\n' "$t8_rt_tmux" | cut -f3)" = kingpin ] \
+  && pass "t8: tmux resolve_target passes the socket and session through" \
+  || fail "t8: tmux resolve_target read '$t8_rt_tmux'"
 
 kp_test_herdr_down
 kp_mux_reachable "$t7" && fail "t8: an unreachable session read as reachable" || pass "t8: an unreachable session is not reachable"
@@ -433,6 +506,18 @@ export KINGPIN_TMUX_SOCKET=$t13_old_sock
 log_has "--session kingpin pane get w1:p8" \
   && pass "t13: the session fallback reads the record's mux, not KINGPIN_MUX" \
   || fail "t13: herdr calls: $(cat "$KP_TEST_HERDR_CALLS")"
+# A record without MUX_TARGET has no recorded terminal: the tmux-shaped window
+# fallback (`kingpin:curator`) is never a Herdr pane id, so the probe reads none
+# and asks Herdr nothing (issue #204).
+printf 'TASK_ID=curator\nMUX=herdr\nMUX_SESSION=kp144\nMUX_LABEL=curator\n' > "$t13_dir/task.env"
+: > "$KP_TEST_HERDR_CALLS"
+t13_fallback=$(KP_MUX='' kp_curate_window_state "$KINGPIN_HOME")
+[ "$t13_fallback" = "none" ] \
+  && pass "t13: a Herdr record without MUX_TARGET reads none, not a probe of the tmux fallback" \
+  || fail "t13: MUX_TARGET-less record read '$t13_fallback'"
+! grep -q "kingpin:curator" "$KP_TEST_HERDR_CALLS" \
+  && pass "t13: the tmux-shaped fallback was never sent to Herdr" \
+  || fail "t13: herdr calls: $(cat "$KP_TEST_HERDR_CALLS")"
 # L2: an unreadable MUX= is reported as unknown, never guessed as tmux.
 printf 'TASK_ID=curator\nMUX=screen\nMUX_TARGET=w1:p8\n' > "$t13_dir/task.env"
 t13_bad=$(KP_MUX='' kp_curate_window_state "$KINGPIN_HOME" 2>/dev/null)
@@ -587,8 +672,8 @@ t16_gone=$(env PATH="$T/t16-shim:$PATH" KINGPIN_HOME="$t16_home" "$KP_BIN/kingpi
   && fail "t16: wait ran tmux for a Herdr record: $(cat "$T/t16-tmux.log")" \
   || pass "t16: wait issued zero tmux commands"
 
-# A dead Herdr row is DEAD in the table, but no restore hint: the hint is a tmux
-# remedy and `kingpin restore` refuses a Herdr record by name until #204 (review M1).
+# A dead Herdr row is DEAD in the table and counted into the restore hint: `kingpin
+# restore` now recreates a Herdr pane from the record.
 : > "$T/t16-tmux.log"
 t16_dead='' t16_dead_rc=0
 t16_dead=$(env PATH="$T/t16-shim:$PATH" KINGPIN_HOME="$t16_home" "$KP_BIN/kingpin" list 2>"$T/t16-dead.err") || t16_dead_rc=$?
@@ -599,8 +684,8 @@ t16_dead=$(env PATH="$T/t16-shim:$PATH" KINGPIN_HOME="$t16_home" "$KP_BIN/kingpi
   && pass "t16: a gone Herdr pane reads DEAD" \
   || fail "t16: the dead row reads '$(printf '%s\n' "$t16_dead" | awk '$1 == "t16-list"')'"
 case "$t16_dead" in
-  *"run kingpin restore"*) fail "t16: a dead Herdr row prints the tmux restore hint: $t16_dead" ;;
-  *) pass "t16: a dead Herdr row prints no tmux restore hint" ;;
+  *"Fleet: 1 live task(s) have no live terminal; run kingpin restore"*) pass "t16: a dead Herdr row is counted into the restore hint" ;;
+  *) fail "t16: no restore hint for a dead Herdr row: $t16_dead" ;;
 esac
 [ -s "$T/t16-tmux.log" ] \
   && fail "t16: list ran tmux for a dead Herdr record: $(cat "$T/t16-tmux.log")" \
@@ -610,9 +695,18 @@ t16_brief=$(env PATH="$T/t16-shim:$PATH" KINGPIN_HOME="$t16_home" "$KP_BIN/kingp
 [ "$t16_brief_rc" -eq 0 ] \
   && pass "t16: brief exits 0 on a dead Herdr row" \
   || fail "t16: brief exited $t16_brief_rc on a dead Herdr row: $(cat "$T/t16-brief-dead.err")"
-case "$t16_brief" in
-  *"run kingpin restore"*) fail "t16: brief prints the tmux restore hint for a dead Herdr row: $t16_brief" ;;
-  *) pass "t16: brief prints no tmux restore hint for a dead Herdr row" ;;
-esac
+grep -qF "1 dead - run kingpin restore" <<< "$t16_brief" \
+  && pass "t16: brief counts the dead Herdr row and names the remedy" \
+  || fail "t16: brief: $t16_brief"
+# The supervisor's socket sweep stays tmux-only: a Herdr pane's death is a per-task event
+# and restore is the operator's call, so `watch --once` attempts no restore for it.
+t16_watch='' t16_watch_rc=0
+t16_watch=$(env PATH="$T/t16-shim:$PATH" KINGPIN_HOME="$t16_home" "$KP_BIN/kingpin-watch" --once 2>&1) || t16_watch_rc=$?
+[ "$t16_watch_rc" -eq 0 ] \
+  && pass "t16: watch --once runs with a dead Herdr row" \
+  || fail "t16: watch --once exited $t16_watch_rc: $t16_watch"
+grep -q 'restoring' <<< "$t16_watch" \
+  && fail "t16: watch tried to restore a Herdr record: $t16_watch" \
+  || pass "t16: watch attempts no restore for a Herdr record"
 
 kp_test_finish MUX
