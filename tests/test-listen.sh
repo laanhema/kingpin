@@ -591,6 +591,10 @@ for _ in $(seq 1 60); do
 done
 n=$(grep -cF "$ans_pointer" "$T/mock-lavish.log" || true)
 [ "$n" = "1" ] && pass "answer watcher posts one pointer reply when the capo reports" || fail "pointer replies: $n"
+# The listener replies first and appends the `answered` line to answer.done after, so the pointer
+# in the mock log does not yet mean the marker is on disk. Wait for the marker before checking it,
+# and before the kill below: a listener killed in between restarts and replies a second time.
+kp_wait_until 10 grep -q "waiting: needs-input" "$t11_ans/answer.done" || true
 grep -q "waiting: needs-input" "$t11_ans/answer.done" && pass "answer marker records the answered status line" || fail "answer marker missing the status line"
 # A restart must not repeat the pointer for the same answer.
 kill -- "-$ans_pid" 2>/dev/null || kill "$ans_pid" 2>/dev/null || true
