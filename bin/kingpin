@@ -218,10 +218,9 @@ case "$cmd" in
       task_state=$(kp_task_state "$status_file" "$liveness")
       if [ "$task_state" != none ]; then
         state=$task_state
-        # The restore hint is a tmux remedy: `kingpin restore` refuses a Herdr record by
-        # name until #204, so a dead Herdr row reads DEAD but is not counted into it.
-        if [ "$task_state" = DEAD ] \
-           && [ "$(kp_mux_record "$d" 2>/dev/null || true)" != herdr ]; then
+        # A dead terminal is dead on either backend, and `kingpin restore` recreates
+        # both, so every DEAD row is counted into the remedy line.
+        if [ "$task_state" = DEAD ]; then
           dead_count=$((dead_count + 1))
         fi
       fi
@@ -393,10 +392,10 @@ case "$cmd" in
       fi
     }
 
-    # A fleet whose windows are gone used to read as healthy. Say it plainly, and say
+    # A fleet whose terminals are gone used to read as healthy. Say it plainly, and say
     # what brings it back, before the supervisor and lock lines.
     if [ "${dead_count:-0}" -gt 0 ]; then
-      printf 'Fleet: %s live task(s) have no live window; run kingpin restore\n' "$dead_count"
+      printf 'Fleet: %s live task(s) have no live terminal; run kingpin restore\n' "$dead_count"
     fi
     print_open_dossiers
     warn_unreachable_sockets

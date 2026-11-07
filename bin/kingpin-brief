@@ -130,9 +130,9 @@ for d in ${live_dirs[@]+"${live_dirs[@]}"}; do
     fi
   fi
   state=$(kp_task_state "$d/status" "$liveness")
-  # The restore hint is a tmux remedy: `kingpin restore` refuses a Herdr record by name
-  # until #204, so a dead Herdr row reads DEAD but is not counted into it.
-  if [ "$state" = DEAD ] && [ "$(kp_mux_record "$d" 2>/dev/null || true)" != herdr ]; then
+  # A dead terminal is dead on either backend, and `kingpin restore` recreates both, so
+  # every DEAD row is counted into the remedy line.
+  if [ "$state" = DEAD ]; then
     dead=$((dead + 1))
   fi
   newest=''

@@ -246,9 +246,12 @@ codex_hook_set() {
 # before the harness's own flags (a resume's `--session <id>`, for example), so the
 # prompt stays the last argument and the harness reads it as the initial turn of the
 # session it resumed. With no extra word the generated file is byte-identical to a
-# fresh launch's, which is what keeps spawn and the suites reading one shape. Returns 1
-# with a stderr reason for the opencode tracked-config refusal, a node failure and a
-# missing pi extension.
+# fresh launch's, which is what keeps spawn and the suites reading one shape. Every
+# generated script also writes its own `$$` to `<task-dir>/harness.pid` before the
+# final `exec`; `exec` keeps the pid, so the file names the harness afterwards, which
+# is `#{pane_pid}` on a tmux window and the foreground process a Herdr pane reports.
+# Returns 1 with a stderr reason for the opencode tracked-config refusal, a node
+# failure and a missing pi extension.
 kp_harness_launch_script() {
   local task_dir=${1:?kp_harness_launch_script needs a task dir}
   local worktree=${2:?} harness=${3:?} prompt=${4:?}
@@ -269,6 +272,7 @@ kp_harness_launch_script() {
 export KINGPIN_TASK_DIR='$task_dir'
 export KINGPIN_WORKTREE='$worktree'
 export KINGPIN_ROOT='${KP_ROOT:?}'
+printf '%s\n' "\$\$" > '$task_dir/harness.pid' 2>/dev/null || true
 exec ${KINGPIN_CLAUDE:-claude} ${resume_words}--append-system-prompt-file '$task_dir/preamble.md' --settings '${KP_ROOT:?}/worker/hooks.json' "\$(cat '$prompt')"
 EOF
       ;;
@@ -302,6 +306,7 @@ EOF_HOOKS
 #!/usr/bin/env bash
 export KINGPIN_TASK_DIR='$task_dir'
 export KINGPIN_ROOT='${KP_ROOT:?}'
+printf '%s\n' "\$\$" > '$task_dir/harness.pid' 2>/dev/null || true
 exec ${KINGPIN_AGY:-agy} ${resume_words}--prompt-interactive "\$(cat '$prompt')" --dangerously-skip-permissions
 EOF
       ;;
@@ -411,6 +416,7 @@ EOF_OC_PLUG
 #!/usr/bin/env bash
 export KINGPIN_TASK_DIR='$task_dir'
 export KINGPIN_ROOT='${KP_ROOT:?}'
+printf '%s\n' "\$\$" > '$task_dir/harness.pid' 2>/dev/null || true
 exec ${KINGPIN_OPENCODE:-opencode} ${resume_words}--standalone --auto --prompt "\$(cat '$prompt')"
 EOF
       ;;
@@ -434,6 +440,7 @@ EOF
         printf 'export KINGPIN_TASK_DIR=%q\n' "$task_dir"
         printf 'export KINGPIN_WORKTREE=%q\n' "$worktree"
         printf 'export KINGPIN_ROOT=%q\n' "$KP_ROOT"
+        printf "printf '%%s\\\\n' \"\$\$\" > %q 2>/dev/null || true\n" "$task_dir/harness.pid"
         printf 'exec %s' "${KINGPIN_PI:-pi}"
         printf ' %q' ${resume[@]+"${resume[@]}"} "${pi_args[@]}"
         # shellcheck disable=SC2016 # the program text belongs to the generated launch script
@@ -560,6 +567,7 @@ EOF
         # folder is already a writable root, so the worker's scratch space lives in it.
         printf 'export TMPDIR=%q\n' "$task_dir/tmp"
         printf 'mkdir -p -- %q\n' "$task_dir/tmp"
+        printf "printf '%%s\\\\n' \"\$\$\" > %q 2>/dev/null || true\n" "$task_dir/harness.pid"
         printf 'exec %s' "$codex_cmd"
         # -C: the worktree is the working root. -a never: no per-command approval prompt.
         # -s workspace-write: the Linux sandbox is the containment mechanism (issue #106,
