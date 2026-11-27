@@ -125,6 +125,7 @@ Only one supervisor runs at a time. A second `kingpin watch` refuses to start an
 | `kingpin sync` | Fast-forwards the main checkout from its upstream branch with `git pull --ff-only`, so the orchestrator never runs raw git against project files. It refuses rather than discarding, and names every untracked path it refuses to overwrite. [Details](docs/cli.md#kingpin-sync) |
 | `kingpin listen` | Keeps a Lavish listener attached to a task's review dossier (`report.html`): opens the dossier once, then polls it and routes what the reviewer does. [Details](docs/cli.md#kingpin-listen) |
 | `kingpin wait` | Prints one `<task-id> <reason>` line per fleet event that needs action. [Details](docs/cli.md#kingpin-wait) |
+| `kingpin wake` | Blocks until a worker needs the orchestrator, prints its status lines and a resume token, and exits; read-only, run as a harness background job. [Details](docs/cli.md#kingpin-wake) |
 | `kingpin ack` | Marks a task's events as seen, so `kingpin wait` reports only newer ones. [Details](docs/cli.md#kingpin-ack) |
 | `kingpin land` | Serializes project landing and triggers merge. [Details](docs/cli.md#kingpin-land) |
 | `kingpin done` | Verifies the merge, then cleans up the task's window, browser daemons and worktree lease, deletes its branches, closes the issue it names, and archives the record. [Details](docs/cli.md#kingpin-done) |

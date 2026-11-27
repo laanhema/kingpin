@@ -39,6 +39,7 @@ Commands:
   sync      Fast-forward the main checkout from its upstream (ff-only; refuses a tracked change, an untracked overwrite or a worktree)
   listen    Maintain background Lavish listener and handle review actions
   wait      Wait for fleet task events (blocking or --once)
+  wake      Block until a worker needs the orchestrator, print its status lines, and exit (read-only)
   ack       Acknowledge task events to advance seen counters
   list      Display active tasks in the terminal (--all adds finished ones)
   brief     Print one bounded fleet digest: live tasks, approvals, dossiers, lanes, queue, AFK
@@ -71,6 +72,9 @@ case "$cmd" in
     ;;
   wait)
     exec "$KP_BIN/kingpin-wait" "$@"
+    ;;
+  wake)
+    exec "$KP_BIN/kingpin-wake" "$@"
     ;;
   watch)
     exec "$KP_BIN/kingpin-watch" "$@"

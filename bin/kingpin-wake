@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# Wake the orchestrator when a worker needs it (issue #256).
+#
+# The orchestrator keeps this command running as a harness background job. It blocks
+# until a live task's status file gains a line of one of the kinds below, prints every
+# such line it found in that pass as "<task-id> <status line>", prints a resume token on
+# its last line, and exits, which is what re-invokes the orchestrator:
+#
+#   needs-input:  ready:  fixed:  failed:  waiting:  merged:  cleanup-refused:
+#
+# Every other line (issue:, approved:, feedback:, checks:, progress:, report:, a blank
+# line) moves the task's baseline without ending the wait.
+#
+# It is read-only, and that is the whole contract with `kingpin watch`, the one
+# supervisor: it writes no `seen`, `seen_line` or `seen_*` cursor, no lock and no
+# marker, creates no file or directory under $KINGPIN_HOME, and calls no command that
+# does (not kingpin-wait, whose pass runs kingpin-launch-check and kingpin-rename). The
+# supervisor dispatches the same line on its own schedule, and neither can hide the
+# line from the other. It reads status lines only: it never probes a terminal, so it
+# sources no mux library.
+#
+# The baseline is a per-task line count held in memory. Without --from, the first pass
+# takes every live task's current count, so only lines appended after the start wake
+# it. --from <token> takes the counts from the token a previous wake printed, so a line
+# appended between that wake's exit and this start is reported. A task the baseline
+# does not name is watched from its first line. A status file shorter than its baseline
+# was rewritten: its baseline drops to the new length and nothing is replayed. A task
+# that `kingpin done` archived while it was watched is read once more, so its merged:
+# line is not lost, and is then dropped. The read goes through the tasks/<id> link to
+# the archive, or, while that path is missing, to the newest archive/<id> or
+# archive/<id>.<n> directly: `kingpin done` moves the record whole before it writes the
+# link, and the link may never come.
+#
+# Usage: kingpin-wake [--timeout <seconds>] [--from <token>]
+set -euo pipefail
+
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+# shellcheck source=../lib/status.sh
+. "$(dirname "$0")/../lib/status.sh"
+
+die() { echo "kingpin-wake: $*" >&2; exit 1; }
+usage_error() { echo "kingpin-wake: $*" >&2; exit 2; }
+
+TIMEOUT=1800
+FROM=''
+HAVE_FROM=0
+# The token is the version tag and one `<id>:<count>` pair per watched task. Task ids
+# are lowercase letters, digits and dashes (kingpin-spawn refuses anything else), so the
+# token needs no quoting on a command line.
+TOKEN_RE='^w1(,[a-z0-9][a-z0-9-]*:[0-9]+)*$'
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --timeout)
+      TIMEOUT=${2:-}
+      case $TIMEOUT in
+        ''|*[!0-9]*) usage_error "--timeout needs a whole number of seconds" ;;
+      esac
+      # Base 10, so a leading zero is not read as octal by the arithmetic below.
+      TIMEOUT=$((10#$TIMEOUT))
+      shift 2 ;;
+    --from)
+      [ $# -ge 2 ] || usage_error "--from needs the token a previous wake printed"
+      FROM=$2
+      [[ $FROM =~ $TOKEN_RE ]] || usage_error "--from: not a wake token: $FROM"
+      HAVE_FROM=1
+      shift 2 ;;
+    -h|--help)
+      cat <<'USAGE'
+usage: kingpin-wake [--timeout <seconds>] [--from <token>]
+
+Blocks until a live task gains a needs-input:, ready:, fixed:, failed:, waiting:,
+merged: or cleanup-refused: status line, then prints each as "<task-id> <status line>"
+and, last, "resume: <token>". Pass the token back with --from on the next arm so a
+line appended in between is not lost. Read-only: it marks nothing seen.
+
+  --timeout <seconds>  give up after this long (default 1800)
+  --from <token>       start from the baseline a previous wake printed
+
+Exit 0: lines printed, then the resume line.
+Exit 3: the timeout passed; only the resume line is printed.
+Exit 1: the fleet directory cannot be read.
+Exit 2: bad arguments.
+USAGE
+      exit 0
+      ;;
+    *) usage_error "unknown argument $1" ;;
+  esac
+done
+
+tasks_dir="$KP_HOME/tasks"
+# A missing tasks directory is an empty fleet that a first spawn may still create: the
+# wake must not create it, so it waits for it instead.
+if [ -e "$tasks_dir" ] && { [ ! -d "$tasks_dir" ] || [ ! -r "$tasks_dir" ] || [ ! -x "$tasks_dir" ]; }; then
+  die "cannot read fleet directory $tasks_dir"
+fi
+
+# The baseline, as two parallel arrays (bash 3.2 has no associative arrays).
+IDS=()
+COUNTS=()
+EVENTS=''
+
+base_index() {
+  local id=$1 i
+  for i in "${!IDS[@]}"; do
+    [ "${IDS[$i]}" = "$id" ] && { printf '%s\n' "$i"; return 0; }
+  done
+  return 1
+}
+
+if [ "$HAVE_FROM" -eq 1 ]; then
+  IFS=',' read -ra pairs <<< "$FROM"
+  for pair in "${pairs[@]:1}"; do
+    IDS+=("${pair%%:*}")
+    COUNTS+=("$((10#${pair##*:}))")
+  done
+fi
+
+line_count() {
+  local f=$1
+  if [ -f "$f" ]; then wc -l < "$f" | tr -d ' '; else printf '0\n'; fi
+}
+
+# scan <index> <status-file>: report the waking lines past the baseline and move it.
+scan() {
+  local i=$1 file=$2 id base n line
+  id=${IDS[$i]}
+  base=${COUNTS[$i]}
+  n=$(line_count "$file")
+  if [ "$n" -lt "$base" ]; then
+    # Rewritten under the baseline: start again from its new end, replay nothing.
+    COUNTS[i]=$n
+    return 0
+  fi
+  [ "$n" -gt "$base" ] || return 0
+  # Lines base+1..n only: a line appended after the count, or a partial last line with
+  # no newline yet, belongs to the next pass.
+  while IFS= read -r line; do
+    case $line in
+      needs-input:*|ready:*|fixed:*|failed:*|waiting:*|merged:*|cleanup-refused:*)
+        EVENTS="$EVENTS$id $line"$'\n' ;;
+    esac
+  done < <(sed -n "$((base + 1)),${n}p" "$file")
+  COUNTS[i]=$n
+}
+
+# newest_archive <id>: the archive `kingpin done` moved the task to last, the highest
+# archive/<id>.<n>, else archive/<id>. Exits 1 when there is none.
+newest_archive() {
+  local id=$1 best='' best_n=0 d n
+  if [ -d "$KP_HOME/archive/$id" ]; then best="$KP_HOME/archive/$id"; best_n=1; fi
+  for d in "$KP_HOME/archive/$id".[0-9]*; do
+    [ -d "$d" ] || continue
+    n=${d##*.}
+    case $n in ''|*[!0-9]*) continue ;; esac
+    if [ "$((10#$n))" -gt "$best_n" ]; then best=$d; best_n=$((10#$n)); fi
+  done
+  [ -n "$best" ] || return 1
+  printf '%s\n' "$best"
+}
+
+# One pass over the fleet. The first pass of a run without --from only takes the
+# baseline. Prints nothing; fills EVENTS.
+FIRST=1
+pass() {
+  local dir id i archived
+  local -a keep_ids=() keep_counts=()
+  EVENTS=''
+  # A watched task that is no longer live is read once more, then dropped: through the
+  # archive link, or, when the path is missing altogether (between the move and the link
+  # inside `kingpin done`, or a link it failed to write), through its newest archive.
+  # A missing path with no archive at all is a record removed by hand.
+  for i in "${!IDS[@]}"; do
+    id=${IDS[$i]}
+    dir="$tasks_dir/$id"
+    if kp_task_is_live "$dir"; then
+      keep_ids+=("$id"); keep_counts+=("${COUNTS[$i]}")
+      continue
+    fi
+    if [ -L "$dir" ]; then
+      if archived=$(kp_task_archive_dir "$KP_HOME" "$id"); then
+        scan "$i" "$archived/status"
+      fi
+      continue
+    fi
+    if [ ! -e "$dir" ] && archived=$(newest_archive "$id"); then
+      scan "$i" "$archived/status"
+    fi
+  done
+  IDS=(${keep_ids[@]+"${keep_ids[@]}"})
+  COUNTS=(${keep_counts[@]+"${keep_counts[@]}"})
+
+  [ -d "$tasks_dir" ] || { FIRST=0; return 0; }
+  for dir in "$tasks_dir"/*; do
+    kp_task_is_live "$dir" || continue
+    id=$(basename "$dir")
+    if ! i=$(base_index "$id"); then
+      IDS+=("$id")
+      if [ "$FIRST" -eq 1 ] && [ "$HAVE_FROM" -eq 0 ]; then
+        COUNTS+=("$(line_count "$dir/status")")
+      else
+        COUNTS+=(0)
+      fi
+      i=$((${#IDS[@]} - 1))
+    fi
+    scan "$i" "$dir/status"
+  done
+  FIRST=0
+}
+
+token() {
+  local out=w1 i
+  for i in "${!IDS[@]}"; do
+    out="$out,${IDS[$i]}:${COUNTS[$i]}"
+  done
+  printf '%s\n' "$out"
+}
+
+start_time=$(date +%s)
+while true; do
+  pass
+  if [ -n "$EVENTS" ]; then
+    printf '%s' "$EVENTS"
+    printf 'resume: %s\n' "$(token)"
+    exit 0
+  fi
+  elapsed=$(( $(date +%s) - start_time ))
+  if [ "$elapsed" -ge "$TIMEOUT" ]; then
+    printf 'resume: %s\n' "$(token)"
+    exit 3
+  fi
+  step=$((TIMEOUT - elapsed))
+  [ "$step" -gt 2 ] && step=2
+  if [ -d "$tasks_dir" ] && command -v inotifywait >/dev/null 2>&1; then
+    inotifywait -q -r -e modify,create,delete,attrib,move -t "$step" "$tasks_dir" >/dev/null 2>&1 || true
+  else
+    sleep "$step"
+  fi
+done
