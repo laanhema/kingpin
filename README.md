@@ -123,7 +123,7 @@ Only one supervisor runs at a time. A second `kingpin watch` refuses to start an
 | `kingpin send` | Types the text literally into a worker's window, then presses Enter. [Details](docs/cli.md#kingpin-send) |
 | `kingpin peek` | Read-only view of a worker's terminal: the last 20 non-empty lines of its pane, scrollback included (`--lines N` changes the count). [Details](docs/cli.md#kingpin-peek) |
 | `kingpin sync` | Fast-forwards the main checkout from its upstream branch with `git pull --ff-only`, so the orchestrator never runs raw git against project files. It refuses rather than discarding, and names every untracked path it refuses to overwrite. [Details](docs/cli.md#kingpin-sync) |
-| `kingpin listen` | Keeps a Lavish listener attached to a task's review dossier (`report.html`): opens the dossier once, then polls it and routes what the reviewer does. [Details](docs/cli.md#kingpin-listen) |
+| `kingpin listen` | Keeps a Lavish listener attached to a task's review dossier (`report.html`): opens the dossier once, in a new browser tab, then polls it and routes what the reviewer does. [Details](docs/cli.md#kingpin-listen) |
 | `kingpin wait` | Prints one `<task-id> <reason>` line per fleet event that needs action. [Details](docs/cli.md#kingpin-wait) |
 | `kingpin wake` | Blocks until a worker needs the orchestrator, prints its status lines and a resume token, and exits; read-only, run as a harness background job. [Details](docs/cli.md#kingpin-wake) |
 | `kingpin ack` | Marks a task's events as seen, so `kingpin wait` reports only newer ones. [Details](docs/cli.md#kingpin-ack) |

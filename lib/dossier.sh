@@ -127,3 +127,83 @@ kp_dossier_open() {
   kp_dossier_file "$dir" >/dev/null || return 1
   [ ! -f "$dir/dossier.ended" ]
 }
+
+# The browser tab a review dossier gets once (issue #259). `bin/kingpin-listen` opens the
+# Lavish session once and records its URL in `dossier.url`; at that same once-only point
+# it hands the URL to the operator's browser through the three helpers below. Two markers
+# in the record make it once per dossier whatever re-arms the listener: `browser.opened`,
+# written after the opener was started, and `browser.skipped`, the one note a host that
+# cannot launch a browser gets. Either one makes a later call a no-op.
+
+# kp_dossier_browser_enabled <kp-home>
+# Exit 0 unless the operator turned the tab off: KINGPIN_OPEN_BROWSER, read before
+# OPEN_BROWSER in <kp-home>/config.env. `0` turns it off; unset or any other value leaves
+# it on.
+kp_dossier_browser_enabled() {
+  local home=${1:-} value=${KINGPIN_OPEN_BROWSER:-}
+  if [ -z "$value" ] && [ -n "$home" ] && [ -f "$home/config.env" ]; then
+    value=$(kp_env_get "$home/config.env" OPEN_BROWSER)
+  fi
+  [ "$value" != 0 ]
+}
+
+# kp_dossier_browser_opener
+# Print the command that opens a URL: KINGPIN_BROWSER_OPENER, then `open` on macOS, then
+# `xdg-open`. The override is one command word, the way KINGPIN_LAVISH is.
+kp_dossier_browser_opener() {
+  if [ -n "${KINGPIN_BROWSER_OPENER:-}" ]; then
+    printf '%s\n' "$KINGPIN_BROWSER_OPENER"
+    return 0
+  fi
+  case $(uname -s 2>/dev/null || true) in
+    Darwin) printf 'open\n' ;;
+    *) printf 'xdg-open\n' ;;
+  esac
+}
+
+# kp_dossier_browser_open <record-dir> <url>
+# Open <url> in a new browser tab, once per record. The opener runs detached in its own
+# session with its output in `browser.log`, so a slow or hanging opener never holds the
+# listener's poll loop or its `OK:` line, and the group stop `kingpin done` sends to the
+# listener cannot reach the browser the opener started. Off macOS a graphical session is
+# needed: when neither DISPLAY nor WAYLAND_DISPLAY is set (a systemd user unit), the
+# display variables are read from `systemctl --user show-environment`. A host with no
+# opener or no display gets one `browser.skipped` note with the reason instead. Always 0.
+kp_dossier_browser_open() {
+  local dir=${1:-} url=${2:-} opener line key value pid have_display=0 env_args=() starter=()
+  [ -n "$dir" ] && [ -d "$dir" ] && [ -n "$url" ] || return 0
+  [ -f "$dir/browser.opened" ] || [ -f "$dir/browser.skipped" ] && return 0
+  opener=$(kp_dossier_browser_opener)
+  if ! command -v "$opener" >/dev/null 2>&1; then
+    printf 'skipped: browser opener %s not found\n' "$opener" > "$dir/browser.skipped"
+    return 0
+  fi
+  if [ "$(uname -s 2>/dev/null || true)" != Darwin ]; then
+    [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ] && have_display=1
+    if [ "$have_display" -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+      while IFS= read -r line; do
+        key=${line%%=*}
+        value=${line#*=}
+        case $key in
+          DISPLAY|WAYLAND_DISPLAY|DBUS_SESSION_BUS_ADDRESS|XDG_RUNTIME_DIR) ;;
+          *) continue ;;
+        esac
+        # A variable this process already has wins over the user manager's copy.
+        [ -z "${!key:-}" ] && [ -n "$value" ] || continue
+        env_args+=("$key=$value")
+        case $key in DISPLAY|WAYLAND_DISPLAY) have_display=1 ;; esac
+      done < <(systemctl --user show-environment 2>/dev/null || true)
+    fi
+    if [ "$have_display" -eq 0 ]; then
+      printf 'skipped: no graphical session (DISPLAY and WAYLAND_DISPLAY are unset here and in systemctl --user show-environment)\n' > "$dir/browser.skipped"
+      return 0
+    fi
+  fi
+  command -v setsid >/dev/null 2>&1 && starter=(setsid)
+  ${starter[@]+"${starter[@]}"} env ${env_args[@]+"${env_args[@]}"} "$opener" "$url" \
+    > "$dir/browser.log" 2>&1 < /dev/null &
+  pid=$!
+  [ -n "$pid" ] || return 0
+  printf 'started: %s %s (pid %s)\n' "$opener" "$url" "$pid" > "$dir/browser.opened"
+  return 0
+}
