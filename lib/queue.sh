@@ -1,11 +1,11 @@
 # shellcheck shell=bash
-# Shared reader for the operator's issue-queue runner state, $KINGPIN_HOME/queue/.
-# Sourced by `kingpin brief`; it only defines functions (no `set` options, no output
-# beyond what each states, every function returns 0 unless stated).
+# Shared reader for the issue-queue runner's state, $KINGPIN_HOME/queue/.
+# Sourced by `kingpin brief` and `kingpin queue`; it only defines functions (no `set`
+# options, no output beyond what each states, every function returns 0 unless stated).
 #
-# The runner is the operator's own script, not a Kingpin command: it walks an ordered
-# issue list and spawns the next task while the fleet has a free slot. Its state sits
-# beside it in one directory, and Kingpin only reads that directory:
+# The runner is `kingpin queue` (bin/kingpin-queue), which writes this directory; this
+# file only reads it. The runner walks an ordered issue list and spawns the next task
+# while the fleet has a free slot, and keeps its state in one directory:
 #
 #   queue    the issue numbers still to spawn, one per line, in arrival order
 #   pause    while this file exists the runner idles. Its content is the runner's own
