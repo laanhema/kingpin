@@ -88,7 +88,7 @@ The loop and `--once` dispatch events and run the maintenance steps through one 
 
 ### Running it as a systemd user service
 
-The normal deployment is the `kingpin-watch` user unit shipped with the checkout at `systemd/kingpin-watch.service`. It mirrors `kingpin-queue.service`: `Type=simple`, `Restart=always`, `RestartSec=30` and `WantedBy=default.target`, so a crashed supervisor is back within 30 seconds and starts again after a reboot. Install it from the Kingpin checkout:
+The normal deployment is the `kingpin-watch` user unit shipped with the checkout at `systemd/kingpin-watch.service`. It and the [`kingpin-queue` unit](#running-the-queue-as-a-systemd-user-service) share `Type=simple`, `Restart=always`, `RestartSec=30` and `WantedBy=default.target`, so a crashed supervisor is back within 30 seconds and starts again after a reboot. Install it from the Kingpin checkout:
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -108,6 +108,80 @@ A host without systemd, or a one-off run under a supervisor of your own, still s
 ### Exit codes
 
 `--once` exits 0 after one pass, and a running supervisor exits 0 on `INT` or `TERM`. It exits 1 when a second copy is already running (naming its pid) or when the pidfile cannot be claimed, and 2 for a bad `--interval`, an unknown argument or an unknown flag.
+
+## kingpin queue
+
+**Usage:** `kingpin queue <project> [--once | --dry-run] [--repo <owner/repo>] [--tmux-session <name>]`
+
+**Flags:** `--once`, `--dry-run`, `--repo <owner/repo>`, `--tmux-session <name>`
+
+- `--once`: run one pass, print `OK: spawned #<n>` or `OK: nothing spawned (<reason>)`, and exit
+- `--dry-run`: refill the queue, print `live=<n>` and the next issue it would spawn (or `none`), name each skipped issue on stderr, and spawn nothing
+- `--repo`: the GitHub repository to read issues from; the default is the `owner/repo` the project's `origin` URL names
+- `--tmux-session`: forwarded to every `kingpin spawn` the runner starts (see [The session](#the-session))
+
+**Environment:** `KINGPIN_HOME`, `KINGPIN_QUEUE_MAX`, `KINGPIN_GH`, `KINGPIN_CURATOR_AUTO`; the `kingpin spawn` it runs reads the rest.
+
+The issue-queue runner keeps the fleet at `KINGPIN_QUEUE_MAX` workers (default 3) by spawning the next open issue of one project whenever a slot frees. Every spawn runs in review mode, so every dossier still waits for the operator. Without `--once` or `--dry-run` it runs until it is stopped, which is what the shipped user unit does.
+
+### Each pass
+
+A pass stops at the first step that says so:
+
+1. While `$KINGPIN_HOME/queue/pause` exists, the pass does nothing.
+2. A live task whose newest status line is `failed:` keeps its slot until someone decides about it, so the runner logs `stalled: <id> holds a slot` for it, at most once every ten minutes per task.
+3. When `kingpin list` shows `KINGPIN_QUEUE_MAX` or more live `kp-` tasks, the fleet is full.
+4. An idle fleet (no live task) waits up to 20 minutes for the daily curator while one is due, because the automatic curator only starts with nothing running. With `KINGPIN_CURATOR_AUTO=0` no curator ever starts, so there is no wait. A `--once` pass has no earlier pass to count from, so on an idle fleet with a curator due it reports `curator` and spawns nothing.
+5. The runner walks `queue` for the first issue worth spawning. When none is, it refills `queue` from the project's open issues once and walks again.
+6. It runs `kingpin spawn <project> --issue <n> --mode review`, logs the spawn's output, and records the issue in `started`. A spawn that fails is logged and not recorded, so the issue is tried again later.
+
+The daemon sleeps 30 seconds after a paused or full pass, 60 seconds after a curator wait or an empty walk, 20 seconds after a spawn, and 140 seconds after a failed spawn.
+
+### Which issues it skips
+
+The walk skips an issue that is listed in `started` or `skip`, an issue a live task record holds, an issue labelled `kingpin:claimed`, and an issue that is not open (logged as `drop #<n> (not open)`). A live task record holds an issue when its `task.env` has `ISSUE=<n>` or its status has a line that starts with exactly `issue: #<n>`, so `issue: #25` does not hold #255. The link `kingpin done` leaves at `tasks/<id>` after it archives a task holds nothing. A claimed or held skip is not logged, because the walk repeats every minute; `--dry-run` names each one on stderr as `skip #<n>: claimed` or `skip #<n>: held by <id>`.
+
+### The claim label
+
+A worker that files its own issue through `/create-issue` reports `issue: #<n>` only after the skill's comment, board and read-back steps, and a runner that read status lines alone could spawn a second worker for the issue in that window. So the worker puts the label `kingpin:claimed` on the issue in the `gh issue create` call itself; `worker/preamble.md` tells it to. The runner never spawns a labelled issue: the refill leaves it out of `queue`, and the walk reads the label again right before the spawn, so an issue that was queued before the label arrived is still skipped.
+
+An issue filed by hand carries no label and is picked up on the next pass. A claimed issue whose filing task failed stays claimed; release it to the next pass with `gh issue edit <n> --repo <owner/repo> --remove-label kingpin:claimed`.
+
+### State files
+
+The runner keeps its state in `$KINGPIN_HOME/queue/`, and [`kingpin brief`](#kingpin-brief) reads it for its `Queue:` line:
+
+| File | Holds |
+|---|---|
+| `queue` | the issue numbers still to walk, one per line, in arrival order |
+| `started` | the issues the runner has spawned; it never spawns one again |
+| `skip` | the issues it must never pick up; add a number by hand to park an issue |
+| `pause` | while this file exists the runner idles; remove it to resume |
+| `log` | the activity log: starts, spawns with the spawn's own output, failures, drops and stalled tasks |
+
+The runner never removes a line from `queue`. `--dry-run` still refills `queue`, because the refill is how it finds the next issue.
+
+### The session
+
+`--tmux-session <name>` is passed to every `kingpin spawn` the runner starts. Without it the spawn resolves its own target: `KINGPIN_TMUX_SESSION`, then `TMUX_SESSION` in `$KINGPIN_HOME/config.env`, then the rest of the order in [Choosing the session](#choosing-the-session). A systemd unit has no tmux client of its own, so set the session in `config.env` or with the flag when workers must land in a session you watch. The runner itself never calls tmux.
+
+### Running the queue as a systemd user service
+
+The checkout ships `systemd/kingpin-queue.service`, which shares `Type=simple`, `Restart=always`, `RestartSec=30` and `WantedBy=default.target` with the [`kingpin-watch` unit](#running-it-as-a-systemd-user-service). Its `ExecStart=` runs `kingpin queue kingpin`; change the checkout path and the project name to yours. `KINGPIN_QUEUE_MAX` is a commented line, so the default of 3 applies until you set it.
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp systemd/kingpin-queue.service ~/.config/systemd/user/
+# edit ExecStart: the checkout path and the project name
+systemctl --user daemon-reload
+systemctl --user enable --now kingpin-queue
+```
+
+A host that already runs a hand-written `kingpin-queue.service` stops and disables it before the copy (`systemctl --user disable --now kingpin-queue`), so the old runner does not keep spawning beside the new one. Then copy the shipped unit, carry over any `Environment=` line you still want, run `systemctl --user daemon-reload`, and `systemctl --user enable --now kingpin-queue`. The state in `$KINGPIN_HOME/queue/` carries over unchanged. Linger, described under the watch unit, keeps this unit running after logout too.
+
+### Exit codes
+
+`--once` exits 0 after a pass that did not fail, including one that spawned nothing, and 1 when the spawn failed. `--dry-run` exits 0. A running runner exits 0 on `INT` or `TERM`. It exits 1 for an unknown project, a project whose `PROJECT_PATH` is not a directory, or an origin that names no `owner/repo` when `--repo` is not given; and 2 for an unknown flag, a missing or second `<project>`, `--once` together with `--dry-run`, a flag with no value, or a `KINGPIN_QUEUE_MAX` that is not a positive whole number.
 
 ## kingpin spawn
 
@@ -286,10 +360,11 @@ carries the dead count and the `kingpin restore` hint.
 elsewhere, read from `$KINGPIN_HOME/supervisor.pid` and `$KINGPIN_HOME/afk`; `AFK: off`
 stands in while the switch is not armed.
 
-`Queue:` reads the issue-queue runner's own state under `$KINGPIN_HOME/queue/`: `queue`
-holds one issue number per line, and a `pause` file beside it makes the runner idle. The
-line names the pause file, because removing it is how a pause ends. Kingpin only reads
-that directory and never writes it, so a host with no queue runner prints `Queue: none`.
+`Queue:` reads the state that [`kingpin queue`](#kingpin-queue), the issue-queue runner,
+keeps under `$KINGPIN_HOME/queue/`: `queue` holds one issue number per line, and a `pause`
+file beside it makes the runner idle. The line names the pause file, because removing it
+is how a pause ends. `kingpin brief` only reads that directory and never writes it, so a
+host with no queue runner prints `Queue: none`.
 
 The table prints one row per live task. Its columns are the task id, the recorded project,
 harness and mode, the state, and the newest status line, listener notes included. The
@@ -896,7 +971,8 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 | `KINGPIN_OPENCODE` | Command `spawn` and `restore` launch for the `opencode` harness (default `opencode`). |
 | `KINGPIN_PI` | Command `spawn` and `restore` launch for the `pi` harness (default `pi`); `kingpin scope doctor` probes the same command. |
 | `KINGPIN_CODEX` | Command `spawn` and `restore` launch for the `codex` harness (default `codex`); `kingpin scope doctor --harness codex` probes the same command. |
-| `KINGPIN_GH` | `gh` command `spawn` uses to read an issue title for the task slug, `curate` uses to create, view and merge the curator's PR, and `done` uses to read and close the issue a finished task names, and `watch` and `done` use to read the check rollup of a merged pull request (default `gh`). |
+| `KINGPIN_GH` | `gh` command `spawn` uses to read an issue title for the task slug, `curate` uses to create, view and merge the curator's PR, and `done` uses to read and close the issue a finished task names, and `watch` and `done` use to read the check rollup of a merged pull request, and `queue` uses to list and read the issues it spawns (default `gh`). |
+| `KINGPIN_QUEUE_MAX` | The most live `kp-` tasks `kingpin queue` keeps; default 3. A value that is not a positive whole number exits 2. |
 | `KINGPIN_TMUX_SESSION` | tmux session that `spawn` and `curate` place the worker window in when `--tmux-session` is not given, read before `TMUX_SESSION` in `$KINGPIN_HOME/config.env`. The session must already exist on the resolved socket; an unknown name is refused with its source and the server. Unset, the spawn follows the caller's own tmux session, then uses the one attached session or the only session on the fleet server, and refuses when several are unattached or more than one is attached. |
 | `KINGPIN_SEND_DELAY` | Seconds between the literal text and the Enter key (default `0.2`). |
 | `KINGPIN_MUX` | Multiplexer the fleet creates and reads workers with: `tmux`, `herdr`, or `auto` (default). `auto` selects Herdr only inside a Herdr pane (`HERDR_ENV=1`) and tmux everywhere else; any other value is refused by name. A task record's `MUX=` line, not this variable, decides where an existing task lives. |

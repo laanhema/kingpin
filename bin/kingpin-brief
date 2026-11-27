@@ -13,7 +13,7 @@
 #     `kingpin list` calls, so the two commands cannot disagree about a record;
 #   * the supervisor and AFK lines are the ones lib/supervisor.sh and lib/afk.sh print,
 #     and the landing lanes come from lib/landing.sh;
-#   * the queue line comes from lib/queue.sh, the one reader of the operator's
+#   * the queue line comes from lib/queue.sh, the one reader of `kingpin queue`'s
 #     $KINGPIN_HOME/queue directory;
 #   * a worker's terminal is resolved through lib/mux.sh, so a record naming its own
 #     socket is probed on that server, a record naming Herdr is probed through the

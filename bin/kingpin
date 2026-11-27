@@ -30,6 +30,7 @@ Commands:
   spawn     Start a worker in a leased worktree on a background tmux window
   run       Start a worker and follow it to completion / review
   watch     Run the fleet supervisor (one per fleet; refuses a second copy)
+  queue     Keep N workers busy: spawn the next open issue when a slot frees (review mode)
   land      Land a ready worker; when its review has findings, run the fix pass first (alias: approve)
   done      Verify merge, release worktree lease, and advance queue
   restore   Bring every live task's window back after a tmux server restart
@@ -73,6 +74,9 @@ case "$cmd" in
     ;;
   watch)
     exec "$KP_BIN/kingpin-watch" "$@"
+    ;;
+  queue)
+    exec "$KP_BIN/kingpin-queue" "$@"
     ;;
   land|approve)
     exec "$KP_BIN/kingpin-land" "$@"

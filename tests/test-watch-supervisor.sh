@@ -77,7 +77,8 @@ mk_task() {
 mk_task t-a
 mk_task t-b
 
-# Test 0: the shipped user unit mirrors kingpin-queue.service and starts the daemon
+# Test 0: the shipped user unit shares its restart policy with kingpin-queue.service
+# (tests/test-queue.sh checks that one) and starts the daemon
 echo "=== Test 0: the shipped kingpin-watch user unit ==="
 unit="$KP_ROOT/systemd/kingpin-watch.service"
 [ -f "$unit" ] && pass "the unit file ships with the checkout" || fail "missing $unit"

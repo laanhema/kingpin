@@ -1,0 +1,22 @@
+[Unit]
+Description=Kingpin issue queue (kingpin queue)
+Documentation=https://github.com/laanhema/kingpin/blob/main/docs/cli.md
+After=default.target
+
+[Service]
+Type=simple
+# A user unit does not inherit the login shell's PATH. `kingpin queue` shells out to
+# gh, node and `kingpin spawn`, which reaches tmux, treehouse and a worker harness, so
+# name the usual bin directories here and add your harness's directory when it lives
+# elsewhere.
+Environment=PATH=%h/.local/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin
+# The most live kp- tasks the runner keeps. The default is 3.
+# Environment=KINGPIN_QUEUE_MAX=3
+# Change the checkout path when Kingpin is not at ~/github/kingpin, and the project
+# name to the one `kingpin init` registered.
+ExecStart=%h/github/kingpin/bin/kingpin queue kingpin
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target
