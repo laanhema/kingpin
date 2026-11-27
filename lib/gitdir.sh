@@ -18,9 +18,10 @@
 #   kp_git_dir <dir>          git directory of <dir>, as an absolute path
 #   kp_git_common_dir <dir>   common directory of <dir>, as an absolute path
 #   kp_git_path <dir> <path>  location git resolves <path> to in <dir>, as an absolute path
+#   kp_git_origin_slug <dir>  the lowercased owner/repo that <dir>'s origin URL names
 #
-# Each returns 1 and prints nothing when git cannot answer, so a caller reports the
-# failure instead of comparing two empty strings.
+# Each path reader returns 1 and prints nothing when git cannot answer, so a caller
+# reports the failure instead of comparing two empty strings.
 
 # kp_git_resolve <base> <path>
 # Prints <path> as an absolute path: a relative <path> is taken from <base>, the
@@ -70,4 +71,39 @@ kp_git_common_dir() {
 # command run in <dir> (for example `info/exclude`).
 kp_git_path() {
   kp_git_rev_parse "${1:?kp_git_path needs a directory}" --git-path "${2:?kp_git_path needs a path}"
+}
+
+# kp_git_origin_slug <dir>
+# Prints the "owner/repo" that <dir>'s origin names, lowercased so it compares with a
+# `full_name` GitHub reports. The URL is read as configured (`git config --get`), not
+# through `git remote get-url`: an `insteadOf` rewrite would otherwise report the local
+# path the remote is fetched through. Reads `scheme://host/owner/repo(.git)` and the scp
+# form `git@host:owner/repo`. Prints nothing and returns 0 when the origin names no
+# owner/repo (a plain local path, or no origin at all).
+kp_git_origin_slug() {
+  local dir=${1:?kp_git_origin_slug needs a directory} url
+  url=$(git -C "$dir" config --get remote.origin.url 2>/dev/null || true)
+  case "$url" in
+    *://*)
+      url=${url#*://}
+      case "$url" in
+        */*) url=${url#*/} ;;
+        *) return 0 ;;
+      esac
+      ;;
+    *@*:*)
+      # scp form, git@host:owner/repo
+      url=${url#*@}
+      url=${url#*:}
+      ;;
+    *) return 0 ;;
+  esac
+  url=${url%.git}
+  url=${url%/}
+  case "$url" in
+    */*/*) return 0 ;;
+    */*) ;;
+    *) return 0 ;;
+  esac
+  printf '%s\n' "$url" | tr '[:upper:]' '[:lower:]'
 }

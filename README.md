@@ -114,6 +114,7 @@ Only one supervisor runs at a time. A second `kingpin watch` refuses to start an
 | `kingpin init` | Auto-configures a project from current directory or path. [Details](docs/cli.md#kingpin-init) |
 | `kingpin run` | Single command that spawns, monitors, and completes a task. [Details](docs/cli.md#kingpin-run) |
 | `kingpin watch` | The fleet's one supervisor: a continuous supervision and auto-landing loop. [Details](docs/cli.md#kingpin-watch) |
+| `kingpin queue` | Keeps the fleet at N workers by spawning the next open issue in review mode, and skips an issue a live task holds or `kingpin:claimed` marks. [Details](docs/cli.md#kingpin-queue) |
 | `kingpin afk` | Arms session-scoped auto-landing while you are away: a clean review verdict lands, and anything that needs a human waits. Default TTL 8h. [Details](docs/cli.md#kingpin-afk) |
 | `kingpin spawn` | Starts a worker in a background tmux window, in a leased worktree; the target is resolved, never guessed. [Details](docs/cli.md#kingpin-spawn) |
 | `kingpin list` | Displays the live fleet: each task's state, session and window, the browser daemons it holds, its dossier link, and whether the supervisor is running; `--all` (or `-a`) also shows finished tasks. [Details](docs/cli.md#kingpin-list) |
