@@ -232,6 +232,24 @@ echo "lavish-axi: refusing a real call from a test suite" >&2
 exit 1
 LAVEOF
   chmod +x "$T/bin/lavish-axi"
+  # No suite opens a real browser tab (issue #259). The dossier tab is off for every
+  # suite, and an `xdg-open` and an `open` first on PATH record a call that would have
+  # reached a real browser and exit 1, so kp_test_finish fails on it even when a suite
+  # turns the tab on and forgets the fake. tests/test-listen.sh turns it on with a fake
+  # opener through KINGPIN_BROWSER_OPENER.
+  export KINGPIN_OPEN_BROWSER=0
+  unset KINGPIN_BROWSER_OPENER
+  export KP_TEST_BROWSER_REAL_LOG=$T/real-browser-calls.log
+  : > "$KP_TEST_BROWSER_REAL_LOG"
+  for w in xdg-open open; do
+    cat > "$T/bin/$w" << BROWSEREOF
+#!/usr/bin/env bash
+# kp_test_setup: a suite reached a real browser opener. Record it and refuse the call.
+printf '%s %s\\n' "$w" "\$*" >> "\${KP_TEST_BROWSER_REAL_LOG:?kp_test_setup: KP_TEST_BROWSER_REAL_LOG is unset}"
+exit 1
+BROWSEREOF
+    chmod +x "$T/bin/$w"
+  done
   # A `merged: pr=<url>` fixture makes the supervisor and `kingpin done` read that pull
   # request's checks through gh (issue #221). The default gh fails, so no suite reaches
   # the network with a made-up URL; the read records UNREADABLE and writes no status
@@ -807,8 +825,22 @@ kp_test_touch_ago() {
 }
 
 # kp_test_finish <LABEL>
+# kp_test_check_browser_real: return 1 and name every call when a suite reached the
+# `xdg-open` or `open` shim kp_test_setup installs, which stands where a real browser
+# opener would run (issue #259).
+kp_test_check_browser_real() {
+  local real=${KP_TEST_BROWSER_REAL_LOG:-} line
+  [ -n "$real" ] && [ -s "$real" ] || return 0
+  echo "FAIL: a real browser opener ran during this suite; set KINGPIN_OPEN_BROWSER=0 or a fake KINGPIN_BROWSER_OPENER:" >&2
+  while IFS= read -r line; do
+    printf '  %s\n' "$line" >&2
+  done < "$real"
+  return 1
+}
+
 kp_test_finish() {
   kp_test_check_lavish_calls || FAILED=1
+  kp_test_check_browser_real || FAILED=1
   kp_test_check_herdr_real || FAILED=1
   if [ "$FAILED" -eq 0 ]; then
     echo "ALL $1 TESTS PASSED"

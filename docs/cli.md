@@ -94,6 +94,7 @@ The normal deployment is the `kingpin-watch` user unit shipped with the checkout
 mkdir -p ~/.config/systemd/user
 cp systemd/kingpin-watch.service ~/.config/systemd/user/
 # edit ExecStart if the checkout is not ~/github/kingpin
+systemctl --user import-environment DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR
 systemctl --user daemon-reload
 systemctl --user enable --now kingpin-watch
 loginctl enable-linger "$USER"
@@ -102,6 +103,8 @@ loginctl enable-linger "$USER"
 `systemctl --user enable --now kingpin-watch` starts the unit now and at every login, and `loginctl enable-linger "$USER"` keeps the user manager, and with it the unit, running after you log out. Without linger a user unit stops when the last session ends. Check the result with `systemctl --user status kingpin-watch`; the `MainPID` it prints is the pid `kingpin list` reports in its `Supervisor: running (pid <n>, since <HH:MM>)` line.
 
 The unit carries a `PATH` that reaches `gh`, `tmux`, `treehouse`, `lavish-axi` and the worker harnesses, because a user unit does not inherit your login shell's `PATH`. Extend `Environment=PATH=` when your harness lives outside the directories it names, and change `ExecStart=` when the checkout is not at `~/github/kingpin`. The unit does not set a tmux socket: the fleet follows the socket each task record and `$KINGPIN_HOME/config.env` name, and the unit never owns that server.
+
+A user unit has no display of its own either, so the listeners it starts read the graphical session's variables from the user manager when they open a dossier's browser tab. Most desktops import them at login; the `import-environment` line above does it by hand from a graphical shell. A host with no graphical session gets a `browser.skipped` note instead of a tab ([The browser tab](#the-browser-tab)).
 
 A host without systemd, or a one-off run under a supervisor of your own, still starts the foreground command directly: `kingpin watch`.
 
@@ -425,7 +428,7 @@ Exits 1 with a message on stderr on a tracked change, on an untracked path the i
 
 **Flags:** `--once`, `--background`
 
-**Environment:** `KINGPIN_HOME`, `KINGPIN_LAVISH`, `KINGPIN_LISTEN_ANSWER_TIMEOUT`
+**Environment:** `KINGPIN_HOME`, `KINGPIN_LAVISH`, `KINGPIN_LISTEN_ANSWER_TIMEOUT`, `KINGPIN_OPEN_BROWSER`, `KINGPIN_BROWSER_OPENER`; `OPEN_BROWSER` in `$KINGPIN_HOME/config.env`
 
 ### Approve & Land
 
@@ -448,6 +451,12 @@ A poll whose prompts the parser cannot read is parked as `unparsed-poll-*.txt` i
 `--background` starts one detached listener per task (concurrent launches start only one; pid in `listener.pid`, output in `listener.log`) and returns at once; `kingpin watch` starts it when a review-mode worker reports `ready:`. `--once` stops after one poll. One listener owns a task at a time: `listener.owner` holds its pid, so a second `kingpin listen` on a live task prints one line and exits 0 without polling. The poll runs in its own process group and its pid is recorded in `listener.poll`; a listener that is stopped, or a replacement that takes over a stale slot, stops that group first, so an orphaned poll cannot own the session and swallow the next annotation.
 
 The first open of the dossier records the Lavish session URL in `dossier.url` and the listener prints it in its `OK: listening on <task-id>; dossier <url>` line, so a foreground start hands over the same URL `kingpin list` does. The file is never rewritten while it holds a URL, so it survives a listener restart; a session the server lost is reopened once and the replacement URL is recorded in its place.
+
+### The browser tab
+
+The first open of a dossier also opens its session URL in your default browser as a new tab, with `xdg-open`, `open` on macOS, or the command `KINGPIN_BROWSER_OPENER` names. It happens once per dossier: `browser.opened` in the task directory records it, and a listener restart, a `kingpin watch` re-arm and the reopen of a lost session open no second tab. A record that already had `lavish_opened` before this behaviour existed gets no tab. The opener runs detached with its output in `browser.log`, so it never delays the `OK:` line or the poll.
+
+`KINGPIN_OPEN_BROWSER=0`, or `OPEN_BROWSER=0` in `$KINGPIN_HOME/config.env`, turns the tab off; the variable wins over the file, and only `0` counts. Off macOS, a listener with no `DISPLAY` or `WAYLAND_DISPLAY` (a listener the systemd unit started) reads them from `systemctl --user show-environment`. With no display there either, or with no opener installed, the listener writes one `browser.skipped` line naming why and keeps listening. The display step for the unit is in [Running it as a systemd user service](#running-it-as-a-systemd-user-service).
 
 ### Without Lavish
 
@@ -907,6 +916,8 @@ It records trust for the skills directory with the same helper `kingpin spawn` u
 | `KINGPIN_SKIP_MERGE_CHECK` | `1` skips the merge verification (the ancestor check and its `git fetch`); the curator's automatic reconcile sets it, because `kingpin land curator` already verified the PR state. Not for hand-setting. |
 | `KINGPIN_SKILLS_DIR` | Skills directory the curator works in (default `~/.claude/skills`); `kingpin scope` counts its `SKILL.md` files and checks them for the contract, and the Pi extension bridges it into Pi's skill discovery. |
 | `KINGPIN_LAVISH` | `lavish-axi` command the listener drives (default `lavish-axi`). |
+| `KINGPIN_OPEN_BROWSER` | `0` stops `kingpin listen` opening a dossier's first Lavish session in a browser tab; read before `OPEN_BROWSER` in `$KINGPIN_HOME/config.env`. Unset or any other value leaves it on. The test suites set `0`. |
+| `KINGPIN_BROWSER_OPENER` | Command `kingpin listen` opens that tab with, one word (default `open` on macOS and `xdg-open` elsewhere). The test suites point it at a fake. |
 | `KINGPIN_STATUS_GRACE` | Seconds a worker may stay silent before `wait`/`watch`/`run` record `failed: no status:` (default `30`). |
 | `KINGPIN_ALLOW_GLOBAL_CONTRACT` | `1` downgrades a contract found in a global instruction file to a warning instead of a refusal. |
 | `KINGPIN_SKIP_GUARD` | `1` silences `kingpin guard warn`, which `kingpin list` and `kingpin wait` call, and the install `kingpin init` runs; it does not silence `kingpin lock acquire`, which runs `kingpin guard check` directly, or a hand-run `kingpin guard install`/`check`. Set by the test suites and scripted setups. |

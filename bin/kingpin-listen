@@ -9,6 +9,8 @@ KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
 KP_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=../lib/status.sh
 . "$KP_BIN/../lib/status.sh"
+# shellcheck source=../lib/dossier.sh
+. "$KP_BIN/../lib/dossier.sh"
 
 id=""
 ONCE=0
@@ -237,10 +239,15 @@ open_dossier() {
   printf '%s\n' "$url" > "$task_dir/dossier.url"
 }
 
-# Open review dossier in browser if not already opened
+# Open review dossier in browser if not already opened. The first open also puts the
+# session in the operator's browser, once per dossier (issue #259); a reopen of a lost
+# session and every later listener skip this block.
 if [ ! -f "$task_dir/lavish_opened" ]; then
   open_dossier
   touch "$task_dir/lavish_opened"
+  if [ -s "$task_dir/dossier.url" ] && kp_dossier_browser_enabled "$KP_HOME"; then
+    kp_dossier_browser_open "$task_dir" "$(head -n 1 "$task_dir/dossier.url")"
+  fi
 fi
 
 # One line for a foreground start, so `kingpin listen <task-id>` hands over the same URL

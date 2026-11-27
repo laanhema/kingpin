@@ -1328,6 +1328,148 @@ kp_test_stub_treehouse
 kill -0 "$lpid" 2>/dev/null && fail "listener was not killed" || pass "listener process killed by kingpin-done"
 grep -q "end $t11_task/report.html" "$T/mock-lavish.log" && pass "mock-lavish end invoked by kingpin-done" || fail "mock-lavish end missing"
 
+# Issue #259: the first open of a dossier also opens its session in the operator's
+# browser, once. tests/lib.sh turns the tab off for every suite; these cases turn it on
+# with a fake opener that records each URL and the DISPLAY it saw, so no real browser
+# runs. The opener is detached, so every positive check polls the log.
+echo "=== Test 11b: one browser tab per dossier ==="
+cat > "$T/fake-opener" << EOF
+#!/usr/bin/env bash
+printf '%s DISPLAY=%s\n' "\$1" "\${DISPLAY:-}" >> "$T/opener.log"
+EOF
+chmod +x "$T/fake-opener"
+# A slow opener holds its gate for up to 20 s, the way a hanging xdg-open would.
+cat > "$T/slow-opener" << EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$T/slow-opener.log"
+for _ in \$(seq 1 200); do [ -f "$T/slow-opener-gate" ] || exit 0; sleep 0.1; done
+EOF
+chmod +x "$T/slow-opener"
+# browser_task <id>: a review record with a page and nothing opened yet.
+browser_task() {
+  local d="$KINGPIN_HOME/tasks/$1"
+  mkdir -p "$d"
+  echo "<html><body>Review Dossier $1</body></html>" > "$d/report.html"
+  printf '%s\n' "$d"
+}
+# tabs <id>: how many times the fake opener was handed this task's session URL.
+tabs() {
+  [ -f "$T/opener.log" ] || { echo 0; return 0; }
+  grep -c "/session/$1 " "$T/opener.log" || true
+}
+tabs_are() { [ "$(tabs "$1")" = "$2" ]; }
+# browser_listen <id> [VAR=value...]: one foreground pass with the tab on and a display set.
+browser_listen() {
+  local id=$1
+  shift
+  env KINGPIN_OPEN_BROWSER=1 KINGPIN_BROWSER_OPENER="$T/fake-opener" DISPLAY=:kp-test "$@" \
+    "$KP_BIN/kingpin" listen "$id" --once
+}
+
+b1=$(browser_task task-browser-1)
+browser_listen task-browser-1 >/dev/null
+kp_wait_until 5 tabs_are task-browser-1 1 && pass "the first open puts the session in one browser tab" || fail "first open recorded $(tabs task-browser-1) tabs"
+grep -Fq "http://127.0.0.1:4387/session/task-browser-1" "$b1/browser.opened" 2>/dev/null && pass "browser.opened names the URL it opened" || fail "browser.opened: $(cat "$b1/browser.opened" 2>/dev/null)"
+
+# A listener restart and a lost lavish_opened marker open no second tab: browser.opened
+# is the once-only record.
+browser_listen task-browser-1 >/dev/null
+rm -f "$b1/lavish_opened"
+browser_listen task-browser-1 >/dev/null
+kp_holds_for 1 tabs_are task-browser-1 1 && pass "a restart and a lost lavish_opened open no second tab" || fail "restart recorded $(tabs task-browser-1) tabs"
+
+# The reopen of a session the server lost opens the page in Lavish again, not a tab.
+b1_opens=$(grep -cxF "$b1/report.html" "$T/mock-lavish.log" || true)
+printf '%s\n' "NOT_FOUND: no session for $b1/report.html" > "$(resp_file "$b1")"
+browser_listen task-browser-1 >/dev/null
+b1_reopens=$(grep -cxF "$b1/report.html" "$T/mock-lavish.log" || true)
+[ "$b1_reopens" -gt "$b1_opens" ] && pass "a lost session was reopened in Lavish" || fail "no reopen: $b1_opens then $b1_reopens opens"
+kp_holds_for 1 tabs_are task-browser-1 1 && pass "the reopen of a lost session opens no second tab" || fail "reopen recorded $(tabs task-browser-1) tabs"
+
+# The supervisor's re-arm of a dead listener opens no tab either.
+cat > "$b1/task.env" << EOF
+TASK_ID=task-browser-1
+PROJECT=demo-auto
+PROJECT_PATH=$T/proj
+MODE=review
+WORKTREE=$T/proj
+ISSUE=459
+TMUX_SOCKET=$KINGPIN_TMUX_SOCKET
+TMUX_TARGET=kingpin:task-browser-1
+EOF
+tmux new-window -d -t kingpin: -n task-browser-1 cat
+echo "ready: branch=b review=APPROVE report=$b1/report.html" >> "$b1/status"
+b1_polls=$(grep -cF "poll $b1/report.html" "$T/mock-lavish.log" || true)
+b1_rearmed() { [ "$(grep -cF "poll $b1/report.html" "$T/mock-lavish.log" || true)" -gt "$b1_polls" ]; }
+KINGPIN_OPEN_BROWSER=1 KINGPIN_BROWSER_OPENER="$T/fake-opener" DISPLAY=:kp-test "$KP_BIN/kingpin" watch --once >/dev/null
+kp_wait_until 10 b1_rearmed && pass "the supervisor re-armed the listener" || fail "the supervisor did not re-arm the listener"
+kp_holds_for 1 tabs_are task-browser-1 1 && pass "a re-armed listener opens no second tab" || fail "re-arm recorded $(tabs task-browser-1) tabs"
+b1_pid=$(cat "$b1/listener.pid" 2>/dev/null || true)
+[ -z "$b1_pid" ] || kill "$b1_pid" 2>/dev/null || true
+b1_stopped() { [ ! -f "$b1/listener.pid" ]; }
+kp_wait_until 5 b1_stopped || true
+tmux kill-window -t kingpin:task-browser-1 2>/dev/null || true
+
+# The opt-out: KINGPIN_OPEN_BROWSER=0, or OPEN_BROWSER=0 in config.env, opens nothing and
+# writes no marker; the variable wins over the file.
+b2=$(browser_task task-browser-2)
+browser_listen task-browser-2 KINGPIN_OPEN_BROWSER=0 >/dev/null
+kp_holds_for 1 tabs_are task-browser-2 0 && [ ! -e "$b2/browser.opened" ] && pass "KINGPIN_OPEN_BROWSER=0 opens no tab" || fail "the opt-out opened $(tabs task-browser-2) tabs"
+printf 'OPEN_BROWSER=0\n' >> "$KINGPIN_HOME/config.env"
+b3=$(browser_task task-browser-3)
+env -u KINGPIN_OPEN_BROWSER KINGPIN_BROWSER_OPENER="$T/fake-opener" DISPLAY=:kp-test "$KP_BIN/kingpin" listen task-browser-3 --once >/dev/null
+kp_holds_for 1 tabs_are task-browser-3 0 && pass "OPEN_BROWSER=0 in config.env opens no tab" || fail "the config opt-out opened $(tabs task-browser-3) tabs"
+b4=$(browser_task task-browser-4)
+browser_listen task-browser-4 >/dev/null
+kp_wait_until 5 tabs_are task-browser-4 1 && pass "KINGPIN_OPEN_BROWSER wins over OPEN_BROWSER in config.env" || fail "the variable did not win: $(tabs task-browser-4) tabs"
+grep -v '^OPEN_BROWSER=' "$KINGPIN_HOME/config.env" > "$T/config.env.new" || true
+mv "$T/config.env.new" "$KINGPIN_HOME/config.env"
+
+# A listener under a systemd user unit has no display of its own. On Linux it reads
+# one from the user manager; with none there it writes one note and still listens.
+b5="" b6=""
+if [ "$(uname -s)" = Linux ]; then
+  mkdir -p "$T/sd-none" "$T/sd-display"
+  printf '#!/usr/bin/env bash\necho XDG_RUNTIME_DIR=/run/user/0\n' > "$T/sd-none/systemctl"
+  printf '#!/usr/bin/env bash\nprintf "DISPLAY=:kp-sd\\nXDG_RUNTIME_DIR=/run/user/0\\n"\n' > "$T/sd-display/systemctl"
+  chmod +x "$T/sd-none/systemctl" "$T/sd-display/systemctl"
+  b5=$(browser_task task-browser-5)
+  b5_out='' b5_rc=0
+  kp_run b5_out b5_rc env -u DISPLAY -u WAYLAND_DISPLAY PATH="$T/sd-none:$PATH" \
+    KINGPIN_OPEN_BROWSER=1 KINGPIN_BROWSER_OPENER="$T/fake-opener" "$KP_BIN/kingpin" listen task-browser-5 --once
+  [ "$b5_rc" = 0 ] && printf '%s\n' "$b5_out" | grep -q '^OK: listening on task-browser-5' && pass "no display: the listener still starts" || fail "no display: exit $b5_rc: $b5_out"
+  grep -q 'no graphical session' "$b5/browser.skipped" 2>/dev/null && pass "no display: one browser.skipped note names why" || fail "no display: browser.skipped holds '$(cat "$b5/browser.skipped" 2>/dev/null)'"
+  kp_holds_for 1 tabs_are task-browser-5 0 && pass "no display: no opener ran" || fail "no display: $(tabs task-browser-5) tabs"
+  b6=$(browser_task task-browser-6)
+  env -u DISPLAY -u WAYLAND_DISPLAY PATH="$T/sd-display:$PATH" \
+    KINGPIN_OPEN_BROWSER=1 KINGPIN_BROWSER_OPENER="$T/fake-opener" "$KP_BIN/kingpin" listen task-browser-6 --once >/dev/null
+  kp_wait_until 5 tabs_are task-browser-6 1 && pass "a display read from systemctl --user show-environment opens the tab" || fail "systemd display: $(tabs task-browser-6) tabs"
+  grep -q "/session/task-browser-6 DISPLAY=:kp-sd$" "$T/opener.log" && pass "the opener runs with the user manager's DISPLAY" || fail "the opener saw: $(grep task-browser-6 "$T/opener.log")"
+else
+  pass "no-display cases skipped: they model a Linux systemd user unit"
+fi
+
+# An opener that is not installed is a skip with one note, not a failure.
+b7=$(browser_task task-browser-7)
+b7_out='' b7_rc=0
+kp_run b7_out b7_rc env KINGPIN_OPEN_BROWSER=1 KINGPIN_BROWSER_OPENER="$T/no-such-opener" DISPLAY=:kp-test \
+  "$KP_BIN/kingpin" listen task-browser-7 --once
+[ "$b7_rc" = 0 ] && grep -q 'not found' "$b7/browser.skipped" 2>/dev/null && pass "a missing opener is skipped with one note" || fail "missing opener: exit $b7_rc, note '$(cat "$b7/browser.skipped" 2>/dev/null)': $b7_out"
+
+# A hanging opener never holds the listener: the OK line comes back while it still runs.
+b8=$(browser_task task-browser-8)
+: > "$T/slow-opener-gate"
+b8_start=$SECONDS
+b8_out='' b8_rc=0
+kp_run b8_out b8_rc env KINGPIN_OPEN_BROWSER=1 KINGPIN_BROWSER_OPENER="$T/slow-opener" DISPLAY=:kp-test \
+  "$KP_BIN/kingpin" listen task-browser-8 --once
+b8_took=$((SECONDS - b8_start))
+[ "$b8_rc" = 0 ] && [ "$b8_took" -lt 10 ] && printf '%s\n' "$b8_out" | grep -q '^OK: listening on task-browser-8' && pass "a hanging opener does not hold the listener (${b8_took}s)" || fail "hanging opener: exit $b8_rc after ${b8_took}s: $b8_out"
+kp_wait_until 5 grep -qF "/session/task-browser-8" "$T/slow-opener.log" && pass "the hanging opener was started" || fail "the hanging opener never ran"
+rm -f "$T/slow-opener-gate"
+rm -rf "$b1" "$b2" "$b3" "$b4" "$b7" "$b8"
+[ -z "$b5" ] || rm -rf "$b5" "$b6"
+
 # Teardown test 10 resources
 tmux kill-window -t kingpin:task-lavish-1 2>/dev/null || true
 tmux kill-window -t kingpin:task-lavish-2 2>/dev/null || true

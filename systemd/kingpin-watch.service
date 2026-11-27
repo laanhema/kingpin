@@ -8,6 +8,9 @@ Type=simple
 # A user unit does not inherit the login shell's PATH. `kingpin watch` shells out to
 # gh, tmux, treehouse, lavish-axi and a worker harness, so name the usual bin
 # directories here and add your harness's directory when it lives elsewhere.
+# The dossier listeners read DISPLAY/WAYLAND_DISPLAY from the user manager; run
+# `systemctl --user import-environment DISPLAY WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR`
+# from a graphical shell to put them there (see docs/cli.md).
 Environment=PATH=%h/.local/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin
 # Change the checkout path when Kingpin is not at ~/github/kingpin.
 ExecStart=%h/github/kingpin/bin/kingpin watch
