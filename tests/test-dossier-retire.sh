@@ -98,9 +98,12 @@ grep -q 'pull/219' "$t1_page" 2>/dev/null \
 ! grep -qE '<button[^>]*onclick="kp(Action|RequestChanges)\(' "$t1_page" 2>/dev/null \
   && pass "t1: no decision button keeps a live handler" \
   || fail "t1: a decision button still carries its handler"
-[ "$(grep -cE '<button[^>]*[[:space:]]disabled' "$t1_page" 2>/dev/null || true)" -eq 2 ] \
-  && pass "t1: both decision buttons are disabled" \
+[ "$(grep -cE '<button[^>]*[[:space:]]disabled' "$t1_page" 2>/dev/null || true)" -eq 3 ] \
+  && pass "t1: both decision buttons and the note form's send button are disabled" \
   || fail "t1: a decision button is not disabled"
+grep -q '<div data-kp-finished-hide data-kp-changes' "$t1_page" 2>/dev/null \
+  && pass "t1: the Request Changes note form carries the retire hook" \
+  || fail "t1: the note form on the archived page has no data-kp-finished-hide hook"
 grep -q 'data-kp-finished-hide class="card-custom' "$t1_page" 2>/dev/null \
   && grep -q 'data-kp-finished-hide class="badge badge-success' "$t1_page" 2>/dev/null \
   && grep -q '\[data-kp-finished-hide\] { display: none' "$t1_page" 2>/dev/null \
@@ -225,6 +228,51 @@ grep -q 'finished without a merge' "$t6_page" 2>/dev/null \
 ! grep -q 'Merged in' "$t6_page" 2>/dev/null \
   && pass "t6: the failed task's banner names no merge" \
   || fail "t6: the failed task's banner claims a merge"
+
+# Test 6b: a live task whose last line is the Stop hook's silent stop is not finished
+# for the dossier (issue #255). The worker resumes after `failed: no status:`, so the
+# sweep must leave its page live and its Lavish session open.
+echo "=== Test 6b: the sweep leaves a silent live task's dossier alone ==="
+mk_task d186-silent "ready: branch=b review=APPROVE report=none"
+kp_test_sub "$KINGPIN_HOME/tasks/d186-silent/task.env" 's/^MODE=review$/MODE=auto/'
+printf '%s\n' 'failed: no status: stopped without reporting' >> "$KINGPIN_HOME/tasks/d186-silent/status"
+printf '%s\n' "https://lavish.example/session/silent" > "$KINGPIN_HOME/tasks/d186-silent/dossier.url"
+ack_fixture d186-silent
+t6b_list='' t6b_list_rc=0
+kp_run t6b_list t6b_list_rc "$KP_BIN/kingpin" list
+[ "$t6b_list_rc" -eq 0 ] && pass "t6b: list exits 0" || fail "t6b: list exited $t6b_list_rc: $t6b_list"
+! printf '%s\n' "$t6b_list" | grep -A100 'Dossiers left open on finished tasks' | grep -q 'd186-silent' \
+  && pass "t6b: list, before the sweep, does not name the silent task as a finished leftover" \
+  || fail "t6b: list names the silent task's live dossier as left open: $t6b_list"
+t6b_out='' t6b_rc=0
+kp_run t6b_out t6b_rc "$KP_BIN/kingpin-watch" --once
+[ "$t6b_rc" -eq 0 ] && pass "t6b: watch --once exits 0" || fail "t6b: watch --once exited $t6b_rc: $t6b_out"
+t6b_page="$KINGPIN_HOME/tasks/d186-silent/report.html"
+! grep -q 'data-kingpin-finished' "$t6b_page" 2>/dev/null \
+  && pass "t6b: the silent task's page carries no finished banner" \
+  || fail "t6b: the sweep marked a silent live task's page finished"
+! grep -q 'window.kpAction = function () {}' "$t6b_page" 2>/dev/null \
+  && pass "t6b: the silent task's handlers are not stubbed" \
+  || fail "t6b: the sweep stubbed the silent task's kpAction"
+[ "$(end_calls d186-silent)" -eq 0 ] && [ ! -f "$KINGPIN_HOME/tasks/d186-silent/dossier.ended" ] \
+  && pass "t6b: the sweep ends no session for the silent task" \
+  || fail "t6b: the sweep ended the silent task's session: $(cat "$KP_TEST_LAVISH_CALLS_LOG")"
+rm -rf "$KINGPIN_HOME/tasks/d186-silent" "$T/wt-d186-silent"
+
+# Test 6c: the silent-stop exception ends once `kingpin done` cleaned the record: a
+# `done_cleaned` marker means the operator said the task is over, so the sweep marks it.
+echo "=== Test 6c: a cleaned silent record is still retired ==="
+mk_task d186-silentdone "ready: branch=b review=APPROVE report=none"
+printf '%s\n' 'failed: no status: stopped without reporting' >> "$KINGPIN_HOME/tasks/d186-silentdone/status"
+touch "$KINGPIN_HOME/tasks/d186-silentdone/done_cleaned"
+ack_fixture d186-silentdone
+t6c_out='' t6c_rc=0
+kp_run t6c_out t6c_rc "$KP_BIN/kingpin-watch" --once
+[ "$t6c_rc" -eq 0 ] && pass "t6c: watch --once exits 0" || fail "t6c: watch --once exited $t6c_rc: $t6c_out"
+grep -q 'data-kingpin-finished' "$KINGPIN_HOME/tasks/d186-silentdone/report.html" 2>/dev/null \
+  && pass "t6c: the sweep marks a cleaned silent record's page" \
+  || fail "t6c: the sweep left a cleaned silent record's page unmarked"
+rm -rf "$KINGPIN_HOME/tasks/d186-silentdone" "$T/wt-d186-silentdone"
 
 # Test 7: no page, no call.
 echo "=== Test 7: a finished record with no page records no end call ==="
