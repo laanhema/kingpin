@@ -490,6 +490,42 @@ A worker is told to append, but a worker that rewrites its `status` file can lea
 
 See [Fleet Overview](fleet-overview.md#fleet-overview--visual-review-dossiers).
 
+## kingpin wake
+
+**Usage:** `kingpin wake [--timeout <sec>] [--from <token>]`
+
+**Flags:** `--timeout <sec>` (default 1800), `--from <token>`
+
+**Environment:** `KINGPIN_HOME`
+
+The orchestrator's wake-up call. The orchestrator keeps it running as a harness background job: it blocks until a worker needs the orchestrator, prints what it found and exits, and the exit is what re-invokes the orchestrator. It is read-only. It marks nothing seen, takes no lock, writes no marker and creates nothing under `KINGPIN_HOME`, so `kingpin watch` dispatches the same line on its own schedule and neither hides a line from the other. It is not a supervisor: `kingpin watch` still moves every task along, and an orchestrator never runs `kingpin ack` for a line the wake printed, because an ack moves the supervisor's cursor and a `merged:` line acked before the supervisor's sweep loses its cleanup.
+
+### What wakes it
+
+A live task's status file gaining a line that starts with `needs-input:`, `ready:`, `fixed:`, `failed:` (including `failed: no status:`), `waiting:`, `merged:` or `cleanup-refused:`.
+
+Every other line moves the task's baseline and nothing else: the notes `issue:`, `approved:`, `feedback:`, `checks:`, `progress:` and `report:`, a blank line, and any other text. Terminal events (`quiet`, `exited`) are `kingpin wait`'s, not the wake's: it reads status lines only and never probes a terminal.
+
+### The output and the resume token
+
+Each waking line found in one pass prints as `<task-id> <status line>`, in task order and then in file order, and the last line is always `resume: <token>`. The token is `w1` followed by `,<task-id>:<count>` for each task watched, for example `w1,kp-12-foo:3,kp-13-bar:0`: the number of status lines the wake has read in each task.
+
+Without `--from`, the first pass records each live task's current line count, so only lines appended after the start count. `--from <token>` takes the counts from a token a previous wake printed, so a line appended between that wake's exit and this start is still reported. A stale token reports every waking line since it was printed. A live task the baseline does not name, spawned after the start or after the token, is watched from its first line. A line with no newline at its end yet waits for the next pass.
+
+### Archived and rewritten tasks
+
+A task that `kingpin done` archived while it was watched (its `tasks/<id>` path is now the link to the archive) is read once more through that link, so the `merged:` line the supervisor acted on is still reported, and the task then leaves the token. `kingpin done` moves the record whole and only then writes the link, which it may fail to write. A pass that finds the path missing reads the newest archive directly instead, the highest `archive/<id>.<n>` or else `archive/<id>`, and then drops the task. A path that is gone with no archive drops the task unread.
+
+A status file shorter than its baseline was rewritten: the baseline drops to the new length and nothing is replayed.
+
+### Exit codes
+
+Exits 0 when it printed one or more lines (then the resume line); 3 when the timeout passed, printing only the resume line; 1 when the `tasks/` directory exists but cannot be read; 2 for a bad argument, including a `--from` value that is not a wake token. A `KINGPIN_HOME` with no `tasks/` directory is an empty fleet to wait on: the wake does not create it.
+
+### See also
+
+[`kingpin wait`](#kingpin-wait), the supervisor's own primitive, and [`kingpin watch`](#kingpin-watch), the one supervisor.
+
 ## kingpin ack
 
 **Usage:** `kingpin ack <task-id>... | --all | --through <line> [--rewind]`
