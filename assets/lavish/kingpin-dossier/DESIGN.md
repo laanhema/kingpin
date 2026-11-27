@@ -81,14 +81,19 @@ Keep both values as they are: the difference is what makes the strip read as a t
 7. **Links carry the stamp red**, a hairline underline in the same colour, and gold on hover, at
    body weight.
 8. **Headings sit under a 2px ink rule** in the brief, and clear their content below it.
-9. **Decision controls keep their handlers.** Both pages keep `kpAction` and `kpRequestChanges`
-   with the no-Lavish fallback, because `kingpin land` and the retire path depend on them.
+9. **Decision controls keep their handlers.** Both pages keep `kpAction` and `kpRequestChanges`,
+   because `kingpin land` and the retire path depend on them. Request Changes opens a note form under
+   the action bar, and both buttons report on a status line under it: `Queued. Press Send to Agent to
+   deliver it.` inside Lavish, and the text to paste when the page is opened without Lavish. No
+   handler calls `prompt`, `alert` or `confirm`: Lavish renders the page in a sandbox without
+   `allow-modals`, so each one returns at once and the click does nothing.
 
 ## The retire hook
 
 `lib/dossier-finish.mjs` hides every element that carries `data-kp-finished-hide` when it marks a
-finished page. On `template.html` the hook sits on the telegram (which holds both action buttons) and
-on the status stamp, so a retired worker dossier loses its decision chrome and keeps its result. The
+finished page. On `template.html` the hook sits on the telegram (which holds both action buttons), on
+the Request Changes note form and its status line, and on the status stamp, so a retired worker
+dossier loses its decision chrome and keeps its result. The
 helper also strips the handler from any button that calls `kpAction` or `kpRequestChanges`, so nothing
 on that page can queue a prompt after the task is archived. Keep the hook when you copy
 `template.html`. `handover.html` carries no hook, because a handover is not the page `kingpin done`
