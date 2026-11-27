@@ -82,10 +82,13 @@ nothing uses it by default.
 - **The option label leads its state pill.** Handover pages only, because the worker dossier has no
   option cards. `Option B` comes before `RECOMMENDED`, matching the cards that carry no state pill.
 - **Annotation starts off.** `data-lavish-annotate="off"` is the reading default the worker contract asks for, so a stray click leaves no annotation card. The Lavish toolbar still turns annotation on when the boss wants to comment. The two action buttons are native buttons, so they work either way.
-- **Buttons degrade.** Approve & Land and Request Changes call `window.lavish.queuePrompt` and fall
-  back to copying the text when the page is opened as a plain file.
-- **A finished page drops the decision chrome.** The action bar and the READY FOR REVIEW badge carry
-  `data-kp-finished-hide`; the finished banner's stylesheet hides every element with that hook. Leave
+- **Buttons degrade.** Approve & Land and Request Changes call `window.lavish.queuePrompt`, and a
+  status line under the action bar says the prompt is queued until the reviewer presses Send to Agent.
+  When the page is opened as a plain file, the line shows the text to paste instead. Request Changes
+  collects its note in a form under the action bar. No handler calls `prompt`, `alert` or `confirm`,
+  because Lavish's sandbox has no `allow-modals` and blocks all three.
+- **A finished page drops the decision chrome.** The action bar, the note form, its status line and
+  the READY FOR REVIEW badge carry `data-kp-finished-hide`; the finished banner's stylesheet hides every element with that hook. Leave
   the hook on them when you copy the template.
 
 ## Using it

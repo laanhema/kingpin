@@ -635,7 +635,10 @@ rearm_listeners() {
 # A finished task's dossier is retired (issue #186). `kingpin done` marks the page of the
 # task it archives; this sweep covers the records that reached a finished state without
 # that step: an archive from before the marker existed, a `failed:` task, and a page
-# rewritten by hand. A record that is not finished, archived or not, is left alone. It
+# rewritten by hand. The Stop hook's silent stop (`failed: no status:`) is not retired
+# unless `kingpin done` cleaned the record, because the worker resumes after it and its
+# page is still the live review (issue #255). A record that is not finished, archived or
+# not, is left alone. It
 # also ends the Lavish session a reviewer left open on such a page, once, recording that
 # in the record's `dossier.ended` marker, so a browser tab full of live-looking buttons
 # cannot sit there for hours. Marking is guarded by a grep, so a sweep over a long archive
@@ -652,7 +655,7 @@ retire_dossiers() {
     esac
     # Only a finished record is retired, whichever half it was found in: a hand-archived
     # record whose work is not over keeps its page and its session (issue #186 review H2).
-    kp_task_is_finished "$dir" || continue
+    kp_dossier_retirable "$dir" || continue
     page=$(kp_dossier_file "$dir") || continue
     id=$(basename "$dir")
     if ! kp_dossier_marked "$page" && command -v node >/dev/null 2>&1; then
