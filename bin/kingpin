@@ -30,6 +30,7 @@ Commands:
   spawn     Start a worker in a leased worktree on a background tmux window
   run       Start a worker and follow it to completion / review
   watch     Run the fleet supervisor (one per fleet; refuses a second copy)
+  queue     Keep N workers busy: spawn the next open issue when a slot frees (review mode)
   land      Land a ready worker; when its review has findings, run the fix pass first (alias: approve)
   done      Verify merge, release worktree lease, and advance queue
   restore   Bring every live task's window back after a tmux server restart
@@ -38,6 +39,7 @@ Commands:
   sync      Fast-forward the main checkout from its upstream (ff-only; refuses a tracked change, an untracked overwrite or a worktree)
   listen    Maintain background Lavish listener and handle review actions
   wait      Wait for fleet task events (blocking or --once)
+  wake      Block until a worker needs the orchestrator, print its status lines, and exit (read-only)
   ack       Acknowledge task events to advance seen counters
   list      Display active tasks in the terminal (--all adds finished ones)
   brief     Print one bounded fleet digest: live tasks, approvals, dossiers, lanes, queue, AFK
@@ -71,8 +73,14 @@ case "$cmd" in
   wait)
     exec "$KP_BIN/kingpin-wait" "$@"
     ;;
+  wake)
+    exec "$KP_BIN/kingpin-wake" "$@"
+    ;;
   watch)
     exec "$KP_BIN/kingpin-watch" "$@"
+    ;;
+  queue)
+    exec "$KP_BIN/kingpin-queue" "$@"
     ;;
   land|approve)
     exec "$KP_BIN/kingpin-land" "$@"

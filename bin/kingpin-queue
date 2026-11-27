@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+# The issue-queue runner: keeps the fleet at N workers by spawning the next open issue of
+# one project whenever a slot frees. Review mode only, so every dossier still needs the
+# operator's word. It moved into the repository from an untracked script (issue #257).
+#
+# State lives in $KINGPIN_HOME/queue/ (lib/queue.sh reads it for `kingpin brief`):
+#   queue    ordered issue numbers to work through (refilled automatically)
+#   started  issues this runner has spawned (never rerun)
+#   skip     issues never to pick up (parked or needing a decision)
+#   pause    while this file exists the runner idles
+#   log      activity log
+#
+# The claim rule: an open issue labelled `kingpin:claimed` is never spawned. A worker that
+# files its own issue through /create-issue puts the label on it in the create call
+# (worker/preamble.md), because its `issue:` status line lands only after the skill's
+# comment, board and read-back steps, and a runner that read status lines alone spawned a
+# second worker for #255 in that window. The label is read when the queue is refilled and
+# again right before a spawn. An issue a live task record holds, through `task.env`
+# `ISSUE=<n>` or an exact `issue: #<n>` status line, is never spawned either; an archived
+# record (the link `kingpin done` leaves at tasks/<id>) holds nothing.
+#
+# Live tasks are the `kp-` rows `kingpin list` prints, as before the move: this home can
+# hold stale records from earlier experiments, and only the list knows which records
+# belong to the running fleet. A change to that row format changes the count.
+#
+# Usage: kingpin-queue <project> [--once | --dry-run] [--repo <owner/repo>] [--tmux-session <name>]
+set -euo pipefail
+
+KP_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+KP_HOME=${KINGPIN_HOME:-$HOME/.kingpin}
+# shellcheck source=../lib/status.sh
+. "$KP_ROOT/lib/status.sh"
+# shellcheck source=../lib/queue.sh
+. "$KP_ROOT/lib/queue.sh"
+# shellcheck source=../lib/curator.sh
+. "$KP_ROOT/lib/curator.sh"
+# shellcheck source=../lib/portable.sh
+. "$KP_ROOT/lib/portable.sh"
+# shellcheck source=../lib/gitdir.sh
+. "$KP_ROOT/lib/gitdir.sh"
+GH_CMD=${KINGPIN_GH:-gh}
+
+die() { echo "kingpin-queue: $*" >&2; exit 1; }
+usage_die() { echo "kingpin-queue: $*" >&2; echo "usage: kingpin queue <project> [--once | --dry-run] [--repo <owner/repo>] [--tmux-session <name>]" >&2; exit 2; }
+
+usage() {
+  cat << 'HELP'
+usage: kingpin queue <project> [--once | --dry-run] [--repo <owner/repo>] [--tmux-session <name>]
+
+  Keep the fleet at KINGPIN_QUEUE_MAX workers (default 3) by spawning the next open
+  issue of <project> in review mode whenever a slot frees. Runs until stopped; the
+  shipped systemd/kingpin-queue.service keeps it running.
+
+  It never spawns an issue labelled kingpin:claimed, one a live task record holds
+  (task.env ISSUE=<n> or an exact 'issue: #<n>' status line), or one listed in
+  $KINGPIN_HOME/queue/started or skip. While $KINGPIN_HOME/queue/pause exists it idles.
+
+  --once                 run one pass, print what it did, and exit (1 when the spawn failed)
+  --dry-run              refill the queue, print live=<n> and the next issue (or none),
+                         name each skipped issue on stderr, and spawn nothing
+  --repo <owner/repo>    the GitHub repository (default: the project's origin)
+  --tmux-session <name>  forwarded to kingpin spawn (default: spawn's own resolution)
+HELP
+}
+
+ONCE=0
+DRY_RUN=0
+repo_flag=''
+session=''
+PROJECT=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    -h|--help) usage; exit 0 ;;
+    --once) ONCE=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    --repo)
+      [ $# -ge 2 ] && [ -n "$2" ] || usage_die "--repo needs <owner/repo>"
+      repo_flag=$2; shift 2 ;;
+    --tmux-session)
+      [ $# -ge 2 ] && [ -n "$2" ] || usage_die "--tmux-session needs a session name"
+      session=$2; shift 2 ;;
+    -*) usage_die "unknown flag: $1" ;;
+    *)
+      [ -z "$PROJECT" ] || usage_die "unexpected argument: $1"
+      PROJECT=$1; shift ;;
+  esac
+done
+[ -n "$PROJECT" ] || usage_die "missing <project>"
+[ "$ONCE" -eq 0 ] || [ "$DRY_RUN" -eq 0 ] || usage_die "give only one of --once and --dry-run"
+case $repo_flag in
+  ''|*/*) ;;
+  *) usage_die "--repo needs <owner/repo>: $repo_flag" ;;
+esac
+
+MAX=${KINGPIN_QUEUE_MAX:-3}
+case $MAX in
+  ''|*[!0-9]*|0*) usage_die "KINGPIN_QUEUE_MAX must be a positive whole number: '$MAX'" ;;
+esac
+[ "${#MAX}" -le 4 ] || usage_die "KINGPIN_QUEUE_MAX is out of range: $MAX"
+
+case $PROJECT in
+  */*|.*) die "no project config for '$PROJECT'" ;;
+esac
+conf=$KP_HOME/projects/$PROJECT.env
+[ -f "$conf" ] || die "no project config: $conf"
+PROJECT_PATH=$(kp_env_get "$conf" PROJECT_PATH)
+[ -n "$PROJECT_PATH" ] && [ -d "$PROJECT_PATH" ] || die "PROJECT_PATH in $conf is not a directory: $PROJECT_PATH"
+
+REPO=${repo_flag:-$(kp_git_origin_slug "$PROJECT_PATH")}
+[ -n "$REPO" ] || die "cannot derive owner/repo from the origin of $PROJECT_PATH; pass --repo <owner/repo>"
+
+MODE=review
+CURATOR_WAIT_LIMIT=1200 # seconds to yield an idle fleet to the daily curator
+Q=$(kp_queue_dir "$KP_HOME")
+mkdir -p "$Q"
+for f in queue started skip; do
+  [ -f "$Q/$f" ] || : > "$Q/$f"
+done
+export PATH="$KP_ROOT/bin:$PATH"
+
+log() { printf '%s %s\n' "$(kp_now_iso || date +%s)" "$*" >> "$Q/log"; }
+
+# The ids of the live tasks, as the fleet reports them.
+live_ids() { "$KP_ROOT/bin/kingpin" list 2>/dev/null | awk '/^kp-/ {print $1}' || true; }
+live_count() { live_ids | grep -c . || true; }
+
+# A task whose newest status line is `failed:` keeps its slot forever: nothing archives
+# it without a decision. Name it once every ten minutes so the orchestrator can relay it,
+# instead of the fleet silently shrinking.
+warn_failed() {
+  local id d f newest m mtime now
+  for id in $(live_ids); do
+    d="$KP_HOME/tasks/$id"
+    f="$d/status"
+    [ -f "$f" ] || continue
+    newest=$(grep -v '^$' "$f" 2>/dev/null | tail -n 1 || true)
+    case "$newest" in
+      failed:*)
+        m="$d/.queue-warned"
+        now=$(date +%s)
+        mtime=$(kp_mtime "$m" 2>/dev/null || echo 0)
+        if [ ! -f "$m" ] || [ $((now - mtime)) -gt 600 ]; then
+          log "stalled: $id holds a slot, newest status=$newest"
+          touch "$m"
+        fi
+        ;;
+    esac
+  done
+}
+
+# issue_holder <n>: prints the id of the live task record that holds issue <n>, through
+# `task.env` ISSUE=<n> or a status line that is exactly `issue: #<n>` (so `#25` never
+# holds `#255`). Returns 1 when no live record holds it.
+issue_holder() {
+  local n=$1 d
+  for d in "$KP_HOME"/tasks/*; do
+    kp_task_is_live "$d" || continue
+    if [ "$(kp_env_get "$d/task.env" ISSUE)" = "$n" ] \
+      || { [ -f "$d/status" ] && grep -qE "^issue: #$n([^0-9]|\$)" "$d/status"; }; then
+      basename "$d"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# issue_state <n>: CLAIMED, OPEN, CLOSED (gh's state), or nothing when gh cannot answer.
+issue_state() {
+  "$GH_CMD" issue view "$1" --repo "$REPO" --json state,labels < /dev/null 2>/dev/null \
+    | node "$KP_ROOT/lib/queue-issues.mjs" state 2>/dev/null || true
+}
+
+refill() {
+  local n list
+  list=$("$GH_CMD" issue list --repo "$REPO" --state open --limit 100 --json number,labels < /dev/null 2>/dev/null \
+    | node "$KP_ROOT/lib/queue-issues.mjs" unclaimed 2>/dev/null || true)
+  for n in $list; do
+    grep -qx -- "$n" "$Q/queue" && continue
+    grep -qx -- "$n" "$Q/started" && continue
+    grep -qx -- "$n" "$Q/skip" && continue
+    printf '%s\n' "$n" >> "$Q/queue"
+  done
+}
+
+# Prints the first queue line that is still worth spawning. A claimed or held skip is not
+# logged, because the walk repeats every 20 to 60 seconds; a dry run names it on stderr.
+next_issue() {
+  local n holder state
+  while read -r n; do
+    case $n in ''|*[!0-9]*) continue ;; esac
+    grep -qx -- "$n" "$Q/started" && continue
+    grep -qx -- "$n" "$Q/skip" && continue
+    if holder=$(issue_holder "$n"); then
+      [ "$DRY_RUN" -eq 0 ] || echo "skip #$n: held by $holder" >&2
+      continue
+    fi
+    state=$(issue_state "$n")
+    case $state in
+      OPEN) ;;
+      CLAIMED)
+        [ "$DRY_RUN" -eq 0 ] || echo "skip #$n: claimed" >&2
+        continue
+        ;;
+      *)
+        log "drop #$n (not open)"
+        continue
+        ;;
+    esac
+    printf '%s\n' "$n"
+    return 0
+  done < "$Q/queue"
+  return 1
+}
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  refill
+  printf 'live=%s\n' "$(live_count)"
+  next_issue || echo none
+  exit 0
+fi
+
+# queue_pass: one pass of the runner, with its outcome in PASS_RESULT (paused, full,
+# curator, empty, spawned or failed) and the spawned issue in PASS_ISSUE.
+idle_since=0
+PASS_RESULT=''
+PASS_ISSUE=''
+queue_pass() {
+  local live now issue out
+  PASS_ISSUE=''
+  if [ -e "$Q/pause" ]; then PASS_RESULT=paused; return 0; fi
+  warn_failed
+  live=$(live_count)
+  if [ "${live:-0}" -ge "$MAX" ]; then PASS_RESULT=full; return 0; fi
+
+  # Yield an idle fleet to the daily curator once, so a permanent queue cannot starve the
+  # auto-curate trigger, which only fires with nothing running. With the trigger off no
+  # curator ever starts, so there is nothing to wait for.
+  if [ "${live:-0}" -eq 0 ] && [ "${KINGPIN_CURATOR_AUTO:-1}" != 0 ] && kp_curate_due "$KP_HOME"; then
+    now=$(date +%s)
+    [ "$idle_since" -eq 0 ] && idle_since=$now
+    if [ $((now - idle_since)) -lt "$CURATOR_WAIT_LIMIT" ]; then
+      PASS_RESULT=curator
+      return 0
+    fi
+    log "curator still pending after ${CURATOR_WAIT_LIMIT}s; continuing the queue"
+  fi
+  idle_since=0
+
+  if ! issue=$(next_issue); then
+    refill
+    if ! issue=$(next_issue); then
+      PASS_RESULT=empty
+      return 0
+    fi
+  fi
+
+  local spawn_args=("$PROJECT" --issue "$issue" --mode "$MODE")
+  [ -z "$session" ] || spawn_args+=(--tmux-session "$session")
+  log "spawning #$issue ($MODE), live=$live${session:+ session=$session}"
+  PASS_ISSUE=$issue
+  if out=$("$KP_ROOT/bin/kingpin" spawn "${spawn_args[@]}" 2>&1); then
+    printf '%s\n' "$issue" >> "$Q/started"
+    printf '%s\n' "$out" >> "$Q/log"
+    log "spawned #$issue"
+    PASS_RESULT=spawned
+  else
+    printf '%s\n' "$out" >> "$Q/log"
+    log "spawn failed for #$issue"
+    PASS_RESULT=failed
+  fi
+}
+
+if [ "$ONCE" -eq 1 ]; then
+  queue_pass
+  case $PASS_RESULT in
+    spawned) echo "OK: spawned #$PASS_ISSUE" ;;
+    failed) echo "kingpin-queue: spawn failed for #$PASS_ISSUE (see $Q/log)" >&2; exit 1 ;;
+    *) echo "OK: nothing spawned ($PASS_RESULT)" ;;
+  esac
+  exit 0
+fi
+
+trap 'exit 0' INT TERM
+log "queue runner start pid=$$ max=$MAX mode=$MODE repo=$REPO"
+while :; do
+  queue_pass
+  case $PASS_RESULT in
+    paused|full) sleep 30 ;;
+    curator|empty) sleep 60 ;;
+    failed) log "retrying in 120s"; sleep 120; sleep 20 ;;
+    spawned) sleep 20 ;;
+  esac
+done

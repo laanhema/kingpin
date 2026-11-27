@@ -31,6 +31,8 @@ Report every event as one line appended to `{{TASK_DIR}}/status`, with `printf '
 - `merged: pr=<PR URL>` when a PR merged.
 - `failed: <the stopping skill's own words>` when a gate stopped the run or a step failed.
 
+When `/create-issue` files the issue this task will work on, claim it in the call that creates it. First make sure the repository has the label: `gh label create kingpin:claimed --force --color 5319e7 --description "Held by a live Kingpin task; the queue runner skips it. Remove to release."` creates it or leaves it as it is. Then pass `--label kingpin:claimed` to that `gh issue create` (or name the label in the labels of an MCP create), never in a later edit: the issue-queue runner spawns a worker for any open issue without the label, and your `issue:` line arrives only after the skill's comment, board and read-back steps. Append `issue: #<n> <url>` as soon as the create returns. A follow-up issue you file for someone else to work on carries no claim. When the label cannot be created, file the issue without it and say so in your report.
+
 ## Landing
 
 `/issue-flow-done` is the last step, and its order is fixed: merge the PR, close the issue,

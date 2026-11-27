@@ -12,7 +12,9 @@
 # Lavish session a reviewer left open on it must not stay open forever. `bin/kingpin-done`
 # marks the page of the task it archives, `bin/kingpin-watch` sweeps the records that
 # finished without that step (an older archive, a `failed:` task, a cleanup that was
-# refused), and `bin/kingpin list` names the ones still open. The marker below is the
+# refused), and `bin/kingpin list` names the ones still open. A record whose last worker
+# line is the Stop hook's silent stop (`failed: no status:`) is not retired by the sweep,
+# because the worker resumes after it (kp_dossier_retirable). The marker below is the
 # one string all three agree on: it is written by lib/dossier-finish.mjs into the page,
 # and its presence is what makes a second mark a no-op.
 
@@ -99,15 +101,28 @@ kp_dossier_end() {
   printf 'ended the leftover dossier session\n'
 }
 
+# kp_dossier_retirable <record-dir>
+# Exit 0 when a record's dossier may be retired: the record is finished
+# (kp_task_is_finished), and either `kingpin done` cleaned it (`done_cleaned`) or its
+# last worker line is not the Stop hook's silent stop. A worker resumes after
+# `failed: no status:` and reports ready: or fixed: on the same page, so retiring its
+# dossier then would disable a live review and end its session (issue #255).
+kp_dossier_retirable() {
+  local dir=${1:-}
+  kp_task_is_finished "$dir" || return 1
+  [ -f "$dir/done_cleaned" ] && return 0
+  ! kp_status_is_silent "$(kp_status_last "$dir/status")"
+}
+
 # kp_dossier_open <kp-home> <record-dir>
 # Exit 0 when a finished record still has an open dossier the sweep can close: it
 # recorded a session URL, its page exists, and it has no `dossier.ended` marker. Only a
-# finished record is asked; a live task's dossier is `kingpin list`'s review line, not a
-# leftover. A record with no page is not named either, because the sweep skips it and
+# record kp_dossier_retirable accepts is asked; a live task's dossier, a silent stop's
+# included, is `kingpin list`'s review line, not a leftover. A record with no page is not named either, because the sweep skips it and
 # the session it would have to end cannot be resolved (issue #186 review L2).
 kp_dossier_open() {
   local dir=${2:-}
-  kp_task_is_finished "$dir" || return 1
+  kp_dossier_retirable "$dir" || return 1
   [ -s "$dir/dossier.url" ] || return 1
   kp_dossier_file "$dir" >/dev/null || return 1
   [ ! -f "$dir/dossier.ended" ]

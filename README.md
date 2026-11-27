@@ -114,6 +114,7 @@ Only one supervisor runs at a time. A second `kingpin watch` refuses to start an
 | `kingpin init` | Auto-configures a project from current directory or path. [Details](docs/cli.md#kingpin-init) |
 | `kingpin run` | Single command that spawns, monitors, and completes a task. [Details](docs/cli.md#kingpin-run) |
 | `kingpin watch` | The fleet's one supervisor: a continuous supervision and auto-landing loop. [Details](docs/cli.md#kingpin-watch) |
+| `kingpin queue` | Keeps the fleet at N workers by spawning the next open issue in review mode, and skips an issue a live task holds or `kingpin:claimed` marks. [Details](docs/cli.md#kingpin-queue) |
 | `kingpin afk` | Arms session-scoped auto-landing while you are away: a clean review verdict lands, and anything that needs a human waits. Default TTL 8h. [Details](docs/cli.md#kingpin-afk) |
 | `kingpin spawn` | Starts a worker in a background tmux window, in a leased worktree; the target is resolved, never guessed. [Details](docs/cli.md#kingpin-spawn) |
 | `kingpin list` | Displays the live fleet: each task's state, session and window, the browser daemons it holds, its dossier link, and whether the supervisor is running; `--all` (or `-a`) also shows finished tasks. [Details](docs/cli.md#kingpin-list) |
@@ -124,6 +125,7 @@ Only one supervisor runs at a time. A second `kingpin watch` refuses to start an
 | `kingpin sync` | Fast-forwards the main checkout from its upstream branch with `git pull --ff-only`, so the orchestrator never runs raw git against project files. It refuses rather than discarding, and names every untracked path it refuses to overwrite. [Details](docs/cli.md#kingpin-sync) |
 | `kingpin listen` | Keeps a Lavish listener attached to a task's review dossier (`report.html`): opens the dossier once, in a new browser tab, then polls it and routes what the reviewer does. [Details](docs/cli.md#kingpin-listen) |
 | `kingpin wait` | Prints one `<task-id> <reason>` line per fleet event that needs action. [Details](docs/cli.md#kingpin-wait) |
+| `kingpin wake` | Blocks until a worker needs the orchestrator, prints its status lines and a resume token, and exits; read-only, run as a harness background job. [Details](docs/cli.md#kingpin-wake) |
 | `kingpin ack` | Marks a task's events as seen, so `kingpin wait` reports only newer ones. [Details](docs/cli.md#kingpin-ack) |
 | `kingpin land` | Serializes project landing and triggers merge. [Details](docs/cli.md#kingpin-land) |
 | `kingpin done` | Verifies the merge, then cleans up the task's window, browser daemons and worktree lease, deletes its branches, closes the issue it names, and archives the record. [Details](docs/cli.md#kingpin-done) |

@@ -66,6 +66,15 @@ check_fonts() {
   fi
 }
 
+# check_no_modals <file>: 0 when no script on the page calls prompt(, alert( or confirm(.
+# Lavish's iframe sandbox has no allow-modals, so each one returns at once and does nothing
+# (issue #255). The page is read without its comments, so a comment naming one does not trip it.
+check_no_modals() {
+  local f=$1 hits
+  hits=$(stripped "$f" | grep -nE '(^|[^A-Za-z0-9_$.])(window\.)?(prompt|alert|confirm)[[:space:]]*\(' || true)
+  [ -z "$hits" ] || { echo "$f calls a modal the Lavish sandbox blocks: $hits" >&2; return 1; }
+}
+
 # check_decisions <file>: 0 when the nine approved decisions survive as rules and tokens.
 # Each case names the decision it guards, so a broken copy explains itself.
 check_decisions() {
@@ -195,6 +204,8 @@ check_handover() {
   grep -q 'function kpAction(text, label)' "$f" || { echo "the handover lost its kpAction handler" >&2; return 1; }
   grep -q 'function kpRequestChanges(taskId)' "$f" || { echo "the handover lost its kpRequestChanges handler" >&2; return 1; }
   grep -q 'Paste this answer into chat' "$f" || { echo "a copy opened without Lavish has no fallback message" >&2; return 1; }
+  grep -q 'data-kp-changes' "$f" || { echo "the handover lost its Request Changes note form" >&2; return 1; }
+  check_no_modals "$f" || return 1
   grep -q 'queuePrompt(' "$f" || { echo "the decision handler no longer calls queuePrompt" >&2; return 1; }
   grep -q 'window\.lavish' "$f" || { echo "the handlers no longer guard window.lavish" >&2; return 1; }
   ! grep -q 'data-kp-finished-hide' "$f" \
@@ -238,7 +249,10 @@ check_dir() {
     || { echo "the action bar lost a button" >&2; return 1; }
   grep -q 'window\.lavish' "$dir/template.html" || { echo "the action handlers no longer guard window.lavish" >&2; return 1; }
   grep -q 'queuePrompt(' "$dir/template.html" || { echo "the action handlers no longer call queuePrompt" >&2; return 1; }
-  grep -q 'navigator\.clipboard' "$dir/template.html" || { echo "the clipboard fallback is gone" >&2; return 1; }
+  # Without Lavish the text to paste is shown on the page; Request Changes collects its note in a form.
+  grep -q 'Paste this into chat' "$dir/template.html" || { echo "the on-page fallback for a copy opened without Lavish is gone" >&2; return 1; }
+  grep -q 'data-kp-changes' "$dir/template.html" || { echo "the Request Changes note form is gone" >&2; return 1; }
+  check_no_modals "$dir/template.html" || return 1
   # The retire hook sits on the action strip and the status stamp, or a finished page keeps its buttons.
   hide=$(grep -oE '<[a-z]+[^>]* data-kp-finished-hide' "$dir/template.html" | wc -l | tr -d ' ')
   [ "$hide" -ge 2 ] || { echo "expected at least 2 data-kp-finished-hide elements, found $hide" >&2; return 1; }
@@ -312,6 +326,20 @@ for d in worker-dossier noir-dossier; do
     || fail "the older $d folder was removed"
 done
 
+echo "=== no shipped template calls a modal the Lavish sandbox blocks ==="
+for f in kingpin-dossier/template.html kingpin-dossier/handover.html worker-dossier/template.html \
+         worker-dossier/handover.html noir-dossier/template.html; do
+  out=$(check_no_modals "$KP_ROOT/assets/lavish/$f" 2>&1) \
+    && pass "$f calls no prompt, alert or confirm" \
+    || fail "$f calls a modal: $out"
+done
+# A block comment, a method on another object and a longer name are not modal calls. A `//` line
+# comment is not stripped, so a script comment names the dialogs in words, not as calls.
+printf '<!-- prompt( -->\n<script>\n/* alert( too */\nkpPrompt(1); x.confirm(2);\n</script>\n' > "$T/modal-comment.html"
+check_no_modals "$T/modal-comment.html" 2>/dev/null \
+  && pass "a comment, a method and a longer name that mention a modal are not calls" \
+  || fail "check_no_modals flagged a comment or a method as a modal call"
+
 echo "=== the retire hook survives dossier-finish ==="
 mkdir -p "$T/retire"
 cp "$TPL/template.html" "$T/retire/report.html"
@@ -325,6 +353,9 @@ grep -q '\[data-kp-finished-hide\] { display: none !important; }' "$T/retire/rep
 ! grep -qE '<button[^>]*onclick="kp(Action|RequestChanges)\(' "$T/retire/report.html" \
   && pass "no decision button keeps a live handler" \
   || fail "a decision button still carries its handler"
+qgrep '<div data-kp-finished-hide data-kp-changes' "$T/retire/report.html" \
+  && pass "the marked page hides the Request Changes note form" \
+  || fail "the note form lost its data-kp-finished-hide hook on the marked page"
 out=$("$KP_BIN/kingpin-report" check "$T/retire/report.html" 2>&1) \
   && pass "the marked page still passes kingpin-report check" \
   || fail "the marked page fails kingpin-report check: $out"
@@ -460,11 +491,26 @@ sed -i 's/window\.lavish/window.nothing/g' "$T/no-bridge/template.html"
 out=$(check_dir "$T/no-bridge" 2>&1) && fail "handlers without the Lavish guard passed" || pass "handlers without the Lavish guard fail"
 echo "$out" | grep -q 'guard window.lavish' && pass "the failure names the missing guard" || fail "unclear reason: $out"
 
-rm -rf "$T/no-clipboard"
-cp -a "$TPL" "$T/no-clipboard"
-sed -i 's/navigator\.clipboard/navigator.nowhere/g' "$T/no-clipboard/template.html"
-out=$(check_dir "$T/no-clipboard" 2>&1) && fail "a page without the clipboard fallback passed" || pass "a page without the clipboard fallback fails"
-echo "$out" | grep -q 'clipboard fallback is gone' && pass "the failure names the missing fallback" || fail "unclear reason: $out"
+rm -rf "$T/no-paste"
+cp -a "$TPL" "$T/no-paste"
+sed -i 's/Paste this into chat/Nothing here/g' "$T/no-paste/template.html"
+cmp -s "$TPL/template.html" "$T/no-paste/template.html" && fail "the no-paste mutation changed nothing"
+out=$(check_dir "$T/no-paste" 2>&1) && fail "a page without the on-page fallback passed" || pass "a page without the on-page fallback fails"
+echo "$out" | grep -q 'on-page fallback' && pass "the failure names the missing on-page fallback" || fail "unclear reason: $out"
+
+rm -rf "$T/modal"
+cp -a "$TPL" "$T/modal"
+sed -i "s|</body>|<script>alert('x')</script>\n</body>|" "$T/modal/template.html"
+cmp -s "$TPL/template.html" "$T/modal/template.html" && fail "the modal mutation changed nothing"
+out=$(check_dir "$T/modal" 2>&1) && fail "a page that calls alert() passed" || pass "a page that calls alert() fails"
+echo "$out" | grep -q 'calls a modal the Lavish sandbox blocks' && pass "the failure names the modal call" || fail "unclear reason: $out"
+
+rm -rf "$T/h-modal"
+cp -a "$TPL" "$T/h-modal"
+sed -i "s|</body>|<script>var n = window.prompt('Notes');</script>\n</body>|" "$T/h-modal/handover.html"
+cmp -s "$TPL/handover.html" "$T/h-modal/handover.html" && fail "the h-modal mutation changed nothing"
+out=$(check_handover "$T/h-modal" 2>&1) && fail "a handover that calls prompt() passed" || pass "a handover that calls prompt() fails"
+echo "$out" | grep -q 'calls a modal the Lavish sandbox blocks' && pass "the failure names the handover's modal call" || fail "unclear reason: $out"
 
 rm -rf "$T/no-hide"
 cp -a "$TPL" "$T/no-hide"
