@@ -54,6 +54,15 @@
   .kp-diff-title { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin: 0; font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace; font-size: .875rem; font-weight: 600; color: #e5e7eb; }
   .kp-diff-title small { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: .75rem; font-weight: 400; color: #9ca3af; border: 1px solid currentColor; border-radius: 999px; padding: 0 .5rem; line-height: 1.25rem; white-space: nowrap; }
   .kp-diff .kp-fallback { margin: 0; padding: .75rem; border: 0; border-radius: 0; background: #0d1117; font-size: .75rem; line-height: 1.5; color: #c9d1d9; }
+
+  /* The Request Changes note under the action bar, hidden until the button opens it, and the status
+     line both buttons report on. Lavish's sandbox blocks the browser's dialogs, so the page reports on itself. */
+  [data-kp-changes][hidden] { display: none; }
+  [data-kp-changes] textarea { width: 100%; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
+  [data-kp-action-status] { margin: 0; overflow-wrap: anywhere; }
+  [data-kp-action-status]:empty { display: none; }
+  [data-kp-action-status][data-tone="ok"] { color: #34d399; }
+  [data-kp-action-status][data-tone="warn"] { color: #fbbf24; }
 </style>
 </head>
 <body class="p-6">
@@ -85,6 +94,18 @@
       <button type="button" class="btn btn-sm btn-outline border-gray-600 text-gray-300 hover:bg-gray-800" onclick="kpRequestChanges('kp-000-example-task')">Request Changes</button>
     </div>
   </div>
+
+  <!-- Request Changes opens this note under the action bar, and the status line under it
+       says what each button did. Both carry the same retire hook as the bar. -->
+  <div data-kp-finished-hide data-kp-changes hidden class="card-custom border-gray-700 p-4 space-y-3">
+    <label for="kp-changes-note" class="block text-sm font-semibold text-white">What should change?</label>
+    <textarea id="kp-changes-note" data-kp-changes-note rows="3" class="textarea textarea-bordered w-full"></textarea>
+    <div class="flex flex-wrap items-center gap-2">
+      <button type="button" class="btn btn-sm btn-warning font-medium" onclick="kpRequestChanges('kp-000-example-task')">Queue the request</button>
+      <button type="button" class="btn btn-sm btn-ghost text-gray-300" onclick="kpChangesCancel()">Cancel</button>
+    </div>
+  </div>
+  <p data-kp-finished-hide data-kp-action-status role="status" aria-live="polite" class="text-sm"></p>
 
   <!-- Badge row: task id, status, branch. Add a PR badge once there is one. -->
   <div class="flex gap-2 items-center flex-wrap">
@@ -312,25 +333,51 @@
 </main>
 
 <script>
-  // Without the Lavish bridge (a copy opened as a plain file) the buttons copy the text instead.
-  function kpAction(text, label) {
-    if (window.lavish && window.lavish.queuePrompt) {
+  // Inside Lavish the buttons queue a prompt, which reaches the agent when the reviewer presses
+  // Send to Agent. Without the Lavish bridge (a copy opened as a plain file) the text to paste is
+  // shown on the page. Lavish's sandbox blocks the browser's modal dialogs, so none is used.
+  function kpStatus(text, tone) {
+    var el = document.querySelector('[data-kp-action-status]');
+    if (!el) return;
+    el.textContent = text;
+    el.setAttribute('data-tone', tone);
+  }
+  function kpQueue(text, label) {
+    if (window.lavish && typeof window.lavish.queuePrompt === 'function') {
       window.lavish.queuePrompt(text, { tag: 'action', text: label });
-    } else if (navigator.clipboard) {
-      navigator.clipboard.writeText(text);
-      alert('Copied to clipboard: ' + text);
+      kpStatus('Queued. Press Send to Agent to deliver it.', 'ok');
+      return true;
+    }
+    kpStatus('Lavish is not connected here. Paste this into chat: ' + text, 'warn');
+    return false;
+  }
+  function kpAction(text, label) {
+    kpQueue(text, label);
+  }
+  // The first call opens the note form; a call while it is open queues the note.
+  function kpRequestChanges(taskId) {
+    var form = document.querySelector('[data-kp-changes]');
+    var box = form && form.querySelector('[data-kp-changes-note]');
+    if (!form || !box) return;
+    if (form.hidden) {
+      form.hidden = false;
+      box.focus();
+      return;
+    }
+    var note = box.value.trim();
+    if (!note) {
+      kpStatus('Write what should change first.', 'warn');
+      box.focus();
+      return;
+    }
+    if (kpQueue('Request Changes: ' + note, 'Request changes: ' + taskId)) {
+      box.value = '';
+      form.hidden = true;
     }
   }
-  function kpRequestChanges(taskId) {
-    var note = prompt('Notes for changes:');
-    if (!note) return;
-    var text = 'Request Changes: ' + note;
-    if (window.lavish && window.lavish.queuePrompt) {
-      window.lavish.queuePrompt(text, { tag: 'action', text: 'Request changes: ' + taskId });
-    } else if (navigator.clipboard) {
-      navigator.clipboard.writeText(text);
-      alert('Copied: ' + text);
-    }
+  function kpChangesCancel() {
+    var form = document.querySelector('[data-kp-changes]');
+    if (form) form.hidden = true;
   }
 </script>
 </body>

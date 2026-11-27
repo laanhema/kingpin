@@ -126,6 +126,10 @@ check_dir() {
   [ "$buttons" -ge 2 ] || { echo "the action bar lost a button ($buttons of 2)" >&2; return 1; }
   grep -q 'window\.lavish' "$dir/template.html" || { echo "the action handlers no longer guard window.lavish" >&2; return 1; }
   grep -q 'queuePrompt(' "$dir/template.html" || { echo "the action handlers no longer call queuePrompt" >&2; return 1; }
+  # Lavish's sandbox blocks the browser's dialogs (issue #255): Request Changes collects its note in a
+  # form on the page, and a copy opened without Lavish shows the text to paste.
+  grep -q 'data-kp-changes' "$dir/template.html" || { echo "the Request Changes note form is gone" >&2; return 1; }
+  grep -q 'Paste this into chat' "$dir/template.html" || { echo "the on-page fallback for a copy opened without Lavish is gone" >&2; return 1; }
   # Each diff surface carries a static copy of its diff for when the renderer cannot load.
   surfaces=$(grep -c 'class="kp-diff"' "$dir/template.html" || true)
   fallbacks=$(grep -c 'class="kp-fallback"' "$dir/template.html" || true)
@@ -285,6 +289,12 @@ cp -a "$TPL" "$T/no-bridge"
 sed -i 's/window\.lavish/window.nothing/g' "$T/no-bridge/template.html"
 out=$(check_dir "$T/no-bridge" 2>&1) && fail "handlers without the Lavish guard passed" || pass "handlers without the Lavish guard fail"
 echo "$out" | grep -q 'guard window.lavish' && pass "the failure names the missing guard" || fail "unclear reason: $out"
+
+rm -rf "$T/no-note"
+cp -a "$TPL" "$T/no-note"
+sed -i 's/data-kp-changes/data-kp-other/g' "$T/no-note/template.html"
+out=$(check_dir "$T/no-note" 2>&1) && fail "a page without the Request Changes note form passed" || pass "a page without the Request Changes note form fails"
+echo "$out" | grep -q 'note form is gone' && pass "the failure names the missing note form" || fail "unclear reason: $out"
 
 rm -rf "$T/no-colgroup"
 cp -a "$TPL" "$T/no-colgroup"
